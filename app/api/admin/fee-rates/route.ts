@@ -110,6 +110,47 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ success: true, data: { id: rate.id } }, { status: 201 })
 }
 
+export async function PUT(req: NextRequest) {
+  const session = await getSession()
+  if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
+  if (session.role !== 'sysadmin') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
+
+  const { searchParams } = req.nextUrl
+  const id = parseInt(searchParams.get('id') ?? '0')
+  const type = searchParams.get('type')
+  if (!id) return NextResponse.json({ success: false, error: 'id 必填' }, { status: 400 })
+
+  const body = await req.json()
+
+  if (type === '火險') {
+    await prisma.companyFireRate.update({
+      where: { id },
+      data: {
+        companyCode: body.companyCode, companyName: body.companyName,
+        debitNoteType: body.debitNoteType, minFee: body.minFee,
+        rateBands: body.rateBands, remarks: body.remarks,
+        effectiveDate: new Date(body.effectiveDate),
+      },
+    })
+  } else {
+    await prisma.companyFeeRate.update({
+      where: { id },
+      data: {
+        companyCode: body.companyCode, companyName: body.companyName,
+        insuranceType: body.insuranceType ?? '',
+        debitNoteType: body.debitNoteType, minFee: body.minFee,
+        rateBands: body.rateBands, subRate: body.subRate,
+        mealExpense: body.mealExpense ?? 0,
+        accommodationExpense: body.accommodationExpense ?? 0,
+        photoFee: body.photoFee ?? 0,
+        effectiveDate: new Date(body.effectiveDate),
+      },
+    })
+  }
+
+  return NextResponse.json({ success: true })
+}
+
 export async function DELETE(req: NextRequest) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
