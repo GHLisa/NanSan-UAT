@@ -9,14 +9,83 @@ export async function GET(req: NextRequest) {
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
 
   const { searchParams } = req.nextUrl
+  const mode = searchParams.get('mode')          // 'pool' = 合併模式（待建案+待指派）
   const status = searchParams.get('status')
   const deptId = session.departmentId
+  const canSeeAll = session.role === 'vp' || session.role === 'sysadmin'
+  const deptFilter = !canSeeAll && deptId ? deptId : undefined
 
+  // ── Pool 模式：合併 待取件佇列 + 未決且無承辦人的案件 ──────────────────
+  if (mode === 'pool') {
+    const [queueItems, unassignedCases] = await Promise.all([
+      prisma.dispatchQueue.findMany({
+        where: {
+          status: '待取件',
+          ...(deptFilter ? { assignedDepartmentId: deptFilter } : {}),
+        },
+        include: {
+          insuranceCompany: { select: { name: true } },
+          brokerCompany: { select: { name: true } },
+          assignedDepartment: { select: { name: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.case.findMany({
+        where: {
+          status: '未決',
+          assignments: { none: {} },
+          ...(deptFilter ? { departmentId: deptFilter } : {}),
+        },
+        include: {
+          insuranceCompany: { select: { name: true } },
+          department: { select: { name: true } },
+        },
+        orderBy: { commissionDate: 'desc' },
+      }),
+    ])
+
+    const poolData = [
+      ...queueItems.map((d) => ({
+        _type: 'queue' as const,
+        id: d.id,
+        desc: d.sourceReference,
+        draftData: d.draftData,
+        insuranceCompanyId: d.insuranceCompanyId,
+        insuranceCompanyName: d.insuranceCompany.name,
+        brokerCompanyId: d.brokerCompanyId,
+        brokerCompanyName: d.brokerCompany?.name ?? null,
+        assignedDepartmentId: d.assignedDepartmentId,
+        departmentName: d.assignedDepartment.name,
+        incidentLocation: null as string | null,
+        insuranceType: null as string | null,
+        info: d.assignmentNotes ?? null,
+        time: d.createdAt.toISOString(),
+      })),
+      ...unassignedCases.map((c) => ({
+        _type: 'case' as const,
+        id: c.id,
+        desc: `${c.caseNumber}　${c.insuredName}`,
+        draftData: null,
+        insuranceCompanyId: c.insuranceCompanyId,
+        insuranceCompanyName: c.insuranceCompany.name,
+        brokerCompanyId: c.brokerCompanyId,
+        brokerCompanyName: null as string | null,
+        assignedDepartmentId: c.departmentId,
+        departmentName: c.department.name,
+        incidentLocation: c.incidentLocation,
+        insuranceType: c.insuranceType,
+        info: c.incidentCause,
+        time: c.commissionDate.toISOString(),
+      })),
+    ]
+
+    return NextResponse.json({ success: true, data: poolData })
+  }
+
+  // ── 一般模式（依 status 篩選）──────────────────────────────────────────
   const where: Record<string, unknown> = {}
   if (status) where.status = status
-  if (deptId && session.role !== 'vp' && session.role !== 'sysadmin') {
-    where.assignedDepartmentId = deptId
-  }
+  if (deptFilter) where.assignedDepartmentId = deptFilter
 
   const items = await prisma.dispatchQueue.findMany({
     where,

@@ -111,6 +111,12 @@ const CaseSchema = z.object({
     role: z.string(),
     contributionRatio: z.number(),
   })).optional(),
+  dispatchId: z.number().optional(),
+  contactFormStatus: z.string().optional(),
+  contactReturnDate: z.string().nullable().optional(),
+  nasFolder: z.string().optional(),
+  parkingStatus: z.string().nullable().optional(),
+  estimatedFee: z.number().optional(),
 })
 
 export async function POST(req: NextRequest) {
@@ -152,6 +158,11 @@ export async function POST(req: NextRequest) {
       deductible: body.deductible ?? 0,
       isSpecialCase: body.isSpecialCase ?? false,
       notes: body.notes,
+      contactFormStatus: body.contactFormStatus,
+      contactReturnDate: body.contactReturnDate ? new Date(body.contactReturnDate) : undefined,
+      nasFolder: body.nasFolder,
+      parkingStatus: body.parkingStatus,
+      estimatedFee: body.estimatedFee,
       coInsurers: body.coInsurers ? {
         create: body.coInsurers.map((ci) => ({
           companyId: ci.companyId,
@@ -169,7 +180,25 @@ export async function POST(req: NextRequest) {
     },
   })
 
-  // Log creation
+  // 若從派案池建案，更新 dispatch 狀態
+  if (body.dispatchId) {
+    await prisma.dispatchQueue.update({
+      where: { id: body.dispatchId },
+      data: { status: '已成案', pickedBy: parseInt(session.sub) },
+    })
+  }
+
+  // 建立進件進度記錄
+  await prisma.caseProgress.create({
+    data: {
+      caseId: newCase.id,
+      stage: '進件/建檔',
+      progressDate: new Date(),
+      description: `案件建立 (${session.name})`,
+      createdBy: parseInt(session.sub),
+    },
+  })
+
   await prisma.caseLog.create({
     data: {
       caseId: newCase.id,
