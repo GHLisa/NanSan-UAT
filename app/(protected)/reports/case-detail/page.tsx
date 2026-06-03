@@ -1,165 +1,286 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
-import {
-  Card, Table, Select, Typography, Row, Col, Button, Tag,
-} from 'antd'
+import { useEffect, useState, useCallback, useMemo } from 'react'
+import { Card, Typography, Tabs, Select, Table, Space } from 'antd'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
 
-const { Title } = Typography
-const { Option } = Select
+const { Title, Text } = Typography
 
-interface SettlementItem {
-  id: number
-  caseId: number
-  caseNumber: string
-  insuredName: string
-  insuranceType: string
-  insuranceCompanyName: string
-  departmentName: string
-  reportDate: string
-  baseFee: number
-  travelExpense: number
-  totalFee: number
-  remarks: string | null
-  handlers: { name: string; role: string }[]
+// ── Constants ─────────────────────────────────────────────────────────────
+const YEAR_OPTIONS  = [2024, 2025, 2026].map(y => ({ value: y, label: `${y} 年` }))
+const MONTH_OPTIONS = Array.from({ length: 12 }, (_, i) => ({ value: i + 1, label: `${i + 1} 月` }))
+const QUARTER_OPTIONS = [
+  { value: 'Q1', label: 'Q1（1~3月）' },
+  { value: 'Q2', label: 'Q2（4~6月）' },
+  { value: 'Q3', label: 'Q3（7~9月）' },
+  { value: 'Q4', label: 'Q4（10~12月）' },
+]
+
+const fmtFee = (v: number) => v > 0 ? `$${v.toLocaleString()}` : '—'
+const fmtN   = (v: number) => v > 0 ? v : '—'
+
+const GROUP_BG = ['#ffffff', '#F0F7FF']
+const SUB_BG   = '#DBEAFE'
+const TOTAL_BG = '#FFF7E6'
+
+// ── Types ─────────────────────────────────────────────────────────────────
+interface CaseRow { id: number; caseNumber: string; insuredName: string; closeDate: string; actualFee: number; travelFee: number; subtotalFee: number; remarks: string }
+interface EmpGroup { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
+interface ReportData { type: string; year: number; month: number; quarter: string; groups: EmpGroup[]; grandTotals: { caseCount: number; actualFee: number; travelFee: number; subtotalFee: number }; ytdGroups: EmpGroup[] | null }
+
+// ── Flat row builder for detail table ─────────────────────────────────────
+type FlatRow = {
+  key: string
+  type: 'case' | 'subtotal' | 'separator'
+  groupIdx: number
+  seq?: number
+  empName?: string
+  caseNumber?: string
+  insuredName?: string
+  closeDate?: string
+  actualFee?: number
+  travelFee?: number
+  subtotalFee?: number
+  remarks?: string
+  caseCount?: number
 }
 
-interface MetaData {
-  departments: { id: number; name: string }[]
+function buildFlatRows(groups: EmpGroup[]): FlatRow[] {
+  const rows: FlatRow[] = []
+  let seq = 1
+  groups.forEach(({ empId, empName, cases, totals }, gi) => {
+    const sorted = [...cases].sort((a, b) => (a.closeDate ?? '').localeCompare(b.closeDate ?? ''))
+    sorted.forEach(c => {
+      rows.push({ key: `c-${c.id}`, type: 'case', groupIdx: gi, seq: seq++, empName, caseNumber: c.caseNumber, insuredName: c.insuredName, closeDate: c.closeDate, actualFee: c.actualFee, travelFee: c.travelFee, subtotalFee: c.subtotalFee, remarks: c.remarks })
+    })
+    rows.push({ key: `s-${empId}`, type: 'subtotal', groupIdx: gi, empName, caseCount: totals.caseCount, actualFee: totals.actualFee, travelFee: totals.travelFee, subtotalFee: totals.subtotalFee })
+    if (gi < groups.length - 1) {
+      rows.push({ key: `sep-${gi}`, type: 'separator', groupIdx: gi })
+    }
+  })
+  return rows
 }
 
+// ── Detail Table ──────────────────────────────────────────────────────────
+const DETAIL_COLS = [
+  { title: '序', key: 'seq', width: 44, align: 'center' as const,
+    render: (_: unknown, r: FlatRow) => r.type !== 'case' ? null : r.seq },
+  { title: '公證編號', key: 'caseNumber', width: 160,
+    render: (_: unknown, r: FlatRow) => {
+      if (r.type === 'subtotal') return <Text strong>小計（{r.caseCount} 件）</Text>
+      if (r.type !== 'case') return null
+      return r.caseNumber
+    }},
+  { title: '被保險人', key: 'insuredName', ellipsis: true,
+    render: (_: unknown, r: FlatRow) => r.type !== 'case' ? null : r.insuredName },
+  { title: '經辦人', key: 'empName', width: 80,
+    render: (_: unknown, r: FlatRow) => r.type !== 'case' ? null : r.empName },
+  { title: '出報告日期', key: 'closeDate', width: 110,
+    render: (_: unknown, r: FlatRow) => r.type !== 'case' ? null : (r.closeDate ? dayjs(r.closeDate).format('YYYY/MM/DD') : '—') },
+  { title: '純公證費', key: 'actualFee', width: 110, align: 'right' as const,
+    render: (_: unknown, r: FlatRow) => {
+      if (r.type === 'subtotal') return <Text strong>{fmtFee(r.actualFee ?? 0)}</Text>
+      if (r.type !== 'case') return null
+      return fmtFee(r.actualFee ?? 0)
+    }},
+  { title: '差旅其他費', key: 'travelFee', width: 110, align: 'right' as const,
+    render: (_: unknown, r: FlatRow) => {
+      if (r.type === 'subtotal') return <Text strong>{fmtFee(r.travelFee ?? 0)}</Text>
+      if (r.type !== 'case') return null
+      return fmtFee(r.travelFee ?? 0)
+    }},
+  { title: '小計', key: 'subtotalFee', width: 110, align: 'right' as const,
+    render: (_: unknown, r: FlatRow) => {
+      if (r.type === 'subtotal') return <Text strong>{fmtFee(r.subtotalFee ?? 0)}</Text>
+      if (r.type !== 'case') return null
+      return fmtFee(r.subtotalFee ?? 0)
+    }},
+  { title: '備註', key: 'remarks', width: 180,
+    render: (_: unknown, r: FlatRow) => r.type !== 'case' || !r.remarks ? null
+      : <Text type="secondary" style={{ fontSize: 12 }}>{r.remarks}</Text> },
+]
+
+function DetailTable({ groups, grandTotals }: { groups: EmpGroup[]; grandTotals: ReportData['grandTotals'] }) {
+  const rows = useMemo(() => buildFlatRows(groups), [groups])
+  if (rows.length === 0) return <Text type="secondary">查無已決案件資料。</Text>
+  return (
+    <Table
+      dataSource={rows}
+      columns={DETAIL_COLS}
+      rowKey="key"
+      size="small"
+      pagination={false}
+      scroll={{ x: 800 }}
+      onRow={r => ({
+        style: {
+          background: r.type === 'separator' ? '#F5F7FA' : r.type === 'subtotal' ? SUB_BG : GROUP_BG[r.groupIdx % 2],
+          height: r.type === 'separator' ? 10 : undefined,
+        },
+      })}
+      summary={() => (
+        <Table.Summary fixed>
+          <Table.Summary.Row style={{ background: TOTAL_BG }}>
+            <Table.Summary.Cell index={0} colSpan={2} align="left">
+              <Text strong>合計（{grandTotals.caseCount} 件）</Text>
+            </Table.Summary.Cell>
+            <Table.Summary.Cell index={2} /><Table.Summary.Cell index={3} /><Table.Summary.Cell index={4} />
+            <Table.Summary.Cell index={5} align="right"><Text strong>{fmtFee(grandTotals.actualFee)}</Text></Table.Summary.Cell>
+            <Table.Summary.Cell index={6} align="right"><Text strong>{fmtFee(grandTotals.travelFee)}</Text></Table.Summary.Cell>
+            <Table.Summary.Cell index={7} align="right"><Text strong>{fmtFee(grandTotals.subtotalFee)}</Text></Table.Summary.Cell>
+            <Table.Summary.Cell index={8} />
+          </Table.Summary.Row>
+        </Table.Summary>
+      )}
+    />
+  )
+}
+
+// ── Quarter Summary Table ─────────────────────────────────────────────────
+const QUARTER_COLS = [
+  { title: '序', key: 'seq', width: 44, align: 'center' as const },
+  { title: '經辦人', dataIndex: 'empName', key: 'empName', width: 100 },
+  { title: '件數', key: 'caseCount', width: 70, align: 'center' as const, render: (v: number) => fmtN(v) },
+  { title: '純公證費', key: 'actualFee', width: 130, align: 'right' as const, render: (v: number) => fmtFee(v) },
+  { title: '差旅其他費', key: 'travelFee', width: 120, align: 'right' as const, render: (v: number) => fmtFee(v) },
+  { title: '小計', key: 'subtotalFee', width: 130, align: 'right' as const, render: (v: number) => fmtFee(v) },
+]
+
+function QuarterTable({ groups }: { groups: EmpGroup[] }) {
+  const rows = groups.map((g, i) => ({ key: g.empId, seq: i + 1, empName: g.empName, ...g.totals }))
+  const grand = groups.reduce((s, g) => ({ caseCount: s.caseCount + g.totals.caseCount, actualFee: s.actualFee + g.totals.actualFee, travelFee: s.travelFee + g.totals.travelFee, subtotalFee: s.subtotalFee + g.totals.subtotalFee }), { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 })
+  if (rows.length === 0) return <Text type="secondary">查無已決案件資料。</Text>
+  return (
+    <Table
+      dataSource={rows} columns={QUARTER_COLS} rowKey="key"
+      size="small" pagination={false}
+      summary={() => (
+        <Table.Summary fixed>
+          <Table.Summary.Row style={{ background: TOTAL_BG }}>
+            <Table.Summary.Cell index={0} colSpan={2} align="left"><Text strong>合計</Text></Table.Summary.Cell>
+            <Table.Summary.Cell index={2} align="center"><Text strong>{grand.caseCount}</Text></Table.Summary.Cell>
+            <Table.Summary.Cell index={3} align="right"><Text strong>{fmtFee(grand.actualFee)}</Text></Table.Summary.Cell>
+            <Table.Summary.Cell index={4} align="right"><Text strong>{fmtFee(grand.travelFee)}</Text></Table.Summary.Cell>
+            <Table.Summary.Cell index={5} align="right"><Text strong>{fmtFee(grand.subtotalFee)}</Text></Table.Summary.Cell>
+          </Table.Summary.Row>
+        </Table.Summary>
+      )}
+    />
+  )
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────
 export default function CaseDetailReportPage() {
-  const router = useRouter()
   const { session } = useAuth()
-  const currentYear = dayjs().year()
-  const years = Array.from({ length: 5 }, (_, i) => currentYear - i)
+  const role  = session?.role ?? ''
+  const isVP  = role === 'vp'
 
-  const [settlements, setSettlements] = useState<SettlementItem[]>([])
-  const [loading, setLoading] = useState(false)
-  const [meta, setMeta] = useState<MetaData>({ departments: [] })
-  const [filters, setFilters] = useState({ year: String(currentYear), deptId: '' })
+  const [filterYear,  setFilterYear]  = useState(dayjs().year())
+  const [filterMonth, setFilterMonth] = useState(dayjs().month() + 1)
+  const [filterQ,     setFilterQ]     = useState('Q1')
+  const [filterDeptId, setFilterDeptId] = useState<number | null>(null)
+  const [monthData,   setMonthData]   = useState<ReportData | null>(null)
+  const [quarterData, setQuarterData] = useState<ReportData | null>(null)
+  const [loadingM, setLoadingM] = useState(false)
+  const [loadingQ, setLoadingQ] = useState(false)
 
-  const isVpOrAdmin = session && ['vp', 'sysadmin'].includes(session.role)
-
-  const loadData = useCallback(async () => {
-    setLoading(true)
-    const params = new URLSearchParams({ year: filters.year })
-    if (filters.deptId) params.set('deptId', filters.deptId)
-    const res = await api.get<SettlementItem[]>(`/api/settlements?${params.toString()}`)
-    if (res.success && res.data) setSettlements(res.data)
-    setLoading(false)
-  }, [filters])
-
+  const [depts, setDepts] = useState<{ id: number; name: string }[]>([])
   useEffect(() => {
-    api.get<MetaData>('/api/meta').then((res) => {
-      if (res.success && res.data) setMeta(res.data)
+    api.get<{ departments: { id: number; name: string }[] }>('/api/meta').then(res => {
+      if (res.success && res.data) setDepts(res.data.departments)
     })
   }, [])
 
-  useEffect(() => { loadData() }, [loadData])
+  const loadMonth = useCallback(async () => {
+    setLoadingM(true)
+    const p = new URLSearchParams({ type: 'monthly', year: String(filterYear), month: String(filterMonth) })
+    if (filterDeptId) p.set('deptId', String(filterDeptId))
+    const res = await api.get<ReportData>(`/api/reports/case-detail?${p}`)
+    if (res.success && res.data) setMonthData(res.data)
+    setLoadingM(false)
+  }, [filterYear, filterMonth, filterDeptId])
 
-  const columns = [
+  const loadQuarter = useCallback(async () => {
+    setLoadingQ(true)
+    const p = new URLSearchParams({ type: 'quarterly', year: String(filterYear), quarter: filterQ })
+    if (filterDeptId) p.set('deptId', String(filterDeptId))
+    const res = await api.get<ReportData>(`/api/reports/case-detail?${p}`)
+    if (res.success && res.data) setQuarterData(res.data)
+    setLoadingQ(false)
+  }, [filterYear, filterQ, filterDeptId])
+
+  useEffect(() => { loadMonth() }, [loadMonth])
+  useEffect(() => { loadQuarter() }, [loadQuarter])
+
+  const deptSelect = isVP && (
+    <Select
+      value={filterDeptId}
+      onChange={setFilterDeptId}
+      options={[{ value: null, label: '全部部門' }, ...depts.map(d => ({ value: d.id, label: d.name }))]}
+      style={{ width: 150 }}
+    />
+  )
+
+  const tabItems = [
     {
-      title: '案件編號',
-      dataIndex: 'caseNumber',
-      key: 'caseNumber',
-      render: (v: string, r: SettlementItem) => (
-        <Button type="link" size="small" onClick={() => router.push(`/cases/${r.caseId}`)}>{v}</Button>
+      key: '1',
+      label: '月統計',
+      children: (
+        <>
+          <Card size="small" style={{ marginBottom: 16 }}>
+            <Space wrap>
+              <Select value={filterYear} onChange={setFilterYear} options={YEAR_OPTIONS} style={{ width: 100 }} />
+              <Select value={filterMonth} onChange={setFilterMonth} options={MONTH_OPTIONS} style={{ width: 80 }} />
+              {deptSelect}
+            </Space>
+          </Card>
+          {loadingM
+            ? <Text type="secondary">載入中...</Text>
+            : monthData
+              ? <DetailTable groups={monthData.groups} grandTotals={monthData.grandTotals} />
+              : null}
+        </>
       ),
     },
-    { title: '被保人', dataIndex: 'insuredName', key: 'insuredName' },
-    { title: '險種', dataIndex: 'insuranceType', key: 'type' },
-    { title: '保險公司', dataIndex: 'insuranceCompanyName', key: 'ic' },
-    ...(isVpOrAdmin ? [{ title: '部門', dataIndex: 'departmentName', key: 'dept' }] : []),
     {
-      title: '結算日',
-      dataIndex: 'reportDate',
-      key: 'reportDate',
-      render: (v: string) => dayjs(v).format('YYYY-MM-DD'),
-    },
-    {
-      title: '基本公證費',
-      dataIndex: 'baseFee',
-      key: 'baseFee',
-      align: 'right' as const,
-      render: (v: number) => v.toLocaleString(),
-    },
-    {
-      title: '交通費',
-      dataIndex: 'travelExpense',
-      key: 'travel',
-      align: 'right' as const,
-      render: (v: number) => v ? v.toLocaleString() : '-',
-    },
-    {
-      title: '實際公證費',
-      dataIndex: 'totalFee',
-      key: 'totalFee',
-      align: 'right' as const,
-      render: (v: number) => <strong>{v.toLocaleString()}</strong>,
-    },
-    {
-      title: '承辦人',
-      key: 'handlers',
-      render: (_: unknown, r: SettlementItem) => (
-        r.handlers.map((h) => (
-          <Tag key={h.name} color={h.role === '主辦' ? 'blue' : 'default'} style={{ marginBottom: 2 }}>{h.name}</Tag>
-        ))
+      key: '2',
+      label: '季統計',
+      children: (
+        <>
+          <Card size="small" style={{ marginBottom: 16 }}>
+            <Space wrap>
+              <Select value={filterYear} onChange={setFilterYear} options={YEAR_OPTIONS} style={{ width: 100 }} />
+              <Select value={filterQ} onChange={setFilterQ} options={QUARTER_OPTIONS} style={{ width: 140 }} />
+              {deptSelect}
+            </Space>
+          </Card>
+          {loadingQ ? <Text type="secondary">載入中...</Text> : quarterData && (
+            <>
+              <Card size="small" title={`${filterYear} 年 ${filterQ} 已決案統計`} style={{ marginBottom: 16 }}>
+                <QuarterTable groups={quarterData.groups} />
+              </Card>
+              <Card size="small" title={`${filterYear} 年 Q1 ~ ${filterQ} 累計已決案統計`}>
+                <QuarterTable groups={quarterData.ytdGroups ?? []} />
+              </Card>
+            </>
+          )}
+        </>
       ),
     },
   ]
 
-  const totalFee = settlements.reduce((s, item) => s + item.totalFee, 0)
-
   return (
     <div style={{ padding: 24 }}>
-      <Title level={4} style={{ marginBottom: 16 }}>已決案明細表</Title>
-
-      <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)', marginBottom: 16 }}>
-        <Row gutter={[12, 8]} align="middle">
-          <Col xs={12} sm={6} md={4}>
-            <Select style={{ width: '100%' }} value={filters.year} onChange={(v) => setFilters((f) => ({ ...f, year: v }))}>
-              {years.map((y) => <Option key={y} value={String(y)}>{y} 年</Option>)}
-            </Select>
-          </Col>
-          {isVpOrAdmin && (
-            <Col xs={12} sm={6} md={4}>
-              <Select
-                placeholder="全部部門"
-                style={{ width: '100%' }}
-                value={filters.deptId || undefined}
-                onChange={(v) => setFilters((f) => ({ ...f, deptId: v ?? '' }))}
-                allowClear
-              >
-                {meta.departments.map((d) => <Option key={d.id} value={String(d.id)}>{d.name}</Option>)}
-              </Select>
-            </Col>
-          )}
-          <Col>
-            <Button type="primary" onClick={loadData} style={{ background: '#1B4F8C' }}>查詢</Button>
-          </Col>
-          <Col flex="auto" style={{ textAlign: 'right' }}>
-            <span style={{ color: '#8c8c8c', marginRight: 8 }}>共 {settlements.length} 件</span>
-            <span style={{ fontWeight: 600, color: '#1B4F8C' }}>公證費合計：{totalFee.toLocaleString()}</span>
-          </Col>
-        </Row>
-      </Card>
-
-      <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
-        <Table
-          dataSource={settlements}
-          columns={columns}
-          rowKey="id"
-          loading={loading}
-          size="small"
-          scroll={{ x: 1200 }}
-          pagination={{ pageSize: 50, showTotal: (t) => `共 ${t} 筆` }}
-        />
-      </Card>
+      <Tabs
+        items={tabItems}
+        renderTabBar={(props, DefaultTabBar) => (
+          <div style={{ position: 'sticky', top: 64, zIndex: 50, background: '#F5F7FA', paddingTop: 16 }}>
+            <Title level={4} style={{ margin: '0 0 8px' }}>已決案明細表</Title>
+            <DefaultTabBar {...props} style={{ marginBottom: 0 }} />
+          </div>
+        )}
+      />
     </div>
   )
 }
