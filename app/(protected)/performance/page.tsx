@@ -37,6 +37,7 @@ export default function PerformancePage() {
     setLoading(false)
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchData() }, [year])
 
   useEffect(() => {

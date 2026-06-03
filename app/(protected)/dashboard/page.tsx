@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Card, Row, Col, Statistic, Table, Tag, Space, Typography, Spin, Button } from 'antd'
 import {
-  FileTextOutlined, CheckCircleOutlined, BellOutlined,
-  AlertOutlined, WarningOutlined,
+  Card, Row, Col, Statistic, Table, Tag, Space, Typography, Spin, Button, Tooltip,
+} from 'antd'
+import {
+  ClockCircleOutlined, InboxOutlined, WarningOutlined, AlertOutlined,
 } from '@ant-design/icons'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Legend } from 'recharts'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
@@ -19,11 +20,60 @@ const STAGE_ORDER = [
   '理算說明/協商', '正式結案報告', '請款單填寫', '結案',
 ]
 
+const SLA_EMOJI: Record<string, { emoji: string; text: string }> = {
+  red:    { emoji: '🔴', text: '逾期 30 天以上未完成初報' },
+  yellow: { emoji: '🟡', text: '逾期 14 天以上未完成初報' },
+}
+
+interface KPI {
+  pendingCount: number
+  pendingLabel: string
+  openCount: number
+  yearlyFee: number
+  feeAchieveRate: number | null
+  countAchieveRate: number | null
+  caseScope: string
+  feeScope: string
+}
+
+interface PendingReview {
+  id: number; caseId: number; caseNumber: string; insuredName: string
+  handlerName: string; documentType: string; reviewStatus: string
+  approvalStatus: string | null; submittedAt: string
+}
+
+interface SlaWarning {
+  id: number; caseNumber: string; insuredName: string; handlerName: string
+  commissionDate: string; currentStage: string; slaStatus: 'red' | 'yellow'
+}
+
+interface StatuteWarning {
+  id: number; caseNumber: string; insuredName: string; handlerName: string
+  commissionDate: string; expiryDate: string; daysLeft: number
+}
+
+interface MonthlyData { month: string; 新受理: number; 已結案: number }
+interface StageItem { stage: string; count: number }
+
 interface DashboardData {
-  kpi: { totalCases: number; closedCases: number; pendingReviews: number; unreadNotifications: number; myCaseCount: number }
-  stageDistribution: { stage: string; count: number }[]
-  slaWarnings: { id: number; caseNumber: string; insuredName: string; departmentName: string; commissionDate: string; currentStage: string; daysSince: number }[]
-  recentCases: { id: number; caseNumber: string; insuredName: string; status: string; currentStage: string; commissionDate: string }[]
+  kpi: KPI
+  pendingReviews: PendingReview[]
+  slaWarnings: SlaWarning[]
+  statuteWarnings: StatuteWarning[]
+  monthlyData: MonthlyData[]
+  stageDistribution: StageItem[]
+}
+
+function AchieveRate({ value, label }: { value: number | null; label: string }) {
+  const color = value == null ? '#bfbfbf' : value >= 100 ? '#52c41a' : value >= 70 ? '#faad14' : '#ff4d4f'
+  return (
+    <Statistic
+      title={<span style={{ fontSize: 11 }}>{label}</span>}
+      value={value != null ? value : '—'}
+      suffix={value != null ? '%' : ''}
+      valueStyle={{ fontSize: 22, color }}
+    />
+  )
 }
 
 export default function DashboardPage() {
@@ -49,148 +99,283 @@ export default function DashboardPage() {
 
   if (!data) return null
 
-  const stageChartData = STAGE_ORDER.map((stage) => {
-    const found = data.stageDistribution.find((s) => s.stage === stage)
-    return { stage: stage.length > 5 ? stage.slice(0, 5) + '…' : stage, fullStage: stage, count: found?.count ?? 0 }
+  const { kpi } = data
+
+  const stageData = STAGE_ORDER.map(stage => {
+    const found = data.stageDistribution.find(s => s.stage === stage)
+    return { stage, 件數: found?.count ?? 0 }
   })
 
+  const showReviews = ['handler', 'team_lead', 'dept_manager', 'vp'].includes(session?.role ?? '')
+
+  // ── Table columns ─────────────────────────────────────────────────────
+  const reviewColumns = [
+    {
+      title: '案件編號', dataIndex: 'caseNumber', key: 'caseNumber',
+      render: (v: string, r: PendingReview) => (
+        <a onClick={() => router.push(`/cases/${r.caseId}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
+      ),
+    },
+    {
+      title: '被保險人', dataIndex: 'insuredName', key: 'insuredName',
+    },
+    {
+      title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName',
+    },
+    { title: '文件類型', dataIndex: 'documentType', key: 'documentType', width: 120 },
+    {
+      title: '狀態', key: 'status', width: 100,
+      render: (_: unknown, r: PendingReview) => {
+        const status = r.approvalStatus === '待執行副總閱' ? '待執行副總閱' : r.reviewStatus
+        return <Tag color={status === '退回' ? 'red' : 'blue'}>{status}</Tag>
+      },
+    },
+    {
+      title: '送審日', dataIndex: 'submittedAt', key: 'submittedAt', width: 80,
+      render: (v: string) => dayjs(v).format('MM/DD'),
+    },
+  ]
+
   const slaColumns = [
-    { title: '案件編號', dataIndex: 'caseNumber', key: 'caseNumber', render: (v: string, r: { id: number }) => (
-      <Button type="link" size="small" onClick={() => router.push(`/cases/${r.id}`)}>{v}</Button>
-    )},
-    { title: '被保人', dataIndex: 'insuredName', key: 'insuredName' },
-    { title: '部門', dataIndex: 'departmentName', key: 'departmentName' },
-    { title: '超時天數', dataIndex: 'daysSince', key: 'daysSince', render: (v: number) => (
-      <Tag color={v >= 30 ? 'red' : 'orange'}>{v} 天</Tag>
-    )},
-    { title: '目前階段', dataIndex: 'currentStage', key: 'currentStage' },
+    {
+      title: '', key: 'sla', width: 36,
+      render: (_: unknown, r: SlaWarning) => {
+        const info = SLA_EMOJI[r.slaStatus]
+        return <Tooltip title={info.text}><span style={{ fontSize: 15 }}>{info.emoji}</span></Tooltip>
+      },
+    },
+    {
+      title: '案件編號', dataIndex: 'caseNumber', key: 'caseNumber',
+      render: (v: string, r: SlaWarning) => (
+        <a onClick={() => router.push(`/cases/${r.id}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
+      ),
+    },
+    { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
+    { title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName' },
+    {
+      title: '委託日', dataIndex: 'commissionDate', key: 'commissionDate', width: 75,
+      render: (v: string) => dayjs(v).format('MM/DD'),
+    },
+    { title: '目前階段', dataIndex: 'currentStage', key: 'currentStage', width: 110 },
+  ]
+
+  const statuteColumns = [
+    {
+      title: '時效狀態', key: 'statute', width: 130,
+      render: (_: unknown, r: StatuteWarning) => r.daysLeft <= 0
+        ? <Tag color="red">已逾時效 {Math.abs(r.daysLeft)} 天</Tag>
+        : <Tag color="volcano">{r.daysLeft} 天後到期</Tag>,
+    },
+    {
+      title: '案件編號', dataIndex: 'caseNumber', key: 'caseNumber',
+      render: (v: string, r: StatuteWarning) => (
+        <a onClick={() => router.push(`/cases/${r.id}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
+      ),
+    },
+    { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
+    { title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName' },
+    {
+      title: '委託日', dataIndex: 'commissionDate', key: 'commissionDate', width: 95,
+      render: (v: string) => dayjs(v).format('YYYY/MM/DD'),
+    },
   ]
 
   return (
     <div style={{ padding: 24 }}>
-      <Title level={4} style={{ marginBottom: 24 }}>
-        儀表板
-        <Text type="secondary" style={{ fontSize: 14, fontWeight: 400, marginLeft: 12 }}>
-          {dayjs().format('YYYY年MM月DD日')}
-        </Text>
-      </Title>
+      <Title level={4} style={{ marginBottom: 24 }}>儀表板</Title>
 
-      {/* KPI 卡片 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={12} sm={6}>
-          <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
+      {/* ── KPI Cards ─────────────────────────────────────────────────── */}
+      <Row gutter={[16, 16]} align="stretch" style={{ marginBottom: 24 }}>
+        {/* Card 1: 待辦 */}
+        <Col xs={24} sm={12} lg={6}>
+          <Card style={{ height: '100%' }}>
             <Statistic
-              title="未決案件數"
-              value={data.kpi.totalCases}
-              prefix={<FileTextOutlined style={{ color: '#1B4F8C' }} />}
-              valueStyle={{ color: '#1B4F8C' }}
+              title={
+                <span>
+                  {kpi.pendingLabel}
+                  <br />
+                  <Text type="secondary" style={{ fontSize: 11 }}>統計範圍：{kpi.caseScope}</Text>
+                </span>
+              }
+              value={kpi.pendingCount}
+              prefix={<ClockCircleOutlined />}
+              valueStyle={{ color: '#faad14', fontSize: 28 }}
             />
           </Card>
         </Col>
-        <Col xs={12} sm={6}>
-          <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
+
+        {/* Card 2: 未決件數 */}
+        <Col xs={24} sm={12} lg={6}>
+          <Card style={{ height: '100%' }}>
             <Statistic
-              title="已決案件數"
-              value={data.kpi.closedCases}
-              prefix={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
-              valueStyle={{ color: '#52c41a' }}
+              title={
+                <span>
+                  未決件數
+                  <br />
+                  <Text type="secondary" style={{ fontSize: 11 }}>統計範圍：{kpi.caseScope}</Text>
+                </span>
+              }
+              value={kpi.openCount}
+              prefix={<InboxOutlined />}
+              valueStyle={{ color: '#1890ff', fontSize: 28 }}
             />
           </Card>
         </Col>
-        <Col xs={12} sm={6}>
-          <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
+
+        {/* Card 3: 年度已決公證費 */}
+        <Col xs={24} sm={12} lg={6}>
+          <Card style={{ height: '100%' }}>
             <Statistic
-              title={session?.role === 'vp' ? '待閱批件' : '待複核件'}
-              value={data.kpi.pendingReviews}
-              prefix={<AlertOutlined style={{ color: data.kpi.pendingReviews > 0 ? '#fa8c16' : '#8c8c8c' }} />}
-              valueStyle={{ color: data.kpi.pendingReviews > 0 ? '#fa8c16' : '#8c8c8c' }}
+              title={
+                <span>
+                  年度已決公證費
+                  <br />
+                  <Text type="secondary" style={{ fontSize: 11 }}>統計範圍：{kpi.feeScope}</Text>
+                </span>
+              }
+              value={kpi.yearlyFee}
+              prefix="$"
+              valueStyle={{ color: '#52c41a', fontSize: 28 }}
+              formatter={v => Number(v).toLocaleString()}
             />
           </Card>
         </Col>
-        <Col xs={12} sm={6}>
-          <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
-            <Statistic
-              title="未讀通知"
-              value={data.kpi.unreadNotifications}
-              prefix={<BellOutlined style={{ color: data.kpi.unreadNotifications > 0 ? '#1B4F8C' : '#8c8c8c' }} />}
-              valueStyle={{ color: '#1B4F8C' }}
-            />
+
+        {/* Card 4: 年度達成率 */}
+        <Col xs={24} sm={12} lg={6}>
+          <Card style={{ height: '100%' }}>
+            <div style={{ marginBottom: 8 }}>
+              <Text style={{ fontSize: 13, color: 'rgba(0,0,0,0.45)' }}>年度達成率</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: 11 }}>統計範圍：{kpi.feeScope}</Text>
+            </div>
+            <Row>
+              <Col span={12} style={{ borderRight: '1px solid #f0f0f0', paddingRight: 8 }}>
+                <AchieveRate value={kpi.feeAchieveRate} label="純公證費" />
+              </Col>
+              <Col span={12} style={{ paddingLeft: 8 }}>
+                <AchieveRate value={kpi.countAchieveRate} label="結案件數" />
+              </Col>
+            </Row>
           </Card>
         </Col>
       </Row>
 
+      {/* ── Main Content ─────────────────────────────────────────────── */}
       <Row gutter={[16, 16]}>
-        {/* 各階段分布圖 */}
-        <Col xs={24} lg={14}>
-          <Card
-            title={<Space><FileTextOutlined />未決案件各階段分布</Space>}
-            bordered={false}
-            style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}
-          >
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={stageChartData} margin={{ top: 8, right: 8, left: -20, bottom: 24 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="stage" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" />
-                <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
-                <Tooltip formatter={(v, _, props) => [v, (props.payload as { fullStage?: string })?.fullStage ?? '']} />
-                <Bar dataKey="count" name="案件數" radius={[3, 3, 0, 0]}>
-                  {stageChartData.map((_, i) => (
-                    <Cell key={i} fill={i < 4 ? '#1B4F8C' : i < 7 ? '#2E86C1' : '#5BA8D4'} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
-        </Col>
+        {/* Left: 待辦事項 + SLA 預警 */}
+        <Col xs={24} xl={14}>
+          {showReviews && data.pendingReviews.length > 0 && (
+            <Card
+              title={<Space><ClockCircleOutlined style={{ color: '#faad14' }} /><span>待辦事項</span></Space>}
+              size="small"
+              style={{ marginBottom: 16 }}
+              extra={<Button type="link" size="small" onClick={() => router.push('/reviews')}>查看全部</Button>}
+            >
+              <Table
+                dataSource={data.pendingReviews}
+                columns={reviewColumns}
+                rowKey="id"
+                size="small"
+                pagination={false}
+                scroll={{ x: 400 }}
+              />
+            </Card>
+          )}
 
-        {/* SLA 預警 */}
-        <Col xs={24} lg={10}>
           <Card
-            title={<Space><WarningOutlined style={{ color: '#fa8c16' }} />SLA 逾期預警（14 天無初報）</Space>}
-            bordered={false}
-            style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}
-            extra={data.slaWarnings.length > 0 && <Tag color="orange">{data.slaWarnings.length} 件</Tag>}
+            title={<Space><WarningOutlined style={{ color: '#ff4d4f' }} /><span>SLA 預警</span></Space>}
+            size="small"
+            extra={<Button type="link" size="small" onClick={() => router.push('/cases')}>查看全部</Button>}
           >
             {data.slaWarnings.length === 0 ? (
-              <div style={{ textAlign: 'center', color: '#8c8c8c', padding: '40px 0' }}>✅ 目前無逾期案件</div>
+              <Text type="secondary" style={{ display: 'block', padding: '8px 0' }}>目前無 SLA 預警案件 ✅</Text>
             ) : (
               <Table
                 dataSource={data.slaWarnings}
                 columns={slaColumns}
                 rowKey="id"
-                pagination={false}
                 size="small"
-                scroll={{ y: 200 }}
+                pagination={false}
+                scroll={{ x: 400 }}
               />
             )}
           </Card>
         </Col>
 
-        {/* 最近案件 */}
-        <Col xs={24}>
-          <Card
-            title="最近案件"
-            bordered={false}
-            style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}
-            extra={<Button type="link" onClick={() => router.push('/cases')}>查看全部</Button>}
-          >
-            <Table
-              dataSource={data.recentCases}
-              rowKey="id"
-              pagination={false}
+        {/* Right: 兩年時效預警 + 月度趨勢圖 */}
+        <Col xs={24} xl={10}>
+          {data.statuteWarnings.length > 0 && (
+            <Card
+              title={
+                <Space>
+                  <AlertOutlined style={{ color: '#ff4d4f' }} />
+                  <span style={{ color: '#ff4d4f', fontWeight: 600 }}>兩年時效預警</span>
+                  <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>30天內到期或已逾期</Text>
+                </Space>
+              }
               size="small"
-              columns={[
-                { title: '案件編號', dataIndex: 'caseNumber', render: (v: string, r: { id: number }) => (
-                  <Button type="link" size="small" onClick={() => router.push(`/cases/${r.id}`)}>{v}</Button>
-                )},
-                { title: '被保人', dataIndex: 'insuredName' },
-                { title: '狀態', dataIndex: 'status', render: (v: string) => (
-                  <Tag color={v === '已決' ? 'green' : v === '銷案' ? 'default' : 'blue'}>{v}</Tag>
-                )},
-                { title: '目前階段', dataIndex: 'currentStage' },
-                { title: '受任日', dataIndex: 'commissionDate', render: (v: string) => dayjs(v).format('YYYY-MM-DD') },
-              ]}
-            />
+              style={{ marginBottom: 16 }}
+              styles={{ header: { borderBottom: '2px solid #ff4d4f', background: '#fff2f0' } }}
+              extra={<Button type="link" size="small" onClick={() => router.push('/cases')}>查看全部</Button>}
+            >
+              <Table
+                dataSource={data.statuteWarnings}
+                columns={statuteColumns}
+                rowKey="id"
+                size="small"
+                pagination={false}
+                scroll={{ x: 500 }}
+                rowClassName={(r: StatuteWarning) => r.daysLeft <= 0 ? 'statute-expired-row' : ''}
+              />
+            </Card>
+          )}
+
+          <Card
+            title={
+              <span>
+                月度受理 / 結案趨勢
+                <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>統計範圍：{kpi.caseScope}</Text>
+              </span>
+            }
+            size="small"
+          >
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={data.monthlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                <RechartsTooltip />
+                <Legend />
+                <Bar dataKey="新受理" fill="#1B4F8C" />
+                <Bar dataKey="已結案" fill="#52c41a" />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* ── Stage Distribution ───────────────────────────────────────── */}
+      <Row style={{ marginTop: 16 }}>
+        <Col span={24}>
+          <Card
+            size="small"
+            title={
+              <span>
+                各階段案件分布
+                <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>統計範圍：{kpi.caseScope}</Text>
+              </span>
+            }
+          >
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={stageData} margin={{ top: 10, right: 16, left: -10, bottom: 24 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="stage" tick={{ fontSize: 12 }} interval={0} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                <RechartsTooltip />
+                <Bar dataKey="件數" fill="#2E86C1" radius={[3, 3, 0, 0]} maxBarSize={48} />
+              </BarChart>
+            </ResponsiveContainer>
           </Card>
         </Col>
       </Row>
