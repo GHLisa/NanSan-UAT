@@ -1,127 +1,213 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
-import {
-  Card, Table, Typography, Spin, Select, Row, Col, Button,
-} from 'antd'
+import { useEffect, useState, useCallback, useMemo } from 'react'
+import { Card, Typography, Select, Table, Row, Col, Spin } from 'antd'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 
-const { Title } = Typography
-const { Option } = Select
+const { Title, Text } = Typography
 
-interface OpenFeeItem {
-  employeeId: number
-  employeeName: string
-  openCaseCount: number
-  estimatedFeeTotal: number
-}
+const fmtFee = (v: number) => v > 0 ? `$${v.toLocaleString()}` : '—'
+const fmtN   = (v: number) => v > 0 ? v : '—'
 
-interface MetaData {
-  departments: { id: number; name: string }[]
+interface Employee { id: number; name: string }
+interface Department { id: number; name: string }
+
+interface ReportData {
+  rows: Record<string, number | string>[]
+  employees: Employee[]
+  totals: Record<string, number>
+  departments: Department[]
+  deptName: string
 }
 
 export default function OpenFeeReportPage() {
   const { session } = useAuth()
-  const [items, setItems] = useState<OpenFeeItem[]>([])
-  const [loading, setLoading] = useState(false)
-  const [meta, setMeta] = useState<MetaData>({ departments: [] })
-  const [deptId, setDeptId] = useState('')
+  const role = session?.role ?? ''
+  const isWide = ['vp', 'sysadmin', 'admin_staff'].includes(role)
+  const defaultDeptId = session?.departmentId ?? null
 
-  const isVpOrAdmin = session && ['vp', 'sysadmin'].includes(session.role)
+  const [filterDeptId, setFilterDeptId] = useState<number | null>(isWide ? null : defaultDeptId)
+  const [data, setData] = useState<ReportData | null>(null)
+  const [loading, setLoading] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
-    const params = new URLSearchParams({ status: '未決' })
-    if (deptId) params.set('deptId', deptId)
-    // Fetch all open cases and aggregate by employee
-    const res = await api.get<{
-      id: number;
-      estimatedFee: number | null;
-      handlers: { id: number; name: string }[];
-    }[]>(`/api/cases?${params.toString()}&pageSize=500`)
-
-    if (res.success && res.data) {
-      const empMap: Record<number, OpenFeeItem> = {}
-      for (const c of res.data) {
-        for (const h of c.handlers) {
-          if (!empMap[h.id]) {
-            empMap[h.id] = { employeeId: h.id, employeeName: h.name, openCaseCount: 0, estimatedFeeTotal: 0 }
-          }
-          empMap[h.id].openCaseCount += 1
-          empMap[h.id].estimatedFeeTotal += c.estimatedFee ?? 0
-        }
-      }
-      setItems(Object.values(empMap).sort((a, b) => b.estimatedFeeTotal - a.estimatedFeeTotal))
-    }
+    const params = new URLSearchParams()
+    if (filterDeptId) params.set('deptId', String(filterDeptId))
+    const res = await api.get<ReportData>(`/api/reports/open-fee?${params.toString()}`)
+    if (res.success && res.data) setData(res.data)
     setLoading(false)
-  }, [deptId])
-
-  useEffect(() => {
-    api.get<MetaData>('/api/meta').then((res) => {
-      if (res.success && res.data) setMeta(res.data)
-    })
-  }, [])
+  }, [filterDeptId])
 
   useEffect(() => { loadData() }, [loadData])
 
-  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}><Spin /></div>
+  const { rows = [], employees = [], totals = {}, deptName = '' } = data ?? {}
 
-  const columns = [
-    { title: '人員', dataIndex: 'employeeName', key: 'name' },
-    { title: '未決件數', dataIndex: 'openCaseCount', key: 'count', align: 'right' as const },
+  // ── 兩層 header 欄位定義 ────────────────────────────────────────────────
+  const columns = useMemo(() => [
     {
-      title: '預估公證費合計',
-      dataIndex: 'estimatedFeeTotal',
-      key: 'fee',
-      align: 'right' as const,
-      render: (v: number) => v ? v.toLocaleString() : '-',
+      title: '年度',
+      dataIndex: 'year',
+      key: 'year',
+      width: 80,
+      fixed: 'left' as const,
     },
-  ]
+    ...employees.map(emp => ({
+      title: emp.name,
+      children: [
+        {
+          title: '未決件數',
+          dataIndex: `cnt_${emp.id}`,
+          key: `cnt_${emp.id}`,
+          width: 76,
+          align: 'center' as const,
+          render: (v: number) => fmtN(v),
+        },
+        {
+          title: '預估公證費',
+          dataIndex: `fee_${emp.id}`,
+          key: `fee_${emp.id}`,
+          width: 120,
+          align: 'right' as const,
+          render: (v: number) => fmtFee(v),
+        },
+      ],
+    })),
+    ...(role !== 'handler' ? [{
+      title: '合計',
+      children: [
+        { title: '未決件數', dataIndex: 'rowCnt', key: 'rowCnt', width: 76, align: 'center' as const, render: (v: number) => fmtN(v) },
+        { title: '預估公證費', dataIndex: 'rowFee', key: 'rowFee', width: 120, align: 'right' as const, render: (v: number) => fmtFee(v) },
+      ],
+    }] : []),
+  ], [employees, role])
+
+  // ── 合計 + 60% 兩列 summary ─────────────────────────────────────────────
+  const summaryRows = useMemo(() => {
+    if (!employees.length || !Object.keys(totals).length) return null
+
+    const grandIdx = 1 + employees.length * 2
+    const grandFee60 = Math.round((totals.grandFee ?? 0) * 0.6)
+
+    return (
+      <Table.Summary fixed>
+        {/* 合計 row */}
+        <Table.Summary.Row style={{ background: '#fafafa' }}>
+          <Table.Summary.Cell index={0} align="left">
+            <Text strong>合計</Text>
+          </Table.Summary.Cell>
+          {employees.flatMap((emp, i) => {
+            const base = 1 + i * 2
+            return [
+              <Table.Summary.Cell key={`cnt_${emp.id}`} index={base} align="center">
+                <Text strong>{fmtN(totals[`cnt_${emp.id}`] ?? 0)}</Text>
+              </Table.Summary.Cell>,
+              <Table.Summary.Cell key={`fee_${emp.id}`} index={base + 1} align="right">
+                <Text strong>{fmtFee(totals[`fee_${emp.id}`] ?? 0)}</Text>
+              </Table.Summary.Cell>,
+            ]
+          })}
+          {role !== 'handler' && <>
+            <Table.Summary.Cell index={grandIdx} align="center">
+              <Text strong>{fmtN(totals.grandCnt ?? 0)}</Text>
+            </Table.Summary.Cell>
+            <Table.Summary.Cell index={grandIdx + 1} align="right">
+              <Text strong>{fmtFee(totals.grandFee ?? 0)}</Text>
+            </Table.Summary.Cell>
+          </>}
+        </Table.Summary.Row>
+
+        {/* 預估公證費 60% row */}
+        <Table.Summary.Row style={{ background: '#EBF4FC' }}>
+          <Table.Summary.Cell index={0} align="left">
+            <Text strong style={{ color: '#1B4F8C' }}>預估公證費 60%</Text>
+          </Table.Summary.Cell>
+          {employees.flatMap((emp, i) => {
+            const base = 1 + i * 2
+            const fee60 = Math.round((totals[`fee_${emp.id}`] ?? 0) * 0.6)
+            return [
+              <Table.Summary.Cell key={`cnt60_${emp.id}`} index={base} align="center">
+                <Text type="secondary">—</Text>
+              </Table.Summary.Cell>,
+              <Table.Summary.Cell key={`fee60_${emp.id}`} index={base + 1} align="right">
+                <Text strong style={{ color: '#1B4F8C' }}>{fmtFee(fee60)}</Text>
+              </Table.Summary.Cell>,
+            ]
+          })}
+          {role !== 'handler' && <>
+            <Table.Summary.Cell index={grandIdx} align="center">
+              <Text type="secondary">—</Text>
+            </Table.Summary.Cell>
+            <Table.Summary.Cell index={grandIdx + 1} align="right">
+              <Text strong style={{ color: '#1B4F8C' }}>{fmtFee(grandFee60)}</Text>
+            </Table.Summary.Cell>
+          </>}
+        </Table.Summary.Row>
+      </Table.Summary>
+    )
+  }, [employees, totals, role])
+
+  const cardTitle = filterDeptId && deptName
+    ? `${deptName} — 各員工未決案件統計`
+    : '請選擇部門'
 
   return (
     <div style={{ padding: 24 }}>
-      <Title level={4} style={{ marginBottom: 16 }}>員工未決件數暨預估公證費</Title>
-      {isVpOrAdmin && (
-        <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)', marginBottom: 16 }}>
-          <Row gutter={[12, 8]} align="middle">
-            <Col xs={12} sm={6} md={4}>
-              <Select
-                placeholder="全部部門"
-                style={{ width: '100%' }}
-                value={deptId || undefined}
-                onChange={(v) => setDeptId(v ?? '')}
-                allowClear
-              >
-                {meta.departments.map((d) => <Option key={d.id} value={String(d.id)}>{d.name}</Option>)}
-              </Select>
-            </Col>
-            <Col>
-              <Button type="primary" onClick={loadData} style={{ background: '#1B4F8C' }}>查詢</Button>
-            </Col>
-          </Row>
+      {/* ── Sticky 篩選列 ── */}
+      <div style={{
+        position: 'sticky', top: 64, zIndex: 50,
+        background: '#F5F7FA', paddingTop: 16, paddingBottom: 12,
+        borderBottom: '1px solid #f0f0f0', marginBottom: 16,
+      }}>
+        <Row align="middle" style={{ marginBottom: 4 }}>
+          <Col>
+            <Title level={4} style={{ margin: 0, display: 'inline', marginRight: 16 }}>
+              各員工未決件數&amp;預估公證費
+            </Title>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              訂定下一年度業績目標參考量化數據
+            </Text>
+          </Col>
+        </Row>
+        <div style={{ marginTop: 12 }}>
+          <Card size="small">
+            <Select
+              value={filterDeptId}
+              onChange={isWide ? setFilterDeptId : undefined}
+              options={(data?.departments ?? []).map(d => ({ value: d.id, label: d.name }))}
+              style={{ width: 160 }}
+              placeholder="選擇部門"
+              disabled={!isWide}
+            />
+          </Card>
+        </div>
+      </div>
+
+      {loading && <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>}
+
+      {!loading && (
+        <Card title={cardTitle} size="small">
+          {filterDeptId ? (
+            rows.length > 0 ? (
+              <Table
+                dataSource={rows as Record<string, unknown>[]}
+                columns={columns}
+                rowKey="_year"
+                size="small"
+                bordered
+                pagination={false}
+                scroll={{ x: 'max-content' }}
+                summary={() => summaryRows}
+              />
+            ) : (
+              <Text type="secondary">該部門目前無未決案件。</Text>
+            )
+          ) : (
+            <Text type="secondary">請先選擇部門以顯示統計資料。</Text>
+          )}
         </Card>
       )}
-      <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
-        <Table
-          dataSource={items}
-          columns={columns}
-          rowKey="employeeId"
-          size="small"
-          pagination={false}
-          summary={(pageData) => {
-            const totalCases = pageData.reduce((s, r) => s + r.openCaseCount, 0)
-            const totalFee = pageData.reduce((s, r) => s + r.estimatedFeeTotal, 0)
-            return (
-              <Table.Summary.Row>
-                <Table.Summary.Cell index={0}><strong>合計</strong></Table.Summary.Cell>
-                <Table.Summary.Cell index={1} align="right"><strong>{totalCases}</strong></Table.Summary.Cell>
-                <Table.Summary.Cell index={2} align="right"><strong>{totalFee.toLocaleString()}</strong></Table.Summary.Cell>
-              </Table.Summary.Row>
-            )
-          }}
-        />
-      </Card>
     </div>
   )
 }
