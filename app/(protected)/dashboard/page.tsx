@@ -265,21 +265,25 @@ export default function DashboardPage() {
       <Row gutter={[16, 16]}>
         {/* Left: 待辦事項 + SLA 預警 */}
         <Col xs={24} xl={14}>
-          {showReviews && data.pendingReviews.length > 0 && (
+          {showReviews && (
             <Card
               title={<Space><ClockCircleOutlined style={{ color: '#faad14' }} /><span>待辦事項</span></Space>}
               size="small"
               style={{ marginBottom: 16 }}
               extra={<Button type="link" size="small" onClick={() => router.push('/reviews')}>查看全部</Button>}
             >
-              <Table
-                dataSource={data.pendingReviews}
-                columns={reviewColumns}
-                rowKey="id"
-                size="small"
-                pagination={false}
-                scroll={{ x: 400 }}
-              />
+              {data.pendingReviews.length === 0 ? (
+                <Text type="secondary" style={{ display: 'block', padding: '8px 0' }}>目前無待辦事項 ✅</Text>
+              ) : (
+                <Table
+                  dataSource={data.pendingReviews}
+                  columns={reviewColumns}
+                  rowKey="id"
+                  size="small"
+                  pagination={false}
+                  scroll={{ x: 400 }}
+                />
+              )}
             </Card>
           )}
 
@@ -305,20 +309,22 @@ export default function DashboardPage() {
 
         {/* Right: 兩年時效預警 + 月度趨勢圖 */}
         <Col xs={24} xl={10}>
-          {data.statuteWarnings.length > 0 && (
-            <Card
-              title={
-                <Space>
-                  <AlertOutlined style={{ color: '#ff4d4f' }} />
-                  <span style={{ color: '#ff4d4f', fontWeight: 600 }}>兩年時效預警</span>
-                  <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>30天內到期或已逾期</Text>
-                </Space>
-              }
-              size="small"
-              style={{ marginBottom: 16 }}
-              styles={{ header: { borderBottom: '2px solid #ff4d4f', background: '#fff2f0' } }}
-              extra={<Button type="link" size="small" onClick={() => router.push('/cases')}>查看全部</Button>}
-            >
+          <Card
+            title={
+              <Space>
+                <AlertOutlined style={{ color: '#ff4d4f' }} />
+                <span style={{ color: '#ff4d4f', fontWeight: 600 }}>兩年時效預警</span>
+                <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>30天內到期或已逾期</Text>
+              </Space>
+            }
+            size="small"
+            style={{ marginBottom: 16 }}
+            styles={{ header: { borderBottom: '2px solid #ff4d4f', background: '#fff2f0' } }}
+            extra={<Button type="link" size="small" onClick={() => router.push('/cases')}>查看全部</Button>}
+          >
+            {data.statuteWarnings.length === 0 ? (
+              <Text type="secondary" style={{ display: 'block', padding: '8px 0' }}>目前無時效預警案件 ✅</Text>
+            ) : (
               <Table
                 dataSource={data.statuteWarnings}
                 columns={statuteColumns}
@@ -328,8 +334,8 @@ export default function DashboardPage() {
                 scroll={{ x: 500 }}
                 rowClassName={(r: StatuteWarning) => r.daysLeft <= 0 ? 'statute-expired-row' : ''}
               />
-            </Card>
-          )}
+            )}
+          </Card>
 
           <Card
             title={
