@@ -16,25 +16,34 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = req.nextUrl
   const page = parseInt(searchParams.get('page') ?? '1')
-  const pageSize = parseInt(searchParams.get('pageSize') ?? '20')
-  const status = searchParams.get('status')
+  const pageSize = parseInt(searchParams.get('pageSize') ?? '15')
+  const status = searchParams.get('status') ?? '未決'   // 預設只顯示未決
   const keyword = searchParams.get('q')
   const deptId = searchParams.get('deptId')
-  const insuranceCompanyId = searchParams.get('icId')
-  const insuranceType = searchParams.get('type')
+  const stage = searchParams.get('stage')
+  const assigneeId = searchParams.get('assigneeId')
+  const incidentDateFrom = searchParams.get('incidentDateFrom')
+  const incidentDateTo = searchParams.get('incidentDateTo')
 
   const scopeFilter = buildCaseScope(session)
 
   const where: Record<string, unknown> = { ...scopeFilter }
   if (status) where.status = status
   if (deptId) where.departmentId = parseInt(deptId)
-  if (insuranceCompanyId) where.insuranceCompanyId = parseInt(insuranceCompanyId)
-  if (insuranceType) where.insuranceType = insuranceType
+  if (stage) where.currentStage = stage
+  if (assigneeId) where.assignments = { some: { employeeId: parseInt(assigneeId) } }
+  if (incidentDateFrom || incidentDateTo) {
+    where.incidentDate = {
+      ...(incidentDateFrom ? { gte: new Date(incidentDateFrom) } : {}),
+      ...(incidentDateTo ? { lte: new Date(incidentDateTo) } : {}),
+    }
+  }
   if (keyword) {
     where.OR = [
       { caseNumber: { contains: keyword, mode: 'insensitive' } },
       { insuredName: { contains: keyword, mode: 'insensitive' } },
       { policyNumber: { contains: keyword, mode: 'insensitive' } },
+      { insuranceCompany: { name: { contains: keyword, mode: 'insensitive' } } },
     ]
   }
 
@@ -45,7 +54,9 @@ export async function GET(req: NextRequest) {
       include: {
         department: { select: { name: true } },
         insuranceCompany: { select: { name: true } },
+        brokerCompany: { select: { name: true } },
         assignments: { include: { employee: { select: { name: true } } } },
+        reviews: { where: { OR: [{ reviewStatus: '退回' }, { approvalStatus: '待執行副總閱' }, { reviewStatus: '待複核' }] }, select: { reviewStatus: true, approvalStatus: true, documentType: true, reviewRemarks: true } },
       },
       orderBy: { commissionDate: 'desc' },
       skip: (page - 1) * pageSize,
@@ -59,8 +70,13 @@ export async function GET(req: NextRequest) {
     let slaStatus: 'green' | 'yellow' | 'red' = 'green'
     if (c.status === '未決') {
       if (!c.preliminaryReportDate && daysSince >= 30) slaStatus = 'red'
+      else if (daysSince >= 90) slaStatus = 'red'
       else if (!c.preliminaryReportDate && daysSince >= 14) slaStatus = 'yellow'
     }
+    const primaryHandler = c.assignments.find(a => a.role === '主辦') ?? c.assignments[0]
+    const rejectedReviews = c.reviews.filter(r => r.reviewStatus === '退回')
+    const hasPending = c.reviews.some(r => r.reviewStatus === '待複核' || r.approvalStatus === '待執行副總閱')
+
     return {
       id: c.id,
       caseNumber: c.caseNumber,
@@ -68,17 +84,27 @@ export async function GET(req: NextRequest) {
       departmentName: c.department.name,
       insuranceCompanyId: c.insuranceCompanyId,
       insuranceCompanyName: c.insuranceCompany.name,
+      insuranceContact: c.insuranceContact,
+      brokerCompanyName: c.brokerCompany?.name ?? null,
+      policyNumber: c.policyNumber,
       insuredName: c.insuredName,
       insuranceType: c.insuranceType,
       incidentDate: c.incidentDate.toISOString(),
       commissionDate: c.commissionDate.toISOString(),
       status: c.status,
       currentStage: c.currentStage,
+      parkingStatus: c.parkingStatus,
       estimatedAmount: c.estimatedAmount,
       estimatedFee: c.estimatedFee,
       actualFee: c.actualFee,
+      preliminaryReportDate: c.preliminaryReportDate?.toISOString() ?? null,
+      daysSince,
       slaStatus,
+      primaryHandlerName: primaryHandler?.employee.name ?? '—',
       handlers: c.assignments.map((a) => ({ id: a.employeeId, name: a.employee.name, role: a.role })),
+      hasRejectedReview: rejectedReviews.length > 0,
+      rejectedReviews: rejectedReviews.map(r => ({ documentType: r.documentType, reviewRemarks: r.reviewRemarks })),
+      hasPendingReview: hasPending,
     }
   })
 
