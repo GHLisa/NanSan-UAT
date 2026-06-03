@@ -1,0 +1,405 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Region {
+  id          Int          @id @default(autoincrement())
+  name        String
+  code        String       @unique
+  departments Department[]
+
+  @@map("regions")
+}
+
+model Department {
+  id            Int             @id @default(autoincrement())
+  name          String
+  code          String          @unique
+  regionId      Int
+  region        Region          @relation(fields: [regionId], references: [id])
+  employeeRoles EmployeeRole[]
+  cases         Case[]
+  dispatches    DispatchQueue[]
+
+  @@map("departments")
+}
+
+model Employee {
+  id           Int              @id @default(autoincrement())
+  name         String
+  username     String           @unique
+  password     String
+  isActive     Boolean          @default(true)
+  email        String?
+  roles        EmployeeRole[]
+  assignments  CaseAssignment[]
+  progressLogs CaseProgress[]
+  notes        CaseNote[]
+  logs         CaseLog[]
+
+  reviewsSubmitted   CaseReview[] @relation("SubmittedBy")
+  reviewsReviewed    CaseReview[] @relation("ReviewedBy")
+  reviewsApproved    CaseReview[] @relation("ApprovedBy")
+  reviewsMidApproved CaseReview[] @relation("MidApprovedBy")
+
+  dispatchesAssigned DispatchQueue[] @relation("AssignedBy")
+  dispatchesPicked   DispatchQueue[] @relation("PickedBy")
+
+  settlementSplits SettlementSplit[]
+  feeTargets       FeeTarget[]
+  feeTargetsSet    FeeTarget[]      @relation("SetBy")
+  notifications    Notification[]
+
+  @@map("employees")
+}
+
+model EmployeeRole {
+  id           Int         @id @default(autoincrement())
+  employeeId   Int
+  departmentId Int?
+  role         String
+  roleName     String
+  teamGroup    String?
+  isPrimary    Boolean     @default(true)
+  employee     Employee    @relation(fields: [employeeId], references: [id])
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  @@unique([employeeId, departmentId, role, teamGroup])
+  @@map("employee_roles")
+}
+
+model InsuranceCompany {
+  id         Int               @id @default(autoincrement())
+  code       String            @unique
+  name       String
+  cases      Case[]
+  coInsurers CaseCoInsurer[]
+  dispatches DispatchQueue[]
+  feeRates   CompanyFeeRate[]
+  fireRates  CompanyFireRate[]
+
+  @@map("insurance_companies")
+}
+
+model BrokerCompany {
+  id         Int             @id @default(autoincrement())
+  name       String
+  isActive   Boolean         @default(true)
+  cases      Case[]
+  dispatches DispatchQueue[]
+
+  @@map("broker_companies")
+}
+
+model InsuranceType {
+  id          Int     @id @default(autoincrement())
+  name        String  @unique
+  feeCategory String
+  isActive    Boolean @default(true)
+
+  @@map("insurance_types")
+}
+
+model IncidentLocation {
+  id       Int     @id @default(autoincrement())
+  name     String  @unique
+  isActive Boolean @default(true)
+
+  @@map("incident_locations")
+}
+
+model Case {
+  id                    Int       @id @default(autoincrement())
+  caseNumber            String    @unique
+  departmentId          Int
+  insuranceCompanyId    Int
+  brokerCompanyId       Int?
+  insuranceContact      String?
+  policyNumber          String
+  insuredName           String
+  incidentLocation      String
+  incidentDate          DateTime
+  commissionDate        DateTime
+  insuranceType         String
+  incidentCause         String
+  estimatedAmount       Int?
+  deductible            Int?      @default(0)
+  adjustmentAmount      Int?
+  finalAmount           Int?
+  estimatedFee          Int?
+  actualFee             Int?
+  preliminaryReportDate DateTime?
+  finalReportDate       DateTime?
+  closeDate             DateTime?
+  status                String    @default("未決")
+  currentStage          String    @default("進件/建檔")
+  contactFormStatus     String?
+  contactReturnDate     DateTime?
+  nasFolder             String?
+  parkingStatus         String?
+  isSpecialCase         Boolean   @default(false)
+  notes                 String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  dispatchEntryId       Int?      @unique
+
+  department       Department       @relation(fields: [departmentId], references: [id])
+  insuranceCompany InsuranceCompany @relation(fields: [insuranceCompanyId], references: [id])
+  brokerCompany    BrokerCompany?   @relation(fields: [brokerCompanyId], references: [id])
+  coInsurers       CaseCoInsurer[]
+  assignments      CaseAssignment[]
+  progress         CaseProgress[]
+  caseNotes        CaseNote[]
+  logs             CaseLog[]
+  reviews          CaseReview[]
+  settlement       Settlement?
+  dispatchEntry    DispatchQueue?   @relation(fields: [dispatchEntryId], references: [id])
+  notifications    Notification[]
+
+  @@index([departmentId, status])
+  @@index([commissionDate])
+  @@index([insuranceCompanyId])
+  @@map("cases")
+}
+
+model CaseCoInsurer {
+  id           Int               @id @default(autoincrement())
+  caseId       Int
+  companyId    Int?
+  policyNumber String
+  ratio        Float
+  case         Case              @relation(fields: [caseId], references: [id])
+  company      InsuranceCompany? @relation(fields: [companyId], references: [id])
+
+  @@map("case_co_insurers")
+}
+
+model CaseAssignment {
+  id                 Int      @id @default(autoincrement())
+  caseId             Int
+  employeeId         Int
+  role               String
+  contributionRatio  Float
+  travelOtherExpense Int?
+  case               Case     @relation(fields: [caseId], references: [id])
+  employee           Employee @relation(fields: [employeeId], references: [id])
+
+  settlementSplits SettlementSplit[]
+
+  @@index([caseId])
+  @@index([employeeId])
+  @@map("case_assignments")
+}
+
+model CaseProgress {
+  id           Int      @id @default(autoincrement())
+  caseId       Int
+  stage        String
+  progressDate DateTime
+  description  String?
+  createdBy    Int
+  case         Case     @relation(fields: [caseId], references: [id])
+  creator      Employee @relation(fields: [createdBy], references: [id])
+
+  @@index([caseId])
+  @@map("case_progress")
+}
+
+model CaseNote {
+  id        Int      @id @default(autoincrement())
+  caseId    Int
+  createdBy Int
+  noteDate  DateTime
+  content   String
+  case      Case     @relation(fields: [caseId], references: [id])
+  creator   Employee @relation(fields: [createdBy], references: [id])
+
+  @@map("case_notes")
+}
+
+model CaseLog {
+  id         Int      @id @default(autoincrement())
+  caseId     Int
+  employeeId Int
+  changedAt  DateTime @default(now())
+  fieldName  String
+  oldValue   String?
+  newValue   String?
+  logType    String   @default("edit")
+  amount     Int?
+  case       Case     @relation(fields: [caseId], references: [id])
+  employee   Employee @relation(fields: [employeeId], references: [id])
+
+  @@index([caseId])
+  @@map("case_logs")
+}
+
+model CaseReview {
+  id               Int       @id @default(autoincrement())
+  caseId           Int
+  documentType     String
+  checkedDocuments String?
+  submittedBy      Int
+  submittedAt      DateTime  @default(now())
+  submissionNotes  String?
+  reviewerId       Int
+  reviewStatus     String    @default("待複核")
+  reviewRemarks    String?
+  reviewedAt       DateTime?
+
+  requiresVP     Boolean   @default(false)
+  approverId     Int?
+  approvalStatus String?
+  approvalRemarks String?
+  approvedAt     DateTime?
+
+  requiresMidApproval Boolean   @default(false)
+  midApproverId       Int?
+  midApprovalStatus   String?
+  midApprovalRemarks  String?
+  midApprovedAt       DateTime?
+
+  interimTypes  String?
+  interimAmount Int?
+  feeReversed   Boolean @default(false)
+
+  case        Case      @relation(fields: [caseId], references: [id])
+  submitter   Employee  @relation("SubmittedBy", fields: [submittedBy], references: [id])
+  reviewer    Employee  @relation("ReviewedBy", fields: [reviewerId], references: [id])
+  approver    Employee? @relation("ApprovedBy", fields: [approverId], references: [id])
+  midApprover Employee? @relation("MidApprovedBy", fields: [midApproverId], references: [id])
+
+  @@index([caseId])
+  @@index([reviewerId, reviewStatus])
+  @@map("case_reviews")
+}
+
+model DispatchQueue {
+  id                   Int      @id @default(autoincrement())
+  sourceType           String
+  sourceReference      String
+  insuranceCompanyId   Int
+  brokerCompanyId      Int?
+  assignedDepartmentId Int
+  assignmentNotes      String?
+  status               String   @default("待取件")
+  assignedBy           Int
+  pickedBy             Int?
+  createdAt            DateTime @default(now())
+  draftData            String?
+
+  insuranceCompany   InsuranceCompany @relation(fields: [insuranceCompanyId], references: [id])
+  brokerCompany      BrokerCompany?   @relation(fields: [brokerCompanyId], references: [id])
+  assignedDepartment Department       @relation(fields: [assignedDepartmentId], references: [id])
+  assigner           Employee         @relation("AssignedBy", fields: [assignedBy], references: [id])
+  picker             Employee?        @relation("PickedBy", fields: [pickedBy], references: [id])
+  case               Case?
+
+  @@index([assignedDepartmentId, status])
+  @@map("dispatch_queue")
+}
+
+model Settlement {
+  id            Int               @id @default(autoincrement())
+  caseId        Int               @unique
+  reportDate    DateTime
+  baseFee       Int
+  travelExpense Int               @default(0)
+  totalFee      Int
+  remarks       String?
+  case          Case              @relation(fields: [caseId], references: [id])
+  splits        SettlementSplit[]
+
+  @@map("settlements")
+}
+
+model SettlementSplit {
+  id           Int             @id @default(autoincrement())
+  settlementId Int
+  employeeId   Int
+  assignmentId Int?
+  ratio        Float
+  amount       Int
+  settlement   Settlement      @relation(fields: [settlementId], references: [id])
+  employee     Employee        @relation(fields: [employeeId], references: [id])
+  assignment   CaseAssignment? @relation(fields: [assignmentId], references: [id])
+
+  @@map("settlement_splits")
+}
+
+model Notification {
+  id          Int       @id @default(autoincrement())
+  type        String
+  title       String
+  message     String
+  caseId      Int?
+  targetRoles String
+  isRead      Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  readById    Int?
+  case        Case?     @relation(fields: [caseId], references: [id])
+  readBy      Employee? @relation(fields: [readById], references: [id])
+
+  @@map("notifications")
+}
+
+model FeeTarget {
+  id              Int      @id @default(autoincrement())
+  employeeId      Int
+  year            Int
+  targetAmount    Int
+  targetCaseCount Int
+  setBy           Int
+  setAt           DateTime
+  employee        Employee @relation(fields: [employeeId], references: [id])
+  setter          Employee @relation("SetBy", fields: [setBy], references: [id])
+
+  @@unique([employeeId, year])
+  @@map("fee_targets")
+}
+
+model CompanyFeeRate {
+  id                   Int              @id @default(autoincrement())
+  companyCode          String
+  companyName          String
+  insuranceType        String
+  debitNoteType        String
+  minFee               Int              @default(20000)
+  rateBands            String
+  subRate              String?
+  mealExpense          Int              @default(0)
+  accommodationExpense Int              @default(0)
+  photoFee             Int              @default(0)
+  effectiveDate        DateTime
+  insuranceCompany     InsuranceCompany @relation(fields: [companyCode], references: [code])
+
+  @@unique([companyCode, effectiveDate])
+  @@map("company_fee_rates")
+}
+
+model CompanyFireRate {
+  id            Int              @id @default(autoincrement())
+  companyCode   String
+  companyName   String
+  debitNoteType String
+  minFee        Int              @default(20000)
+  rateBands     String
+  remarks       String?
+  effectiveDate DateTime
+  insuranceCompany InsuranceCompany @relation(fields: [companyCode], references: [code])
+
+  @@unique([companyCode, effectiveDate])
+  @@map("company_fire_rates")
+}
+
+model CaseNumberSeq {
+  deptCode String @id
+  nextSeq  Int    @default(1)
+
+  @@map("case_number_seq")
+}
