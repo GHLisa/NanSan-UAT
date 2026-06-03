@@ -1,163 +1,298 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  Card, Table, Button, Select, Typography, Row, Col, Tag, Space,
+  Table, Card, Row, Col, Typography, Tag, Select, Button, Statistic, Input, DatePicker,
 } from 'antd'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
+import type { Dayjs } from 'dayjs'
 
 const { Title } = Typography
-const { Option } = Select
 
-interface SettlementItem {
+const YEAR_OPTIONS = [
+  { value: '', label: '全部年份' },
+  { value: '2024', label: '2024 年' },
+  { value: '2025', label: '2025 年' },
+  { value: '2026', label: '2026 年' },
+]
+const PERIOD_OPTIONS = [
+  { value: '', label: '全年' },
+  { value: 'Q1', label: 'Q1（1~3月）' },
+  { value: 'Q2', label: 'Q2（4~6月）' },
+  { value: 'Q3', label: 'Q3（7~9月）' },
+  { value: 'Q4', label: 'Q4（10~12月）' },
+]
+const STATUS_OPTIONS = [
+  { value: 'all', label: '全部狀態' },
+  { value: '未決', label: '未決' },
+  { value: '已決', label: '已決' },
+  { value: '銷案', label: '銷案' },
+]
+
+interface CaseItem {
   id: number
-  caseId: number
   caseNumber: string
-  insuredName: string
-  insuranceType: string
-  insuranceCompanyName: string
   departmentName: string
-  reportDate: string
-  baseFee: number
-  travelExpense: number
-  totalFee: number
-  remarks: string | null
-  handlers: { name: string; role: string }[]
+  insuranceCompanyName: string
+  insuranceContact: string | null
+  brokerCompanyName: string | null
+  policyNumber: string
+  insuredName: string
+  incidentDate: string
+  commissionDate: string
+  closeDate: string | null
+  status: string
+  currentStage: string
+  actualFee: number | null
+  finalAmount: number | null
+  travelOtherExpenseTotal: number
+  primaryHandlerName: string
 }
 
-interface MetaData {
-  departments: { id: number; name: string }[]
-}
-
-export default function SettlementsPage() {
+export default function CaseQueryPage() {
   const router = useRouter()
-  const { session } = useAuth()
-  const [settlements, setSettlements] = useState<SettlementItem[]>([])
+  useAuth()
+  const filterBarRef = useRef<HTMLDivElement>(null)
+  const [offsetHeader, setOffsetHeader] = useState(185)
+
+  const [cases, setCases] = useState<CaseItem[]>([])
   const [loading, setLoading] = useState(false)
-  const [meta, setMeta] = useState<MetaData>({ departments: [] })
+  const [search, setSearch] = useState('')
+  const [filterStatus, setFilterStatus] = useState<string>('all')
+  const [filterYear, setFilterYear] = useState('')
+  const [filterPeriod, setFilterPeriod] = useState('')
+  const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
+  const [incidentDateFrom, setIncidentDateFrom] = useState('')
+  const [incidentDateTo, setIncidentDateTo] = useState('')
+  const [page, setPage] = useState(1)
 
-  const currentYear = dayjs().year()
-  const years = Array.from({ length: 5 }, (_, i) => currentYear - i)
-
-  const [filters, setFilters] = useState({
-    year: String(currentYear),
-    deptId: '',
-  })
-
-  const isVpOrAdmin = session && ['vp', 'sysadmin'].includes(session.role)
-
-  const loadSettlements = useCallback(async () => {
-    setLoading(true)
-    const params = new URLSearchParams()
-    if (filters.year) params.set('year', filters.year)
-    if (filters.deptId) params.set('deptId', filters.deptId)
-    const res = await api.get<SettlementItem[]>(`/api/settlements?${params.toString()}`)
-    if (res.success && res.data) setSettlements(res.data)
-    setLoading(false)
-  }, [filters])
-
+  // Sticky filter bar height
   useEffect(() => {
-    api.get<MetaData>('/api/meta').then((res) => {
-      if (res.success && res.data) setMeta(res.data)
-    })
+    const el = filterBarRef.current
+    if (!el) return
+    const measure = () => setOffsetHeader(el.offsetHeight + 64)
+    const id = requestAnimationFrame(measure)
+    const obs = new ResizeObserver(measure)
+    obs.observe(el)
+    return () => { cancelAnimationFrame(id); obs.disconnect() }
   }, [])
 
-  useEffect(() => { loadSettlements() }, [loadSettlements])
+  const loadCases = useCallback(async () => {
+    setLoading(true)
+    const params = new URLSearchParams({ status: filterStatus, pageSize: '200' })
+    if (search) params.set('q', search)
+    if (incidentDateFrom) params.set('incidentDateFrom', incidentDateFrom)
+    if (incidentDateTo) params.set('incidentDateTo', incidentDateTo)
+    if (filterYear) params.set('year', filterYear)
+    if (filterYear && filterPeriod) params.set('quarter', filterPeriod)
+    const res = await api.get<CaseItem[]>(`/api/cases?${params.toString()}`)
+    if (res.success && res.data) setCases(res.data)
+    setLoading(false)
+  }, [search, filterStatus, filterYear, filterPeriod, incidentDateFrom, incidentDateTo])
+
+  useEffect(() => { loadCases() }, [loadCases])
+
+  function handleDateChange(dates: [Dayjs | null, Dayjs | null] | null) {
+    if (!dates || !dates[0]) {
+      setDateRange(null)
+      setIncidentDateFrom('')
+      setIncidentDateTo('')
+      return
+    }
+    const [start, end] = dates
+    const effectiveEnd = end && end.isAfter(start!, 'day') ? end : start!
+    setDateRange([start, effectiveEnd])
+    setIncidentDateFrom(start!.format('YYYY-MM-DD'))
+    setIncidentDateTo(effectiveEnd.format('YYYY-MM-DD'))
+  }
+
+  function handleReset() {
+    setSearch('')
+    setFilterStatus('all')
+    setFilterYear('')
+    setFilterPeriod('')
+    setDateRange(null)
+    setIncidentDateFrom('')
+    setIncidentDateTo('')
+    setPage(1)
+  }
+
+  // 統計
+  const summary = useMemo(() => ({
+    count: cases.length,
+    totalFee: cases.reduce((s, c) => s + (c.actualFee ?? 0), 0),
+    totalTravel: cases.reduce((s, c) => s + (c.travelOtherExpenseTotal ?? 0), 0),
+  }), [cases])
 
   const columns = [
     {
-      title: '案件編號',
-      dataIndex: 'caseNumber',
-      key: 'caseNumber',
-      render: (v: string, r: SettlementItem) => (
-        <Button type="link" size="small" onClick={() => router.push(`/cases/${r.caseId}`)}>{v}</Button>
+      title: '公證編號', dataIndex: 'caseNumber', key: 'caseNumber', width: 160, fixed: 'left' as const,
+      render: (v: string, r: CaseItem) => (
+        <a onClick={() => router.push(`/cases/${r.id}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>
+          {v}
+        </a>
       ),
     },
-    { title: '被保人', dataIndex: 'insuredName', key: 'insuredName' },
-    { title: '險種', dataIndex: 'insuranceType', key: 'type' },
-    { title: '保險公司', dataIndex: 'insuranceCompanyName', key: 'ic' },
-    ...(isVpOrAdmin ? [{ title: '部門', dataIndex: 'departmentName', key: 'dept' }] : []),
+    { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName', width: 130, ellipsis: true },
     {
-      title: '結算日',
-      dataIndex: 'reportDate',
-      key: 'reportDate',
-      render: (v: string) => dayjs(v).format('YYYY-MM-DD'),
+      title: '保險公司 (承辦人)', key: 'ic', width: 170, ellipsis: true,
+      render: (_: unknown, r: CaseItem) =>
+        r.insuranceContact ? `${r.insuranceCompanyName} (${r.insuranceContact})` : r.insuranceCompanyName,
     },
     {
-      title: '實際公證費',
-      dataIndex: 'totalFee',
-      key: 'totalFee',
-      align: 'right' as const,
-      render: (v: number) => v.toLocaleString(),
+      title: '保單號碼', dataIndex: 'policyNumber', key: 'policyNumber', width: 140, ellipsis: true,
+      render: (v: string) => v || '—',
+    },
+    { title: '部門', dataIndex: 'departmentName', key: 'dept', width: 110, ellipsis: true },
+    { title: '承辦人', dataIndex: 'primaryHandlerName', key: 'handler', width: 80 },
+    {
+      title: '委託日', dataIndex: 'commissionDate', key: 'commissionDate', width: 100,
+      render: (v: string) => dayjs(v).format('YYYY/MM/DD'),
     },
     {
-      title: '承辦人',
-      key: 'handlers',
-      render: (_: unknown, r: SettlementItem) => (
-        <Space size={4}>
-          {r.handlers.map((h) => (
-            <Tag key={h.name} color={h.role === '主辦' ? 'blue' : 'default'}>{h.name}</Tag>
-          ))}
-        </Space>
+      title: '出險日期', dataIndex: 'incidentDate', key: 'incidentDate', width: 100,
+      render: (v: string) => dayjs(v).format('YYYY/MM/DD'),
+    },
+    {
+      title: '結案日', dataIndex: 'closeDate', key: 'closeDate', width: 100,
+      render: (v: string | null) => v ? dayjs(v).format('YYYY/MM/DD') : '—',
+    },
+    {
+      title: '最終金額', dataIndex: 'finalAmount', key: 'finalAmount', width: 110, align: 'right' as const,
+      render: (v: number | null) => v != null ? `$${v.toLocaleString()}` : '—',
+    },
+    {
+      title: '狀態', dataIndex: 'status', key: 'status', width: 70,
+      render: (v: string) => (
+        <Tag color={v === '已決' ? 'green' : v === '銷案' ? 'default' : 'blue'}>{v}</Tag>
       ),
     },
-    { title: '備註', dataIndex: 'remarks', key: 'remarks', render: (v: string | null) => v ?? '-' },
   ]
-
-  const totalFee = settlements.reduce((s, item) => s + item.totalFee, 0)
 
   return (
     <div style={{ padding: 24 }}>
-      <Title level={4} style={{ marginBottom: 16 }}>已決案查詢</Title>
-
-      <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)', marginBottom: 16 }}>
-        <Row gutter={[12, 8]} align="middle">
-          <Col xs={12} sm={6} md={4}>
-            <Select
-              style={{ width: '100%' }}
-              value={filters.year}
-              onChange={(v) => setFilters((f) => ({ ...f, year: v }))}
-            >
-              {years.map((y) => <Option key={y} value={String(y)}>{y} 年</Option>)}
-            </Select>
-          </Col>
-          {isVpOrAdmin && (
-            <Col xs={12} sm={6} md={4}>
-              <Select
-                placeholder="全部部門"
-                style={{ width: '100%' }}
-                value={filters.deptId || undefined}
-                onChange={(v) => setFilters((f) => ({ ...f, deptId: v ?? '' }))}
-                allowClear
-              >
-                {meta.departments.map((d) => <Option key={d.id} value={String(d.id)}>{d.name}</Option>)}
-              </Select>
-            </Col>
-          )}
-          <Col>
-            <Button type="primary" onClick={loadSettlements} style={{ background: '#1B4F8C' }}>查詢</Button>
-          </Col>
-          <Col flex="auto" style={{ textAlign: 'right' }}>
-            <span style={{ color: '#8c8c8c', marginRight: 8 }}>共 {settlements.length} 件</span>
-            <span style={{ fontWeight: 600, color: '#1B4F8C' }}>公證費合計：{totalFee.toLocaleString()}</span>
-          </Col>
+      {/* ── Sticky 篩選列 ── */}
+      <div
+        ref={filterBarRef}
+        style={{
+          position: 'sticky', top: 64, zIndex: 20,
+          background: '#F5F7FA', paddingBottom: 12, marginBottom: 4,
+          borderBottom: '1px solid #f0f0f0',
+        }}
+      >
+        <Row justify="space-between" align="middle" style={{ marginBottom: 12 }}>
+          <Col><Title level={4} style={{ margin: 0 }}>案件查詢</Title></Col>
         </Row>
-      </Card>
+        <Card size="small">
+          <Row gutter={[8, 8]} align="bottom">
+            <Col flex="280px">
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>
+                可搜尋：公證編號 / 被保險人 / 保險公司 / 保單號碼
+              </div>
+              <Input.Search
+                placeholder="公證編號 / 被保險人 / 保險公司 / 保單號碼"
+                value={search}
+                onSearch={v => { setSearch(v); setPage(1) }}
+                onChange={e => !e.target.value && setSearch('')}
+                allowClear
+              />
+            </Col>
+            <Col>
+              <Select
+                value={filterStatus}
+                onChange={v => { setFilterStatus(v); setPage(1) }}
+                options={STATUS_OPTIONS}
+                style={{ width: 110 }}
+              />
+            </Col>
+            <Col>
+              <DatePicker.RangePicker
+                placeholder={['出險日期起', '出險日期迄']}
+                value={dateRange}
+                onChange={dates => handleDateChange(dates as [Dayjs | null, Dayjs | null] | null)}
+                format="YYYY/MM/DD"
+                style={{ width: 232 }}
+              />
+            </Col>
+            <Col>
+              <Select
+                value={filterYear}
+                onChange={v => { setFilterYear(v); setFilterPeriod(''); setPage(1) }}
+                options={YEAR_OPTIONS}
+                style={{ width: 110 }}
+              />
+            </Col>
+            <Col>
+              <Select
+                value={filterPeriod}
+                onChange={v => { setFilterPeriod(v); setPage(1) }}
+                options={PERIOD_OPTIONS}
+                style={{ width: 130 }}
+                disabled={!filterYear}
+              />
+            </Col>
+            <Col>
+              <Button onClick={handleReset}>重置</Button>
+            </Col>
+          </Row>
+        </Card>
+      </div>
 
-      <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
-        <Table
-          dataSource={settlements}
-          columns={columns}
-          rowKey="id"
-          loading={loading}
-          size="small"
-          scroll={{ x: 1100 }}
-          pagination={{ pageSize: 30, showTotal: (t) => `共 ${t} 筆` }}
-        />
-      </Card>
+      {/* ── 統計卡 ── */}
+      <Row gutter={12} style={{ marginBottom: 12 }}>
+        <Col span={8}>
+          <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
+            <Statistic
+              title="件數"
+              value={summary.count}
+              suffix="件"
+              valueStyle={{ color: '#52c41a', fontSize: 20 }}
+            />
+          </Card>
+        </Col>
+        <Col span={8}>
+          <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
+            <Statistic
+              title="公證費合計"
+              value={summary.totalFee}
+              prefix="$"
+              formatter={v => Number(v).toLocaleString()}
+              valueStyle={{ color: '#1890ff', fontSize: 20 }}
+            />
+          </Card>
+        </Col>
+        <Col span={8}>
+          <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
+            <Statistic
+              title="差旅其他費合計"
+              value={summary.totalTravel}
+              prefix="$"
+              formatter={v => Number(v).toLocaleString()}
+              valueStyle={{ fontSize: 20 }}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      {/* ── 案件清單 ── */}
+      <Table
+        dataSource={cases}
+        columns={columns}
+        rowKey="id"
+        size="small"
+        loading={loading}
+        scroll={{ x: 1300 }}
+        sticky={{ offsetHeader }}
+        pagination={{
+          current: page, pageSize: 15,
+          total: cases.length,
+          onChange: p => setPage(p),
+          showTotal: t => `共 ${t} 筆`,
+        }}
+      />
     </div>
   )
 }

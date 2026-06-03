@@ -17,18 +17,20 @@ export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl
   const page = parseInt(searchParams.get('page') ?? '1')
   const pageSize = parseInt(searchParams.get('pageSize') ?? '15')
-  const status = searchParams.get('status') ?? '未決'   // 預設只顯示未決
+  const status = searchParams.get('status') ?? '未決'   // 預設只顯示未決；'all' = 不篩選
   const keyword = searchParams.get('q')
   const deptId = searchParams.get('deptId')
   const stage = searchParams.get('stage')
   const assigneeId = searchParams.get('assigneeId')
   const incidentDateFrom = searchParams.get('incidentDateFrom')
   const incidentDateTo = searchParams.get('incidentDateTo')
+  const filterYear = searchParams.get('year')       // 依結案日年份
+  const filterQuarter = searchParams.get('quarter') // Q1~Q4
 
   const scopeFilter = buildCaseScope(session)
 
   const where: Record<string, unknown> = { ...scopeFilter }
-  if (status) where.status = status
+  if (status && status !== 'all') where.status = status
   if (deptId) where.departmentId = parseInt(deptId)
   if (stage) where.currentStage = stage
   if (assigneeId) where.assignments = { some: { employeeId: parseInt(assigneeId) } }
@@ -38,6 +40,19 @@ export async function GET(req: NextRequest) {
       ...(incidentDateTo ? { lte: new Date(incidentDateTo) } : {}),
     }
   }
+  // 年份/季度篩選（依結案日）
+  if (filterYear) {
+    const year = parseInt(filterYear)
+    const qMonth: Record<string, [number, number]> = {
+      Q1: [1, 3], Q2: [4, 6], Q3: [7, 9], Q4: [10, 12],
+    }
+    const [m1, m2] = filterQuarter ? qMonth[filterQuarter] ?? [1, 12] : [1, 12]
+    where.closeDate = {
+      gte: new Date(`${year}-${String(m1).padStart(2, '0')}-01`),
+      lte: new Date(`${year}-${String(m2).padStart(2, '0')}-${m2 === 3 || m2 === 6 || m2 === 9 ? 30 : m2 === 12 ? 31 : 30}`),
+    }
+  }
+
   if (keyword) {
     where.OR = [
       { caseNumber: { contains: keyword, mode: 'insensitive' } },
@@ -55,7 +70,7 @@ export async function GET(req: NextRequest) {
         department: { select: { name: true } },
         insuranceCompany: { select: { name: true } },
         brokerCompany: { select: { name: true } },
-        assignments: { include: { employee: { select: { name: true } } } },
+        assignments: { include: { employee: { select: { name: true } } }, select: { employeeId: true, role: true, travelOtherExpense: true, employee: { select: { name: true } } } },
         reviews: { where: { OR: [{ reviewStatus: '退回' }, { approvalStatus: '待執行副總閱' }, { reviewStatus: '待複核' }] }, select: { reviewStatus: true, approvalStatus: true, documentType: true, reviewRemarks: true } },
       },
       orderBy: { commissionDate: 'desc' },
@@ -97,10 +112,13 @@ export async function GET(req: NextRequest) {
       estimatedAmount: c.estimatedAmount,
       estimatedFee: c.estimatedFee,
       actualFee: c.actualFee,
+      finalAmount: c.finalAmount,
+      closeDate: c.closeDate?.toISOString() ?? null,
       preliminaryReportDate: c.preliminaryReportDate?.toISOString() ?? null,
       daysSince,
       slaStatus,
       primaryHandlerName: primaryHandler?.employee.name ?? '—',
+      travelOtherExpenseTotal: c.assignments.reduce((s, a) => s + (a.travelOtherExpense ?? 0), 0),
       handlers: c.assignments.map((a) => ({ id: a.employeeId, name: a.employee.name, role: a.role })),
       hasRejectedReview: rejectedReviews.length > 0,
       rejectedReviews: rejectedReviews.map(r => ({ documentType: r.documentType, reviewRemarks: r.reviewRemarks })),
