@@ -1,18 +1,61 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  Card, List, Button, Typography, Tag, Switch, Space, message, Badge, Empty,
+  Card, Row, Col, Typography, Tag, Button, Space, Badge, List, Tooltip, message,
 } from 'antd'
-import { BellOutlined, CheckOutlined } from '@ant-design/icons'
+import { CheckOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import dayjs from 'dayjs'
-import relativeTime from 'dayjs/plugin/relativeTime'
-
-dayjs.extend(relativeTime)
 
 const { Title, Text } = Typography
+
+const TYPE_COLOR: Record<string, string> = {
+  review:            'blue',
+  review_submitted:  'blue',
+  sla:               'orange',
+  rejected:          'red',
+  review_rejected:   'red',
+  approved:          'green',
+  review_approved:   'green',
+  dispatch:          'purple',
+  case_assigned:     'purple',
+  statute:           'volcano',
+  system:            'default',
+}
+
+const TYPE_LABEL: Record<string, string> = {
+  review:            '待審核',
+  review_submitted:  '待審核',
+  sla:               'SLA 預警',
+  rejected:          '審核退回',
+  review_rejected:   '審核退回',
+  approved:          '審核通過',
+  review_approved:   '審核通過',
+  dispatch:          '派案通知',
+  case_assigned:     '派案通知',
+  statute:           '兩年時效',
+  system:            '系統',
+}
+
+const TYPE_OPTIONS = [
+  { value: '', label: '全部類型' },
+  { value: 'review',   label: '待審核' },
+  { value: 'sla',      label: 'SLA 預警' },
+  { value: 'rejected', label: '審核退回' },
+  { value: 'approved', label: '審核通過' },
+  { value: 'dispatch', label: '派案通知' },
+  { value: 'statute',  label: '兩年時效' },
+]
+
+// type 群組：同一 label 的 types 合併篩選
+const TYPE_GROUP: Record<string, string[]> = {
+  review:   ['review', 'review_submitted'],
+  rejected: ['rejected', 'review_rejected'],
+  approved: ['approved', 'review_approved'],
+  dispatch: ['dispatch', 'case_assigned'],
+}
 
 interface NotificationItem {
   id: number
@@ -25,139 +68,159 @@ interface NotificationItem {
   createdAt: string
 }
 
-const TYPE_COLOR: Record<string, string> = {
-  review: 'blue',
-  sla: 'orange',
-  settlement: 'green',
-  case: 'purple',
-  system: 'default',
-}
-
 export default function NotificationsPage() {
   const router = useRouter()
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [loading, setLoading] = useState(false)
-  const [unreadOnly, setUnreadOnly] = useState(false)
-  const [markingAll, setMarkingAll] = useState(false)
-
-  const unreadCount = notifications.filter((n) => !n.isRead).length
+  const [filterType, setFilterType] = useState('')
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false)
 
   const loadNotifications = useCallback(async () => {
     setLoading(true)
-    const params = new URLSearchParams()
-    if (unreadOnly) params.set('unreadOnly', 'true')
-    const res = await api.get<NotificationItem[]>(`/api/notifications?${params.toString()}`)
+    const res = await api.get<NotificationItem[]>('/api/notifications')
     if (res.success && res.data) setNotifications(res.data)
     setLoading(false)
-  }, [unreadOnly])
+  }, [])
 
   useEffect(() => { loadNotifications() }, [loadNotifications])
 
-  const handleMarkAllRead = async () => {
-    setMarkingAll(true)
+  const unreadCount = useMemo(() => notifications.filter(n => !n.isRead).length, [notifications])
+
+  const visible = useMemo(() => {
+    return notifications
+      .filter(n => {
+        if (filterType) {
+          const group = TYPE_GROUP[filterType] ?? [filterType]
+          if (!group.includes(n.type)) return false
+        }
+        if (showUnreadOnly && n.isRead) return false
+        return true
+      })
+      .sort((a, b) => dayjs(b.createdAt).diff(dayjs(a.createdAt)))
+  }, [notifications, filterType, showUnreadOnly])
+
+  async function markRead(id: number) {
+    const res = await api.patch('/api/notifications', { ids: [id] })
+    if (res.success) {
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, isRead: true } : n))
+    }
+  }
+
+  async function markAllRead() {
     const res = await api.patch('/api/notifications', {})
-    setMarkingAll(false)
     if (res.success) {
       message.success('已全部標為已讀')
-      loadNotifications()
+      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
     } else {
       message.error(res.error ?? '操作失敗')
     }
   }
 
-  const handleMarkOne = async (id: number) => {
-    const res = await api.patch('/api/notifications', { ids: [id] })
-    if (res.success) {
-      setNotifications((prev) => prev.map((n) => n.id === id ? { ...n, isRead: true } : n))
-    }
-  }
-
   return (
     <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Space align="center">
-          <Title level={4} style={{ margin: 0 }}>通知中心</Title>
-          {unreadCount > 0 && (
-            <Badge count={unreadCount} style={{ backgroundColor: '#fa8c16' }} />
-          )}
-        </Space>
-        <Space>
-          <Space>
-            <Text type="secondary">只看未讀</Text>
-            <Switch checked={unreadOnly} onChange={setUnreadOnly} size="small" />
+      {/* ── 標題列 ── */}
+      <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
+        <Col>
+          <Space align="center">
+            <Title level={4} style={{ margin: 0 }}>通知中心</Title>
+            {unreadCount > 0 && <Badge count={unreadCount} />}
           </Space>
-          {unreadCount > 0 && (
-            <Button
-              icon={<CheckOutlined />}
-              loading={markingAll}
-              onClick={handleMarkAllRead}
-            >
-              全部已讀
-            </Button>
-          )}
-        </Space>
-      </div>
+        </Col>
+        <Col>
+          <Button icon={<CheckCircleOutlined />} onClick={markAllRead}>
+            全部標為已讀
+          </Button>
+        </Col>
+      </Row>
 
-      <Card bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
-        {notifications.length === 0 && !loading ? (
-          <Empty description="沒有通知" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-        ) : (
-          <List
-            loading={loading}
-            dataSource={notifications}
-            renderItem={(item) => (
-              <List.Item
-                key={item.id}
-                style={{
-                  background: item.isRead ? 'transparent' : '#EBF4FC',
-                  padding: '12px 16px',
-                  borderRadius: 4,
-                  marginBottom: 4,
-                  cursor: item.caseId ? 'pointer' : 'default',
-                }}
-                onClick={() => {
-                  if (!item.isRead) handleMarkOne(item.id)
-                  if (item.caseId) router.push(`/cases/${item.caseId}`)
-                }}
-                extra={
-                  !item.isRead && (
-                    <Button
-                      type="text" size="small"
-                      onClick={(e) => { e.stopPropagation(); handleMarkOne(item.id) }}
-                    >
-                      標為已讀
-                    </Button>
-                  )
-                }
-              >
-                <List.Item.Meta
-                  avatar={
-                    <div style={{ paddingTop: 4 }}>
-                      <BellOutlined style={{ fontSize: 18, color: item.isRead ? '#8c8c8c' : '#1B4F8C' }} />
-                    </div>
-                  }
-                  title={
-                    <Space>
-                      <Text strong={!item.isRead}>{item.title}</Text>
-                      <Tag color={TYPE_COLOR[item.type] ?? 'default'} style={{ fontSize: 11 }}>{item.type}</Tag>
-                      {item.caseNumber && <Tag color="blue">{item.caseNumber}</Tag>}
-                    </Space>
-                  }
-                  description={
-                    <div>
-                      <Text type="secondary" style={{ fontSize: 13 }}>{item.message}</Text>
-                      <br />
-                      <Text type="secondary" style={{ fontSize: 11 }}>
-                        {dayjs(item.createdAt).fromNow()}（{dayjs(item.createdAt).format('YYYY-MM-DD HH:mm')}）
-                      </Text>
-                    </div>
-                  }
-                />
-              </List.Item>
-            )}
-          />
-        )}
+      {/* ── 篩選列 ── */}
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Space wrap>
+          {TYPE_OPTIONS.map(opt => (
+            <Button
+              key={opt.value}
+              size="small"
+              type={filterType === opt.value ? 'primary' : 'default'}
+              style={filterType === opt.value ? { background: '#1B4F8C', borderColor: '#1B4F8C' } : {}}
+              onClick={() => setFilterType(opt.value)}
+            >
+              {opt.label}
+            </Button>
+          ))}
+          <Button
+            size="small"
+            type={showUnreadOnly ? 'primary' : 'default'}
+            style={showUnreadOnly ? { background: '#faad14', borderColor: '#faad14' } : {}}
+            onClick={() => setShowUnreadOnly(!showUnreadOnly)}
+          >
+            {showUnreadOnly ? '顯示全部' : '僅顯示未讀'}
+          </Button>
+        </Space>
       </Card>
+
+      {/* ── 通知清單 ── */}
+      <List
+        loading={loading}
+        dataSource={visible}
+        locale={{ emptyText: '目前無通知' }}
+        renderItem={n => (
+          <Card
+            key={n.id}
+            size="small"
+            style={{
+              marginBottom: 8,
+              borderLeft: `4px solid ${n.isRead ? '#d9d9d9' : '#1B4F8C'}`,
+              background: n.isRead ? '#fafafa' : '#fff',
+            }}
+          >
+            <Row justify="space-between" align="middle">
+              <Col flex="1">
+                <Space align="center" size={8}>
+                  {!n.isRead && <Badge dot />}
+                  <Tag
+                    color={TYPE_COLOR[n.type] ?? 'default'}
+                    style={{ fontSize: 11 }}
+                  >
+                    {TYPE_LABEL[n.type] ?? n.type}
+                  </Tag>
+                  <Text strong style={{ fontSize: 14, color: n.isRead ? '#666' : '#1a202c' }}>
+                    {n.title}
+                  </Text>
+                </Space>
+                <div style={{ marginTop: 4, fontSize: 13, color: '#666' }}>
+                  {n.message}
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {dayjs(n.createdAt).format('YYYY/MM/DD HH:mm')}
+                </Text>
+              </Col>
+              <Col>
+                <Space>
+                  {n.caseId && (
+                    <Button
+                      size="small"
+                      type="link"
+                      onClick={() => router.push(`/cases/${n.caseId}`)}
+                    >
+                      查看案件
+                    </Button>
+                  )}
+                  {!n.isRead && (
+                    <Tooltip title="標為已讀">
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<CheckOutlined />}
+                        onClick={() => markRead(n.id)}
+                      />
+                    </Tooltip>
+                  )}
+                </Space>
+              </Col>
+            </Row>
+          </Card>
+        )}
+      />
     </div>
   )
 }
