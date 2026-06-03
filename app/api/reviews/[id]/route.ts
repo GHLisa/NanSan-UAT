@@ -24,22 +24,65 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   switch (body.action) {
     case 'approve':
-      updateData = { reviewStatus: '已核准', reviewedAt: now, reviewRemarks: body.remarks ?? null }
+      // 主管複核通過 → 依 requiresMidApproval / requiresVP cascade 到下一關
+      updateData = {
+        reviewStatus: '已核准',
+        reviewedAt: now,
+        reviewerId: empId,
+        reviewRemarks: body.remarks ?? null,
+      }
+      if (review.requiresMidApproval) {
+        updateData.midApprovalStatus = '待副總審核'
+      } else if (review.requiresVP) {
+        updateData.approvalStatus = '待執行副總閱'
+      }
       break
+
     case 'reject':
-      updateData = { reviewStatus: '退回', reviewedAt: now, reviewRemarks: body.remarks ?? null }
+      updateData = {
+        reviewStatus: '退回',
+        reviewedAt: now,
+        reviewerId: empId,
+        reviewRemarks: body.remarks ?? null,
+      }
       break
-    case 'vp_approve':
-      updateData = { approvalStatus: '已核准', approvedAt: now, approverId: empId, approvalRemarks: body.remarks ?? null }
-      break
-    case 'vp_reject':
-      updateData = { approvalStatus: '退回', approvedAt: now, approverId: empId, approvalRemarks: body.remarks ?? null }
-      break
+
     case 'mid_approve':
-      updateData = { midApprovalStatus: '已核准', midApprovedAt: now, midApproverId: empId, midApprovalRemarks: body.remarks ?? null }
+      // 中間副總審核通過 → cascade 到執行副總閱
+      updateData = {
+        midApprovalStatus: '已核准',
+        midApprovedAt: now,
+        midApproverId: empId,
+        midApprovalRemarks: body.remarks ?? null,
+        approvalStatus: '待執行副總閱',
+      }
       break
+
     case 'mid_reject':
-      updateData = { midApprovalStatus: '退回', midApprovedAt: now, midApproverId: empId, midApprovalRemarks: body.remarks ?? null }
+      updateData = {
+        midApprovalStatus: '退回',
+        midApprovedAt: now,
+        midApproverId: empId,
+        midApprovalRemarks: body.remarks ?? null,
+      }
+      break
+
+    case 'vp_approve':
+      updateData = {
+        approvalStatus: '已核准',
+        approvedAt: now,
+        approverId: empId,
+        approvalRemarks: body.remarks ?? null,
+      }
+      break
+
+    case 'vp_reject':
+      updateData = {
+        approvalStatus: '退回',
+        approvedAt: now,
+        approverId: empId,
+        approvalRemarks: body.remarks ?? null,
+      }
       break
   }
 
