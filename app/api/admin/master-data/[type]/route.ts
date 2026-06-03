@@ -37,6 +37,18 @@ export async function GET(_req: NextRequest, { params }: { params: { type: strin
   const info = getModelAndFields(type)
   if (!info) return NextResponse.json({ success: false, error: '無效的資料類型' }, { status: 400 })
 
+  // departments: include region name
+  if (type === 'departments') {
+    const depts = await prisma.department.findMany({
+      include: { region: { select: { name: true } } },
+      orderBy: { id: 'asc' },
+    })
+    return NextResponse.json({
+      success: true,
+      data: depts.map(d => ({ id: d.id, code: d.code, name: d.name, regionId: d.regionId, regionName: d.region.name })),
+    })
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data = await (prisma[info.model] as any).findMany({ orderBy: { id: 'asc' } })
 
