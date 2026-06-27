@@ -11,6 +11,27 @@ const TEAM_GROUP_ROLES = ['handler', 'team_lead']
 
 interface RoleInput { role: string; departmentId: number | null; teamGroup: string | null }
 
+// FR-29/75 角色驗證：
+//  (b) handler/team_lead 必填 teamGroup
+//  (a) 角色+部門+組別組合不可重複
+function validateRoles(primaryRole: RoleInput | undefined, additionalRoles: RoleInput[]): string | null {
+  const all: RoleInput[] = []
+  if (primaryRole?.role) all.push(primaryRole)
+  for (const ar of additionalRoles) if (ar.role) all.push(ar)
+
+  const seen = new Set<string>()
+  for (const r of all) {
+    const tg = TEAM_GROUP_ROLES.includes(r.role) ? (r.teamGroup ?? null) : null
+    if (TEAM_GROUP_ROLES.includes(r.role) && !tg) {
+      return '承辦人與組長需指定組別'
+    }
+    const key = `${r.role}|${r.departmentId ?? null}|${tg}`
+    if (seen.has(key)) return '角色／部門／組別組合重複'
+    seen.add(key)
+  }
+  return null
+}
+
 // PUT: update employee info + full role replacement
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
   const session = await getSession()
@@ -20,7 +41,17 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   const id = parseInt(params.id)
   const body = await req.json() as {
     name?: string; email?: string | null; isActive?: boolean; password?: string
+    unlock?: boolean
     primaryRole?: RoleInput; additionalRoles?: RoleInput[]
+  }
+
+  // FR-29/75 角色驗證（僅在有提供角色時）
+  if (body.primaryRole) {
+    const roleError = validateRoles(body.primaryRole, body.additionalRoles ?? [])
+    if (roleError) {
+      const status = roleError.includes('重複') ? 409 : 400
+      return NextResponse.json({ success: false, error: roleError }, { status })
+    }
   }
 
   await prisma.$transaction(async (tx) => {
@@ -30,25 +61,28 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     if (body.email !== undefined) updateData.email = body.email
     if (body.isActive !== undefined) updateData.isActive = body.isActive
     if (body.password) updateData.password = await bcrypt.hash(body.password, 10)
+    // FR-01 解鎖：清除登入失敗計數與鎖定時間
+    if (body.unlock) {
+      updateData.loginFailCount = 0
+      updateData.lockedUntil = null
+    }
     if (Object.keys(updateData).length > 0) {
       await tx.employee.update({ where: { id }, data: updateData })
     }
 
-    // Replace roles if provided
+    // Replace roles if provided：整批刪除後重建，確保 isPrimary 僅一筆
     if (body.primaryRole) {
-      // Update primary role
       const pr = body.primaryRole
-      await tx.employeeRole.updateMany({
-        where: { employeeId: id, isPrimary: true },
+      await tx.employeeRole.deleteMany({ where: { employeeId: id } })
+
+      await tx.employeeRole.create({
         data: {
-          role: pr.role, roleName: ROLE_LABELS[pr.role] ?? pr.role,
+          employeeId: id, role: pr.role, roleName: ROLE_LABELS[pr.role] ?? pr.role,
           departmentId: pr.departmentId ?? null,
           teamGroup: TEAM_GROUP_ROLES.includes(pr.role) ? (pr.teamGroup ?? null) : null,
+          isPrimary: true,
         },
       })
-
-      // Delete all additional roles and recreate
-      await tx.employeeRole.deleteMany({ where: { employeeId: id, isPrimary: false } })
 
       for (const ar of body.additionalRoles ?? []) {
         if (!ar.role) continue

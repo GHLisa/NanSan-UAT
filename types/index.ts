@@ -62,7 +62,9 @@ export interface CaseDetail extends CaseListItem {
   insuranceContact: string | null
   deductible: number | null
   adjustmentAmount: number | null
+  salvageValue: number | null
   finalAmount: number | null
+  travelOtherExpense: number | null
   preliminaryReportDate: string | null
   finalReportDate: string | null
   closeDate: string | null
@@ -95,7 +97,6 @@ export interface CaseAssignment {
   employeeName: string
   role: string
   contributionRatio: number
-  travelOtherExpense: number | null
 }
 
 export interface CaseProgress {
@@ -220,8 +221,8 @@ export interface FeeTarget {
   employeeId: number
   employeeName: string
   year: number
-  targetAmount: number
-  targetCaseCount: number
+  targetAmount: number | null
+  targetCaseCount: number | null
   setBy: number
   setByName: string
   setAt: string

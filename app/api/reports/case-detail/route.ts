@@ -57,13 +57,13 @@ export async function GET(req: NextRequest) {
       insuredName: true,
       closeDate: true,
       actualFee: true,
+      travelOtherExpense: true,
       notes: true,
       assignments: {
         select: {
           employeeId: true,
           role: true,
           contributionRatio: true,
-          travelOtherExpense: true,
           employee: { select: { name: true } },
         },
       },
@@ -85,7 +85,7 @@ export async function GET(req: NextRequest) {
     const primary = c.assignments.find(a => a.role === '主辦') ?? c.assignments[0]
     if (!primary) continue
 
-    const travelFee = c.assignments.reduce((s, a) => s + (a.travelOtherExpense ?? 0), 0)
+    const travelFee = c.travelOtherExpense ?? 0
     const actualFee = c.actualFee ?? 0
     const subtotalFee = actualFee + travelFee
 
@@ -149,8 +149,9 @@ export async function GET(req: NextRequest) {
         insuredName: true,
         closeDate: true,
         actualFee: true,
+        travelOtherExpense: true,
         assignments: {
-          select: { employeeId: true, role: true, contributionRatio: true, travelOtherExpense: true, employee: { select: { name: true } } },
+          select: { employeeId: true, role: true, contributionRatio: true, employee: { select: { name: true } } },
         },
       },
     })
@@ -159,7 +160,7 @@ export async function GET(req: NextRequest) {
     for (const c of ytdCases) {
       const primary = c.assignments.find(a => a.role === '主辦') ?? c.assignments[0]
       if (!primary) continue
-      const travelFee = c.assignments.reduce((s, a) => s + (a.travelOtherExpense ?? 0), 0)
+      const travelFee = c.travelOtherExpense ?? 0
       const actualFee = c.actualFee ?? 0
       if (!ytdMap.has(primary.employeeId)) {
         ytdMap.set(primary.employeeId, { empId: primary.employeeId, empName: primary.employee.name, cases: [], totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 } })

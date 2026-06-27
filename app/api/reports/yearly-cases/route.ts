@@ -3,9 +3,14 @@ import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import dayjs from 'dayjs'
 
+const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin']
+
 export async function GET(req: NextRequest) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
+  if (!ALLOWED_ROLES.includes(session.role)) {
+    return NextResponse.json({ success: false, error: '權限不足' }, { status: 403 })
+  }
 
   const { searchParams } = req.nextUrl
   const deptId = searchParams.get('deptId') ? parseInt(searchParams.get('deptId')!) : null

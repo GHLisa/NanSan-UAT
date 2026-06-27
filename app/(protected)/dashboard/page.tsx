@@ -15,9 +15,11 @@ import dayjs from 'dayjs'
 
 const { Title, Text } = Typography
 
+// FR-73 / FSD §5.4：7 個流程節點（移除「中間報告」「請款單填寫」）。
+// 未列節點之案件自然不顯示（對齊 demo 以清單 filter 的用法）。
 const STAGE_ORDER = [
-  '進件/建檔', '初步報告', '理算表', '發函', '中間報告',
-  '理算說明/協商', '正式結案報告', '請款單填寫', '結案',
+  '進件/建檔', '初步報告', '理算表', '發函',
+  '理算說明/協商', '正式結案報告', '結案',
 ]
 
 const SLA_EMOJI: Record<string, { emoji: string; text: string }> = {
@@ -39,7 +41,7 @@ interface KPI {
 interface PendingReview {
   id: number; caseId: number; caseNumber: string; insuredName: string
   handlerName: string; documentType: string; reviewStatus: string
-  approvalStatus: string | null; submittedAt: string
+  approvalStatus: string | null; midApprovalStatus: string | null; submittedAt: string
 }
 
 interface SlaWarning {
@@ -82,12 +84,15 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // 依角色可視範圍（role/部門/組別）為依賴：右上角身分切換後 session 更新即重抓，
+  // 避免停留在 /dashboard 時元件未重新掛載、待辦事項仍顯示舊角色資料。
   useEffect(() => {
+    setLoading(true)
     api.get<DashboardData>('/api/dashboard').then((res) => {
       if (res.success && res.data) setData(res.data)
       setLoading(false)
     })
-  }, [])
+  }, [session?.role, session?.departmentId, session?.teamGroup])
 
   if (loading) {
     return (
@@ -107,14 +112,21 @@ export default function DashboardPage() {
   })
 
   const showReviews = ['handler', 'team_lead', 'dept_manager', 'vp'].includes(session?.role ?? '')
+  // [2026/06/18] - Lisa - Issue #4 審核角色待辦點案件編號導向文件審核明細（?from=reviews）- Start
+  const isReviewer = ['team_lead', 'dept_manager', 'vp'].includes(session?.role ?? '')
+  // [2026/06/18] - Lisa - Issue #4 審核角色待辦點案件編號導向文件審核明細（?from=reviews）- end
+  // [2026/06/24] - Lisa - 兩年時效預警改為比照 SLA 預警：無案件時仍顯示卡片（空狀態），原 FR-83「不渲染」改為中性樣式空卡
+  const hasStatuteWarnings = data.statuteWarnings.length > 0
 
   // ── Table columns ─────────────────────────────────────────────────────
   const reviewColumns = [
     {
       title: '案件編號', dataIndex: 'caseNumber', key: 'caseNumber',
+      // [2026/06/18] - Lisa - Issue #4 審核角色導向審核模式明細（?from=reviews）；承辦人維持一般明細 - Start
       render: (v: string, r: PendingReview) => (
-        <a onClick={() => router.push(`/cases/${r.caseId}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
+        <a onClick={() => router.push(`/cases/${r.caseId}${isReviewer ? '?from=reviews' : '?from=dashboard'}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
       ),
+      // [2026/06/18] - Lisa - Issue #4 審核角色導向審核模式明細（?from=reviews）；承辦人維持一般明細 - end
     },
     {
       title: '被保險人', dataIndex: 'insuredName', key: 'insuredName',
@@ -126,7 +138,11 @@ export default function DashboardPage() {
     {
       title: '狀態', key: 'status', width: 100,
       render: (_: unknown, r: PendingReview) => {
-        const status = r.approvalStatus === '待執行副總閱' ? '待執行副總閱' : r.reviewStatus
+        // [2026/06/18] - Lisa - Issue #11 任一關卡（主管/加簽審核/執行副總）退回皆顯示「退回」
+        const isRejected = r.reviewStatus === '退回' || r.midApprovalStatus === '退回' || r.approvalStatus === '退回'
+        const status = isRejected ? '退回'
+          : r.approvalStatus === '待執行副總閱' ? '待執行副總閱'
+          : r.reviewStatus
         return <Tag color={status === '退回' ? 'red' : 'blue'}>{status}</Tag>
       },
     },
@@ -147,7 +163,7 @@ export default function DashboardPage() {
     {
       title: '案件編號', dataIndex: 'caseNumber', key: 'caseNumber',
       render: (v: string, r: SlaWarning) => (
-        <a onClick={() => router.push(`/cases/${r.id}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
+        <a onClick={() => router.push(`/cases/${r.id}?from=dashboard`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
       ),
     },
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
@@ -169,7 +185,7 @@ export default function DashboardPage() {
     {
       title: '案件編號', dataIndex: 'caseNumber', key: 'caseNumber',
       render: (v: string, r: StatuteWarning) => (
-        <a onClick={() => router.push(`/cases/${r.id}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
+        <a onClick={() => router.push(`/cases/${r.id}?from=dashboard`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
       ),
     },
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
@@ -309,22 +325,21 @@ export default function DashboardPage() {
 
         {/* Right: 兩年時效預警 + 月度趨勢圖 */}
         <Col xs={24} xl={10}>
+          {/* [2026/06/24] - Lisa - 比照 SLA 預警：一律渲染卡片，無案件時顯示空狀態（中性樣式，不掛紅色警示） */}
           <Card
             title={
               <Space>
-                <AlertOutlined style={{ color: '#ff4d4f' }} />
-                <span style={{ color: '#ff4d4f', fontWeight: 600 }}>兩年時效預警</span>
+                <AlertOutlined style={{ color: hasStatuteWarnings ? '#ff4d4f' : '#bfbfbf' }} />
+                <span style={{ color: hasStatuteWarnings ? '#ff4d4f' : undefined, fontWeight: 600 }}>兩年時效預警</span>
                 <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>30天內到期或已逾期</Text>
               </Space>
             }
             size="small"
             style={{ marginBottom: 16 }}
-            styles={{ header: { borderBottom: '2px solid #ff4d4f', background: '#fff2f0' } }}
+            styles={hasStatuteWarnings ? { header: { borderBottom: '2px solid #ff4d4f', background: '#fff2f0' } } : undefined}
             extra={<Button type="link" size="small" onClick={() => router.push('/cases')}>查看全部</Button>}
           >
-            {data.statuteWarnings.length === 0 ? (
-              <Text type="secondary" style={{ display: 'block', padding: '8px 0' }}>目前無時效預警案件 ✅</Text>
-            ) : (
+            {hasStatuteWarnings ? (
               <Table
                 dataSource={data.statuteWarnings}
                 columns={statuteColumns}
@@ -334,6 +349,8 @@ export default function DashboardPage() {
                 scroll={{ x: 500 }}
                 rowClassName={(r: StatuteWarning) => r.daysLeft <= 0 ? 'statute-expired-row' : ''}
               />
+            ) : (
+              <Text type="secondary" style={{ display: 'block', padding: '8px 0' }}>目前無兩年時效預警案件 ✅</Text>
             )}
           </Card>
 

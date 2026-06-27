@@ -1,7 +1,7 @@
 export function getMenuPermissions(role: string): string[] {
   const base = ['dashboard', 'cases', 'settlements', 'notifications', 'admin-fee']
   const perRole: Record<string, string[]> = {
-    handler: [...base, 'dispatch', 'reviews', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report'],
+    handler: [...base, 'dispatch', 'reviews', 'reports', 'case-detail-report'],
     team_lead: [...base, 'dispatch', 'reviews', 'fee-target', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report'],
     dept_manager: [...base, 'dispatch', 'reviews', 'fee-target', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report'],
     vp: [...base, 'dispatch', 'reviews', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report'],

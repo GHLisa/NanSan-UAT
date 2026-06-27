@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import {
   Table, Button, Card, Row, Col, Typography, Tag, Space, Modal, Form,
-  Input, Select, Switch, message, Divider,
+  Input, Select, Switch, message, Divider, Popconfirm,
 } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined, MailOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
@@ -33,7 +33,7 @@ interface RoleItem {
 }
 interface EmployeeItem {
   id: number; name: string; username: string; email: string | null
-  isActive: boolean; roles: RoleItem[]
+  isActive: boolean; lockedUntil: string | null; roles: RoleItem[]
 }
 interface AdditionalRole { tempId: number; role: string | null; departmentId: number | null; teamGroup: string | null }
 
@@ -51,7 +51,7 @@ export default function UsersPage() {
 
   const stickyRef = useRef<HTMLDivElement>(null)
   const [stickyH, setStickyH] = useState(0)
-  useEffect(() => { if (stickyRef.current) setStickyH(stickyRef.current.offsetHeight) })
+  useEffect(() => { if (stickyRef.current) setStickyH(stickyRef.current.offsetHeight) }, [])
 
   const loadEmployees = useCallback(async () => {
     setLoading(true)
@@ -168,6 +168,20 @@ export default function UsersPage() {
     else message.error(res.error ?? '操作失敗')
   }
 
+  async function toggleActive(emp: EmployeeItem) {
+    const next = !emp.isActive
+    const res = await api.put(`/api/admin/users/${emp.id}`, { isActive: next })
+    if (res.success) { message.success(next ? '帳號已啟用' : '帳號已停用'); loadEmployees() }
+    else message.error(res.error ?? '操作失敗')
+  }
+
+  // FR-01 解除登入失敗鎖定
+  async function handleUnlock(emp: EmployeeItem) {
+    const res = await api.put(`/api/admin/users/${emp.id}`, { unlock: true })
+    if (res.success) { message.success('帳號已解鎖'); loadEmployees() }
+    else message.error(res.error ?? '操作失敗')
+  }
+
   const columns = [
     {
       title: 'No.', key: 'no', width: 55, align: 'center' as const,
@@ -194,13 +208,39 @@ export default function UsersPage() {
       ),
     },
     {
-      title: '狀態', dataIndex: 'isActive', key: 'isActive', width: 80,
-      render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? '啟用' : '停用'}</Tag>,
+      title: '狀態', dataIndex: 'isActive', key: 'isActive', width: 110,
+      render: (v: boolean, r: EmployeeItem) => (
+        <Space size={4}>
+          <Tag color={v ? 'green' : 'default'}>{v ? '啟用' : '停用'}</Tag>
+          {r.lockedUntil && <Tag color="red">鎖定中</Tag>}
+        </Space>
+      ),
     },
     {
-      title: '操作', key: 'action', width: 80, fixed: 'right' as const,
+      title: '操作', key: 'action', width: 180, fixed: 'right' as const,
       render: (_: unknown, r: EmployeeItem) => (
-        <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>編輯</Button>
+        <Space size={0}>
+          <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>編輯</Button>
+          <Popconfirm
+            title={r.isActive ? '確認停用此帳號？' : '確認啟用此帳號？'}
+            okText={r.isActive ? '停用' : '啟用'} cancelText="取消"
+            okButtonProps={{ danger: r.isActive }}
+            onConfirm={() => toggleActive(r)}
+          >
+            <Button size="small" type="link" danger={r.isActive}>
+              {r.isActive ? '停用' : '啟用'}
+            </Button>
+          </Popconfirm>
+          {r.lockedUntil && (
+            <Popconfirm
+              title="確認解除此帳號的登入鎖定？"
+              okText="解鎖" cancelText="取消"
+              onConfirm={() => handleUnlock(r)}
+            >
+              <Button size="small" type="link">解鎖</Button>
+            </Popconfirm>
+          )}
+        </Space>
       ),
     },
   ]

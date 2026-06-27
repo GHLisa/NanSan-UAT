@@ -5,6 +5,9 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // （可選）若要讓 migration 走直連、執行期走 pooler，先在本機 .env 與
+  // Vercel 環境變數都設好 DIRECT_URL，再取消下一行註解：
+  // directUrl = env("DIRECT_URL")
 }
 
 model Region {
@@ -30,12 +33,14 @@ model Department {
 }
 
 model Employee {
-  id           Int              @id @default(autoincrement())
-  name         String
-  username     String           @unique
-  password     String
-  isActive     Boolean          @default(true)
-  email        String?
+  id             Int              @id @default(autoincrement())
+  name           String
+  username       String           @unique
+  password       String
+  isActive       Boolean          @default(true)
+  email          String?
+  loginFailCount Int              @default(0)
+  lockedUntil    DateTime?
   roles        EmployeeRole[]
   assignments  CaseAssignment[]
   progressLogs CaseProgress[]
@@ -77,6 +82,7 @@ model InsuranceCompany {
   id         Int               @id @default(autoincrement())
   code       String            @unique
   name       String
+  branch     String?           // 分行（FR-30，選填）
   cases      Case[]
   coInsurers CaseCoInsurer[]
   dispatches DispatchQueue[]
@@ -127,12 +133,14 @@ model Case {
   commissionDate        DateTime
   insuranceType         String
   incidentCause         String
-  estimatedAmount       Int?
-  deductible            Int?      @default(0)
-  adjustmentAmount      Int?
-  finalAmount           Int?
+  estimatedAmount       BigInt?
+  deductible            BigInt?   @default(0)
+  adjustmentAmount      BigInt?
+  salvageValue          BigInt?
+  finalAmount           BigInt?
   estimatedFee          Int?
   actualFee             Int?
+  travelOtherExpense    Int?
   preliminaryReportDate DateTime?
   finalReportDate       DateTime?
   closeDate             DateTime?
@@ -185,7 +193,6 @@ model CaseAssignment {
   employeeId         Int
   role               String
   contributionRatio  Float
-  travelOtherExpense Int?
   case               Case     @relation(fields: [caseId], references: [id])
   employee           Employee @relation(fields: [employeeId], references: [id])
 
@@ -268,6 +275,10 @@ model CaseReview {
   interimAmount Int?
   feeReversed   Boolean @default(false)
 
+  // [2026/06/18] - Lisa - 方案1/2 送審生命週期終結：null=進行中 / 已重送 / 已放棄
+  recordStatus   String?
+  supersededById Int?
+
   case        Case      @relation(fields: [caseId], references: [id])
   submitter   Employee  @relation("SubmittedBy", fields: [submittedBy], references: [id])
   reviewer    Employee  @relation("ReviewedBy", fields: [reviewerId], references: [id])
@@ -339,21 +350,64 @@ model Notification {
   message     String
   caseId      Int?
   targetRoles String
+  // [2026/06/24] - Lisa - 指定收件人（員工層級觸達）。設定後不受角色+案件範圍限制，
+  // 用於精準通知個別審核人（尤其跨部門「加簽審核」高雄工程部主管，case scope 框不到）；
+  // 為 null 時沿用既有 targetRoles+案件範圍廣播。軟參照（不設 FK），僅供查詢過濾。
+  targetEmployeeId Int?
   isRead      Boolean   @default(false)
   createdAt   DateTime  @default(now())
   readById    Int?
   case        Case?     @relation(fields: [caseId], references: [id])
   readBy      Employee? @relation(fields: [readById], references: [id])
 
+  @@index([targetEmployeeId])
   @@map("notifications")
+}
+
+// 發信稽核紀錄（每次 sendMail 嘗試皆寫入一筆，best-effort、不影響寄送）
+// caseId / caseNumber 為去正規化欄位（不設 FK），確保紀錄即使案件變動仍保留當時快照
+model MailLog {
+  id           Int      @id @default(autoincrement())
+  createdAt    DateTime @default(now())
+  category     String   @default("other") // new_assignment / assignment_changed / review_submitted / review_cascade / review_rejected / other
+  subject      String
+  recipients   String                     // 實際或預定收件人，逗號分隔
+  status       String                     // sent（已送出）/ skipped（略過）/ failed（失敗）
+  sentCount    Int      @default(0)
+  skippedCount Int      @default(0)
+  caseId       Int?
+  caseNumber   String?
+  error        String?
+  bodyHtml     String?                    // 信件 HTML 內文快照（供發信紀錄明細檢視；PostgreSQL String 對應 text，無長度上限）
+
+  @@index([createdAt])
+  @@map("mail_logs")
+}
+
+// 登入稽核紀錄（每次登入嘗試皆寫入一筆，best-effort、不影響登入流程）
+// employeeId / username / name 為去正規化欄位（不設 FK），確保紀錄即使帳號變動仍保留當時快照
+model LoginLog {
+  id         Int      @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  employeeId Int?                          // 帳號存在時記錄其 id；帳號不存在則為 null
+  username   String                        // 當時輸入的登入帳號
+  name       String?                       // 員工姓名快照
+  status     String                        // success（成功）/ fail（失敗）/ locked（鎖定中拒絕）
+  reason     String?                       // 失敗 / 拒絕原因（密碼錯誤 / 帳號不存在或已停用 / 帳號鎖定中）
+  ip         String?                       // 來源 IP（取 x-forwarded-for 首段）
+  userAgent  String?                       // 瀏覽器 User-Agent
+
+  @@index([createdAt])
+  @@index([username])
+  @@map("login_logs")
 }
 
 model FeeTarget {
   id              Int      @id @default(autoincrement())
   employeeId      Int
   year            Int
-  targetAmount    Int
-  targetCaseCount Int
+  targetAmount    Int?
+  targetCaseCount Int?
   setBy           Int
   setAt           DateTime
   employee        Employee @relation(fields: [employeeId], references: [id])
@@ -372,9 +426,11 @@ model CompanyFeeRate {
   minFee               Int              @default(20000)
   rateBands            String
   subRate              String?
-  mealExpense          Int              @default(0)
-  accommodationExpense Int              @default(0)
-  photoFee             Int              @default(0)
+  // 費用補貼採 JSON 編碼字串（同 rateBands 模式）：
+  // "0"=不給、"400"=固定金額、{"morning":..}=分時、{"taipei":..}=分地點、"null"=改不給、"\"文字\""=說明（相片費）
+  mealExpense          String           @default("0")
+  accommodationExpense String           @default("0")
+  photoFee             String           @default("0")
   effectiveDate        DateTime
   insuranceCompany     InsuranceCompany @relation(fields: [companyCode], references: [code])
 

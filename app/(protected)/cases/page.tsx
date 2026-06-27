@@ -51,7 +51,8 @@ interface CaseItem {
   primaryHandlerName: string
   handlers: { id: number; name: string; role: string }[]
   hasRejectedReview: boolean
-  rejectedReviews: { documentType: string; reviewRemarks: string | null }[]
+  // [2026/06/18] - Lisa - Issue #9 退件涵蓋全關卡，附關卡別 gate
+  rejectedReviews: { documentType: string; gate: string; reviewRemarks: string | null }[]
   hasPendingReview: boolean
 }
 
@@ -61,12 +62,22 @@ interface MetaData {
 }
 
 function getDefaultFilters(role: string, empId: number, deptId: number | null) {
-  if (role === 'handler' || role === 'admin_staff') {
+  // [2026/06/18] - Lisa - Issue #5 承辦人不限部門（可能於他部門協辦），不帶 deptId 預設 - Start
+  // FR-34：承辦人預設「自己承辦未決」；不限部門以與導覽 badge myCaseCount 一致
+  if (role === 'handler') {
+    return { assigneeId: String(empId), deptId: '' }
+  }
+  // [2026/06/18] - Lisa - Issue #5 承辦人不限部門 - end
+  // FR-34：組長 預設「自己承辦未決」（本部門）
+  if (role === 'team_lead') {
     return { assigneeId: String(empId), deptId: deptId ? String(deptId) : '' }
   }
-  if (role === 'team_lead' || role === 'dept_manager') {
+  // [2026/06/18] - Lisa - 行政人員代為：不預設承辦人；有部門限本部門、無部門全公司
+  // 部門主管 / 行政人員 預設「本部門全部」（行政人員無部門→全公司，deptId 空字串不送）
+  if (role === 'dept_manager' || role === 'admin_staff') {
     return { assigneeId: '', deptId: deptId ? String(deptId) : '' }
   }
+  // 執行副總 / 系統管理員 預設「全公司」
   return { assigneeId: '', deptId: '' }
 }
 
@@ -96,7 +107,9 @@ export default function CasesPage() {
   const [meta, setMeta] = useState<MetaData>({ departments: [], employees: [] })
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
 
-  const isWide = session && ['vp', 'sysadmin'].includes(session.role)
+  // [2026/06/18] - Lisa - 行政人員無部門＝全公司，視為 wide（可選任一部門/承辦人篩選）
+  const isWide = !!session && (['vp', 'sysadmin'].includes(session.role) || (session.role === 'admin_staff' && !session.departmentId))
+  const isHandler = session?.role === 'handler'
   const canCreate = session && ['handler', 'admin_staff'].includes(session.role)
 
   // Sticky filter bar height
@@ -214,8 +227,10 @@ export default function CasesPage() {
     },
     { title: '目前階段', dataIndex: 'currentStage', key: 'stage', width: 110, ellipsis: true },
     {
-      title: '預估金額', dataIndex: 'estimatedAmount', key: 'estimatedAmount', width: 100, align: 'right' as const,
-      render: (v: number | null) => v ? `$${v.toLocaleString()}` : '—',
+      title: '預估金額', dataIndex: 'estimatedAmount', key: 'estimatedAmount', width: 120, align: 'right' as const,
+      render: (v: number | null) => (
+        <span style={{ whiteSpace: 'nowrap' }}>{v ? `$${v.toLocaleString()}` : '—'}</span>
+      ),
     },
     {
       title: '狀態', key: 'status', width: 180,
@@ -228,7 +243,8 @@ export default function CasesPage() {
           {r.hasRejectedReview && (
             <Tooltip title={
               <span style={{ whiteSpace: 'pre-line' }}>
-                {r.rejectedReviews.map(rj => `【${rj.documentType}】${rj.reviewRemarks ?? ''}`).join('\n')}
+                {/* [2026/06/18] - Lisa - Issue #9 標示退回關卡別 */}
+                {r.rejectedReviews.map(rj => `【${rj.documentType}・${rj.gate}退回】${rj.reviewRemarks ?? ''}`).join('\n')}
               </span>
             }>
               <Tag color="orange" icon={<WarningOutlined />} style={{ cursor: 'default' }}>退件</Tag>
@@ -286,6 +302,7 @@ export default function CasesPage() {
                 value={dateRange}
                 onChange={(dates) => handleDateChange(dates as [Dayjs | null, Dayjs | null] | null)}
                 format="YYYY/MM/DD"
+                inputReadOnly={false}
                 style={{ width: 232 }}
               />
             </Col>
@@ -293,20 +310,22 @@ export default function CasesPage() {
               <Button onClick={resetFilters}>重置</Button>
             </Col>
           </Row>
-          {/* 第二列 */}
-          <Row gutter={[8, 8]} align="middle">
-            <Col>
-              <Select
-                value={filters.deptId} onChange={v => setFilters(f => ({ ...f, deptId: v, page: 1 }))}
-                options={deptOptions} style={{ width: 145 }} />
-            </Col>
-            <Col>
-              <Select
-                value={filters.assigneeId} onChange={v => setFilters(f => ({ ...f, assigneeId: v, page: 1 }))}
-                options={assigneeOptions} style={{ width: 135 }}
-                showSearch optionFilterProp="label" />
-            </Col>
-          </Row>
+          {/* 第二列（承辦人角色不顯示） */}
+          {!isHandler && (
+            <Row gutter={[8, 8]} align="middle">
+              <Col>
+                <Select
+                  value={filters.deptId} onChange={v => setFilters(f => ({ ...f, deptId: v, page: 1 }))}
+                  options={deptOptions} style={{ width: 145 }} />
+              </Col>
+              <Col>
+                <Select
+                  value={filters.assigneeId} onChange={v => setFilters(f => ({ ...f, assigneeId: v, page: 1 }))}
+                  options={assigneeOptions} style={{ width: 135 }}
+                  showSearch optionFilterProp="label" />
+              </Col>
+            </Row>
+          )}
         </Card>
       </div>
 

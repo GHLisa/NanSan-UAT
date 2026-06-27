@@ -17,7 +17,7 @@ const FEE_CATEGORY_COLOR: Record<string, string> = {
 
 // ── 保險公司 Tab ──────────────────────────────────────────────────────────
 function InsuranceCompanyTab() {
-  type IC = { id: number; code: string; name: string }
+  type IC = { id: number; code: string; name: string; branch: string | null }
   const [items, setItems] = useState<IC[]>([])
   const [loading, setLoading] = useState(false)
   const [modal, setModal] = useState(false)
@@ -32,10 +32,10 @@ function InsuranceCompanyTab() {
   }, [])
   useEffect(() => { load() }, [load])
 
-  async function handleSubmit(values: { code: string; name: string }) {
+  async function handleSubmit(values: { code: string; name: string; branch?: string }) {
     const res = editTarget
-      ? await api.patch(`/api/admin/master-data/insurance-companies?id=${editTarget.id}`, { name: values.name })
-      : await api.post('/api/admin/master-data/insurance-companies', { code: values.code.toUpperCase(), name: values.name })
+      ? await api.patch(`/api/admin/master-data/insurance-companies?id=${editTarget.id}`, { name: values.name, branch: values.branch ?? '' })
+      : await api.post('/api/admin/master-data/insurance-companies', { code: values.code.toUpperCase(), name: values.name, branch: values.branch ?? '' })
     if (res.success) { message.success(editTarget ? '已更新' : '已新增'); setModal(false); load() }
     else message.error(res.error ?? '操作失敗')
   }
@@ -44,11 +44,12 @@ function InsuranceCompanyTab() {
     { title: 'ID', dataIndex: 'id', key: 'id', width: 50 },
     { title: '代碼', dataIndex: 'code', key: 'code', width: 70 },
     { title: '名稱', dataIndex: 'name', key: 'name' },
+    { title: '分行', dataIndex: 'branch', key: 'branch' },
     {
       title: '操作', key: 'action', width: 70,
       render: (_: unknown, r: IC) => (
         <Button size="small" type="link" icon={<EditOutlined />}
-          onClick={() => { setEditTarget(r); form.setFieldsValue({ code: r.code, name: r.name }); setModal(true) }}>
+          onClick={() => { setEditTarget(r); form.setFieldsValue({ code: r.code, name: r.name, branch: r.branch ?? '' }); setModal(true) }}>
           編輯
         </Button>
       ),
@@ -76,6 +77,9 @@ function InsuranceCompanyTab() {
             <Input disabled={!!editTarget} style={{ width: 100 }} maxLength={4} />
           </Form.Item>
           <Form.Item name="name" label="名稱" rules={[{ required: true, message: '必填' }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="branch" label="分行（選填）">
             <Input />
           </Form.Item>
         </Form>

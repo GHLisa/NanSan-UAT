@@ -29,6 +29,14 @@ const CONTACT_FORM_STATUS = ['待傳', '已回傳', '無']
 const PARKING_STATUS = ['申訴中', '訴訟中', '待請求時效']
 
 interface Assignee { employeeId: number | null; role: string; ratio: number }
+interface DraftPayload {
+  formValues?: Record<string, unknown>
+  assignees?: Assignee[]
+  insuranceType?: string
+  estimatedAmount?: number
+  deductible?: number
+  savedAt?: string
+}
 interface CoInsurer { _key: number; companyId: number | null; policyNumber: string; ratio: number | null }
 
 interface PoolItem {
@@ -57,12 +65,75 @@ interface MetaData {
   employees: { id: number; name: string }[]
 }
 
+// ── 承辦人元件（共用）──────────────────────────────────────────────────
+// [效能] 定義於模組層級：原本宣告在 DispatchListPage 內部，每次 render 都會
+// 產生「新的元件型別」，導致整段承辦人 Card（多個 Select / InputNumber）被
+// unmount→remount，造成 Modal 內輸入卡頓甚至失焦。改吃 employees prop。
+function AssigneeSection({ list, onChange, employees }: {
+  list: Assignee[]
+  onChange: (list: Assignee[]) => void
+  employees: { id: number; name: string }[]
+}) {
+  const total = list.reduce((s, a) => s + (a.ratio || 0), 0)
+  return (
+    <Card
+      title="承辦人設定"
+      size="small"
+      styles={{ header: { background: '#EBF4FC', borderLeft: '4px solid #1B4F8C' } }}
+      extra={
+        <Button size="small" icon={<PlusOutlined />}
+          onClick={() => onChange([...list, { employeeId: null, role: '協辦', ratio: 0 }])}>
+          新增
+        </Button>
+      }
+    >
+      {list.map((a, i) => (
+        <Row key={i} gutter={6} align="middle" style={{ marginBottom: 8 }}>
+          <Col flex="1">
+            <Select style={{ width: '100%' }} placeholder="選擇承辦人"
+              value={a.employeeId}
+              onChange={v => onChange(list.map((x, idx) => idx === i ? { ...x, employeeId: v } : x))}
+              options={employees.map(e => ({ value: e.id, label: e.name }))}
+              showSearch optionFilterProp="label"
+            />
+          </Col>
+          <Col>
+            <Select style={{ width: 72 }} value={a.role}
+              onChange={v => onChange(list.map((x, idx) => idx === i ? { ...x, role: v } : x))}
+              options={[{ value: '主辦', label: '主辦' }, { value: '協辦', label: '協辦' }]}
+            />
+          </Col>
+          <Col>
+            <InputNumber style={{ width: 80 }} min={0} max={100}
+              value={Math.round(a.ratio * 100)}
+              onChange={v => onChange(list.map((x, idx) => idx === i ? { ...x, ratio: (v ?? 0) / 100 } : x))}
+              addonAfter="%" />
+          </Col>
+          {list.length > 1 && (
+            <Col>
+              <MinusCircleOutlined style={{ color: '#ff4d4f', cursor: 'pointer' }}
+                onClick={() => onChange(list.filter((_, idx) => idx !== i))} />
+            </Col>
+          )}
+        </Row>
+      ))}
+      <Text type={Math.abs(total - 1.0) < 0.01 ? 'secondary' : 'danger'} style={{ fontSize: 12 }}>
+        比例合計：{Math.round(total * 100)}%（須為 100%）
+      </Text>
+    </Card>
+  )
+}
+
 export default function DispatchListPage() {
   const { session } = useAuth()
   const [items, setItems] = useState<PoolItem[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [filterDeptId, setFilterDeptId] = useState<number | null>(session?.departmentId ?? null)
+  // FR-05（v3.2）：行政人員比照執行副總/系統管理員，派案池預設不限部門
+  //（行政常跨部門派案，預設鎖本部門會導致指派他部門後看不到該筆）
+  const [filterDeptId, setFilterDeptId] = useState<number | null>(
+    session && ['admin_staff', 'vp', 'sysadmin'].includes(session.role) ? null : (session?.departmentId ?? null),
+  )
   const [meta, setMeta] = useState<MetaData | null>(null)
 
   // 新增派案 modal
@@ -81,7 +152,12 @@ export default function DispatchListPage() {
   const [selectedIcId, setSelectedIcId] = useState<number | null>(null)
   const [commDate, setCommDate] = useState<string | null>(null)
   const [newCoInsurers, setNewCoInsurers] = useState<CoInsurer[]>([])
-  const [feeCalcResult, setFeeCalcResult] = useState<{ fee: number; breakdown: unknown[] } | null>(null)
+  const [feeCalcResult, setFeeCalcResult] = useState<{
+    fee: number
+    bands: { range: string; amount: number; rate: number; fee: number }[]
+    minApplied: boolean
+    feeCategory: string
+  } | null>(null)
 
   // 指派承辦人 modal（case 取件）
   const [assignModalOpen, setAssignModalOpen] = useState(false)
@@ -106,15 +182,22 @@ export default function DispatchListPage() {
       setFeeCalcResult(null)
       return
     }
-    const ic = meta.insuranceCompanies.find(i => i.id === selectedIcId)
     const insType = meta.insuranceTypes.find(t => t.name === insuranceType)
-    if (!ic || !insType) return
-    api.post<{ fee: number; breakdown: unknown[] }>('/api/fee-calc', {
-      estimatedAmount,
-      insuranceType: insType.feeCategory,
-      companyCode: ic.code,
-      commissionDate: commDate,
-    }).then(res => { if (res.success && res.data) setFeeCalcResult(res.data) })
+    if (!insType) return
+    api.post<{
+      fee: number
+      bands: { range: string; amount: number; rate: number; fee: number }[]
+      minApplied: boolean
+      feeCategory: string
+    }>('/api/fee-calc', {
+      amount: estimatedAmount,
+      insuranceCompanyId: selectedIcId,
+      insuranceTypeId: insType.id,
+      commissionDate: commDate ?? undefined,
+    }).then(res => {
+      if (res.success && res.data) setFeeCalcResult(res.data)
+      else setFeeCalcResult(null)
+    })
   }, [estimatedAmount, selectedIcId, insuranceType, commDate, meta])
 
   // 搜尋篩選
@@ -133,49 +216,105 @@ export default function DispatchListPage() {
     })
   }, [items, search, filterDeptId])
 
+  // 預設承辦人：僅當登入者角色為「承辦人(handler)」時才帶入自己為主辦，
+  // 其餘角色（行政/主管/副總等）不預設，需於取件時手動指定承辦人。
+  function defaultAssignees(): Assignee[] {
+    const selfId = session?.role === 'handler' ? parseInt(session.sub) : null
+    return [{ employeeId: selfId, role: '主辦', ratio: 1.0 }]
+  }
+
   // ── Queue 取件：開新增案件 modal ──────────────────────────────────────
   function handleQueuePickup(record: PoolItem) {
     setActiveDispatch(record)
     caseForm.resetFields()
     setNewCoInsurers([])
     setFeeCalcResult(null)
-    setAssignees([{ employeeId: session ? parseInt(session.sub) : null, role: '主辦', ratio: 1.0 }])
-    setEstimatedAmount(0)
-    setDeductible(0)
-    setInsuranceType('營造綜合險')
     setSelectedIcId(record.insuranceCompanyId)
-    caseForm.setFieldsValue({
-      insuranceCompanyId: record.insuranceCompanyId,
-      brokerCompanyId: record.brokerCompanyId ?? null,
-      notes: record.info ?? '',
-      contactFormStatus: '待傳',
-    })
+
+    // FR-79 取件：若有暫存資料則自動還原
+    let draft: DraftPayload | null = null
+    if (record.draftData) {
+      try { draft = JSON.parse(record.draftData) as DraftPayload } catch { draft = null }
+    }
+
+    if (draft) {
+      const fv = draft.formValues ?? {}
+      caseForm.setFieldsValue({
+        ...fv,
+        incidentDate: fv.incidentDate ? dayjs(fv.incidentDate as string) : null,
+        commissionDate: fv.commissionDate ? dayjs(fv.commissionDate as string) : null,
+        contactReturnDate: fv.contactReturnDate ? dayjs(fv.contactReturnDate as string) : null,
+      })
+      setAssignees(draft.assignees ?? defaultAssignees())
+      setEstimatedAmount(draft.estimatedAmount ?? 0)
+      setDeductible(draft.deductible ?? 0)
+      setInsuranceType(draft.insuranceType ?? '營造綜合險')
+      setCommDate((fv.commissionDate as string) ?? null)
+    } else {
+      setAssignees(defaultAssignees())
+      setEstimatedAmount(0)
+      setDeductible(0)
+      setInsuranceType('營造綜合險')
+      setCommDate(null)
+      caseForm.setFieldsValue({
+        insuranceCompanyId: record.insuranceCompanyId,
+        brokerCompanyId: record.brokerCompanyId ?? null,
+        contactFormStatus: '待傳',
+      })
+    }
     setCaseModalOpen(true)
   }
 
+  // FR-79 暫存：不驗證必填，僅寫入 draftData，狀態維持「待取件」
   async function handleDraftSave() {
     if (!activeDispatch) return
     const values = caseForm.getFieldsValue()
-    await api.patch(`/api/dispatch/${activeDispatch.id}`, {
-      action: 'pickup',
-      draftData: JSON.stringify({ formValues: { ...values, incidentDate: values.incidentDate?.format('YYYY-MM-DD'), commissionDate: values.commissionDate?.format('YYYY-MM-DD') }, assignees, insuranceType, estimatedAmount, deductible }),
+    const draftData: DraftPayload = {
+      formValues: {
+        ...values,
+        incidentDate: (values.incidentDate as dayjs.Dayjs)?.format('YYYY-MM-DD') ?? null,
+        commissionDate: (values.commissionDate as dayjs.Dayjs)?.format('YYYY-MM-DD') ?? null,
+        contactReturnDate: (values.contactReturnDate as dayjs.Dayjs)?.format('YYYY-MM-DD') ?? null,
+      },
+      assignees,
+      insuranceType,
+      estimatedAmount,
+      deductible,
+      savedAt: dayjs().format(),
+    }
+    const res = await api.patch(`/api/dispatch/${activeDispatch.id}`, {
+      action: 'draft',
+      draftData: JSON.stringify(draftData),
     })
-    message.success('資料已暫存，案件保留在派案池')
-    setCaseModalOpen(false)
-    setActiveDispatch(null)
-    fetchPool()
+    if (res.success) {
+      message.success('已暫存')
+      setCaseModalOpen(false)
+      setActiveDispatch(null)
+      fetchPool()
+      window.dispatchEvent(new Event('nansan:case-updated'))
+    } else {
+      message.error(res.error ?? '暫存失敗')
+    }
   }
 
   async function handleCaseSubmit(values: Record<string, unknown>) {
+    // 成案前置：須設定主辦承辦人（非承辦人登入時不預設，避免空白送件）
+    const primary = assignees.find(a => a.role === '主辦')
+    if (!primary?.employeeId) {
+      message.error('請先設定主辦承辦人才能成案')
+      return
+    }
     const totalRatio = assignees.reduce((s, a) => s + (a.ratio || 0), 0)
     if (Math.abs(totalRatio - 1.0) > 0.01) {
       message.error('承辦人分工比例合計必須等於 100%')
       return
     }
-    if (!session?.departmentId) { message.error('無法確認部門'); return }
+    // FR-92 承辦部門：採派案記錄 assignedDepartmentId，fallback 登入者部門
+    const targetDeptId = activeDispatch?.assignedDepartmentId ?? session?.departmentId ?? null
+    if (!targetDeptId) { message.error('無法確認部門'); return }
 
     const body = {
-      departmentId: session.departmentId,
+      departmentId: targetDeptId,
       insuranceCompanyId: values.insuranceCompanyId as number,
       brokerCompanyId: (values.brokerCompanyId as number) || null,
       insuranceContact: values.insuranceContact as string || undefined,
@@ -200,6 +339,11 @@ export default function DispatchListPage() {
       dispatchId: activeDispatch?._type === 'queue' ? activeDispatch.id : undefined,
     }
 
+    await submitCase(body)
+  }
+
+  // FR-80：建案送出，遇 DUPLICATE_POLICY 以 Modal.confirm 詢問後帶 confirmDuplicate 重送
+  async function submitCase(body: Record<string, unknown>) {
     const res = await api.post<{ caseNumber: string }>('/api/cases', body)
     if (res.success && res.data) {
       message.success(`案件 ${res.data.caseNumber} 成案成功！`)
@@ -207,20 +351,37 @@ export default function DispatchListPage() {
       setActiveDispatch(null)
       setNewCoInsurers([])
       fetchPool()
-    } else {
-      message.error(res.error ?? '建案失敗')
+      window.dispatchEvent(new Event('nansan:case-updated'))
+      return
     }
+    if ((res as { code?: string }).code === 'DUPLICATE_POLICY') {
+      Modal.confirm({
+        title: '可能重複建檔',
+        content: res.error ?? '已有相同保險公司＋保單號碼的未銷案案件，請確認是否重複建檔',
+        okText: '確認新增',
+        cancelText: '取消',
+        onOk: () => submitCase({ ...body, confirmDuplicate: true }),
+      })
+      return
+    }
+    message.error(res.error ?? '建案失敗')
   }
 
   // ── Case 取件：指派承辦人 ─────────────────────────────────────────────
   function handleCasePickup(record: PoolItem) {
     setActiveCase(record)
-    setCaseAssignees([{ employeeId: session ? parseInt(session.sub) : null, role: '主辦', ratio: 1.0 }])
+    setCaseAssignees(defaultAssignees())
     setAssignModalOpen(true)
   }
 
   async function handleCaseAssign() {
     if (!activeCase) return
+    // 成案前置：須設定主辦承辦人（非承辦人登入時不預設，避免空白送件）
+    const primary = caseAssignees.find(a => a.role === '主辦')
+    if (!primary?.employeeId) {
+      message.error('請先設定主辦承辦人才能成案')
+      return
+    }
     const totalRatio = caseAssignees.reduce((s, a) => s + (a.ratio || 0), 0)
     if (Math.abs(totalRatio - 1.0) > 0.01) {
       message.error('承辦人分工比例合計必須等於 100%')
@@ -236,6 +397,7 @@ export default function DispatchListPage() {
       setAssignModalOpen(false)
       setActiveCase(null)
       fetchPool()
+      window.dispatchEvent(new Event('nansan:case-updated'))
     } else {
       message.error(res.error ?? '指派失敗')
     }
@@ -260,61 +422,6 @@ export default function DispatchListPage() {
     }
   }
 
-  // ── 承辦人元件（共用）──────────────────────────────────────────────────
-  function AssigneeSection({ list, onChange }: {
-    list: Assignee[]
-    onChange: (list: Assignee[]) => void
-  }) {
-    const total = list.reduce((s, a) => s + (a.ratio || 0), 0)
-    return (
-      <Card
-        title="承辦人設定"
-        size="small"
-        styles={{ header: { background: '#EBF4FC', borderLeft: '4px solid #1B4F8C' } }}
-        extra={
-          <Button size="small" icon={<PlusOutlined />}
-            onClick={() => onChange([...list, { employeeId: null, role: '協辦', ratio: 0 }])}>
-            新增
-          </Button>
-        }
-      >
-        {list.map((a, i) => (
-          <Row key={i} gutter={6} align="middle" style={{ marginBottom: 8 }}>
-            <Col flex="1">
-              <Select style={{ width: '100%' }} placeholder="選擇承辦人"
-                value={a.employeeId}
-                onChange={v => onChange(list.map((x, idx) => idx === i ? { ...x, employeeId: v } : x))}
-                options={(meta?.employees ?? []).map(e => ({ value: e.id, label: e.name }))}
-                showSearch optionFilterProp="label"
-              />
-            </Col>
-            <Col>
-              <Select style={{ width: 72 }} value={a.role}
-                onChange={v => onChange(list.map((x, idx) => idx === i ? { ...x, role: v } : x))}
-                options={[{ value: '主辦', label: '主辦' }, { value: '協辦', label: '協辦' }]}
-              />
-            </Col>
-            <Col>
-              <InputNumber style={{ width: 80 }} min={0} max={100}
-                value={Math.round(a.ratio * 100)}
-                onChange={v => onChange(list.map((x, idx) => idx === i ? { ...x, ratio: (v ?? 0) / 100 } : x))}
-                addonAfter="%" />
-            </Col>
-            {list.length > 1 && (
-              <Col>
-                <MinusCircleOutlined style={{ color: '#ff4d4f', cursor: 'pointer' }}
-                  onClick={() => onChange(list.filter((_, idx) => idx !== i))} />
-              </Col>
-            )}
-          </Row>
-        ))}
-        <Text type={Math.abs(total - 1.0) < 0.01 ? 'secondary' : 'danger'} style={{ fontSize: 12 }}>
-          比例合計：{Math.round(total * 100)}%（須為 100%）
-        </Text>
-      </Card>
-    )
-  }
-
   // ── 表格欄位 ──────────────────────────────────────────────────────────
   const columns = [
     {
@@ -326,7 +433,10 @@ export default function DispatchListPage() {
     {
       title: '說明 / 案號', key: 'desc', ellipsis: true,
       render: (_: unknown, r: PoolItem) => r._type === 'queue'
-        ? <Tooltip title={r.desc}><span>{r.desc}</span></Tooltip>
+        ? <Tooltip title={r.desc}>
+            <span>{r.desc}</span>
+            {r.draftData && <Tag color="gold" style={{ marginLeft: 6, fontSize: 11 }}>已暫存</Tag>}
+          </Tooltip>
         : <span style={{ fontWeight: 600 }}>{r.desc}</span>,
     },
     { title: '保險公司', dataIndex: 'insuranceCompanyName', key: 'ic', width: 130 },
@@ -362,6 +472,11 @@ export default function DispatchListPage() {
 
   const estimatedCompensation = Math.max(0, estimatedAmount - deductible)
   const coTotal = newCoInsurers.reduce((s, c) => s + (c.ratio ?? 0), 0)
+
+  // FR-92 承辦部門（唯讀）：派案記錄 assignedDepartmentId 對應名稱，fallback 登入者部門
+  const assignedDeptId = activeDispatch?.assignedDepartmentId ?? session?.departmentId ?? null
+  const assignedDeptName = (meta?.departments ?? []).find(d => d.id === assignedDeptId)?.name
+    ?? session?.departmentName ?? '—'
 
   const deptOptions = [
     { value: null, label: '全部部門' },
@@ -424,12 +539,26 @@ export default function DispatchListPage() {
         width={920}
         styles={{ body: { maxHeight: '75vh', overflowY: 'auto', padding: '16px 24px' } }}
       >
-        {activeDispatch && (
-          <Alert
-            message={`從派案池取件：${activeDispatch.desc}`}
-            type="info" showIcon style={{ marginBottom: 16 }}
-          />
-        )}
+        {activeDispatch && (() => {
+          let draftSavedAt: string | null = null
+          if (activeDispatch.draftData) {
+            try { draftSavedAt = (JSON.parse(activeDispatch.draftData) as DraftPayload).savedAt ?? null } catch { draftSavedAt = null }
+          }
+          const hasDraft = !!activeDispatch.draftData
+          const draftNote = hasDraft
+            ? `此派案已有暫存資料，已自動帶入${draftSavedAt ? `（${dayjs(draftSavedAt).format('MM/DD HH:mm')} 暫存）` : ''}。`
+            : null
+          const assignmentNote = activeDispatch.info ? `交辦事項：${activeDispatch.info}` : null
+          const descLines = [assignmentNote, draftNote].filter(Boolean)
+          return (
+            <Alert
+              message={`從派案池取件：${activeDispatch.desc}`}
+              description={descLines.length ? descLines.join('　') : undefined}
+              type={hasDraft ? 'warning' : 'info'}
+              showIcon style={{ marginBottom: 16 }}
+            />
+          )
+        })()}
         <Form form={caseForm} layout="vertical" size="small" onFinish={handleCaseSubmit}>
           <Row gutter={16}>
             {/* 左欄：基本資訊 */}
@@ -442,6 +571,11 @@ export default function DispatchListPage() {
                       <Select options={(meta?.insuranceCompanies ?? []).map(i => ({ value: i.id, label: i.name }))}
                         placeholder="請選擇"
                         onChange={v => setSelectedIcId(v)} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={12}>
+                    <Form.Item label="承辦部門">
+                      <Input disabled value={assignedDeptName} />
                     </Form.Item>
                   </Col>
                   <Col span={12}>
@@ -514,7 +648,7 @@ export default function DispatchListPage() {
                     </Form.Item>
                   </Col>
                   <Col span={24}>
-                    <Form.Item label="交辦事項" name="notes">
+                    <Form.Item label="備註" name="notes">
                       <Input.TextArea rows={2} placeholder="選填" />
                     </Form.Item>
                   </Col>
@@ -640,15 +774,20 @@ export default function DispatchListPage() {
                   <Card size="small" style={{ background: '#EBF4FC', border: '1px solid #2E86C1', marginTop: 8 }}>
                     <Text strong style={{ color: '#1B4F8C' }}>預估公證費：${feeCalcResult.fee.toLocaleString()}</Text>
                     <Divider style={{ margin: '8px 0' }} />
-                    {(feeCalcResult.breakdown as { tier: number; base: number; rate: number; subtotal: number }[]).map((b, i) => (
+                    {feeCalcResult.bands.map((b, i) => (
                       <Text key={i} type="secondary" style={{ display: 'block', fontSize: 12 }}>
-                        第{b.tier}層：${b.base.toLocaleString()} × {(b.rate * 100).toFixed(1)}% = ${Math.round(b.subtotal).toLocaleString()}
+                        {b.range}：${b.amount.toLocaleString()} × {(b.rate * 100).toFixed(2)}% = ${b.fee.toLocaleString()}
                       </Text>
                     ))}
+                    {feeCalcResult.minApplied && (
+                      <Text type="secondary" style={{ display: 'block', fontSize: 12, color: '#d46b08' }}>
+                        ※ 低於最低公證費門檻，以最低費 $20,000 計
+                      </Text>
+                    )}
                   </Card>
                 )}
               </Card>
-              <AssigneeSection list={assignees} onChange={setAssignees} />
+              <AssigneeSection list={assignees} onChange={setAssignees} employees={meta?.employees ?? []} />
             </Col>
           </Row>
         </Form>
@@ -675,7 +814,7 @@ export default function DispatchListPage() {
                 {dayjs(activeCase.time).format('YYYY/MM/DD')}
               </Descriptions.Item>
             </Descriptions>
-            <AssigneeSection list={caseAssignees} onChange={setCaseAssignees} />
+            <AssigneeSection list={caseAssignees} onChange={setCaseAssignees} employees={meta?.employees ?? []} />
           </>
         )}
       </Modal>

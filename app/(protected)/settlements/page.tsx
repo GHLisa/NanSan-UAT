@@ -130,8 +130,9 @@ export default function CaseQueryPage() {
   const columns = [
     {
       title: '公證編號', dataIndex: 'caseNumber', key: 'caseNumber', width: 160, fixed: 'left' as const,
+      // [2026/06/18] - Lisa - 帶 from=settlements：點入案件明細時左側選單仍 highlight「案件查詢」
       render: (v: string, r: CaseItem) => (
-        <a onClick={() => router.push(`/cases/${r.id}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>
+        <a onClick={() => router.push(`/cases/${r.id}?from=settlements`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>
           {v}
         </a>
       ),

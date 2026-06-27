@@ -12,7 +12,9 @@ export async function GET(req: NextRequest) {
   const mode = searchParams.get('mode')          // 'pool' = 合併模式（待建案+待指派）
   const status = searchParams.get('status')
   const deptId = session.departmentId
-  const canSeeAll = session.role === 'vp' || session.role === 'sysadmin'
+  // FR-05（v3.2）：行政人員比照執行副總/系統管理員不限部門（與 lib/caseScope 對 admin_staff 全公司的處理一致），
+  // 否則行政指派案件至他部門後，pool 因 deptFilter 過濾而看不到該筆
+  const canSeeAll = session.role === 'vp' || session.role === 'sysadmin' || session.role === 'admin_staff'
   const deptFilter = !canSeeAll && deptId ? deptId : undefined
 
   // ── Pool 模式：合併 待取件佇列 + 未決且無承辦人的案件 ──────────────────

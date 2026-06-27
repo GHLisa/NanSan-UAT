@@ -9,7 +9,11 @@
     "lint": "next lint",
     "db:seed": "tsx prisma/seed.ts",
     "db:generate": "prisma generate",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "test:mail": "tsx scripts/test-mail.ts",
+    "test:case-mail": "tsx scripts/test-case-mail.ts",
+    "test:digest": "tsx scripts/test-digest.ts",
+    "encrypt": "tsx scripts/encrypt-secret.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -24,6 +28,7 @@
     "dotenv": "^17.4.2",
     "jose": "^6.2.3",
     "next": "14.2.35",
+    "nodemailer": "^9.0.1",
     "react": "^18",
     "react-dom": "^18",
     "recharts": "^3.8.1",
@@ -32,6 +37,7 @@
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
+    "@types/nodemailer": "^8.0.1",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "eslint": "^8",

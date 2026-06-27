@@ -1,4 +1,11 @@
 {
   "outputDirectory": ".next",
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "regions": ["sin1"],
+  "crons": [
+    {
+      "path": "/api/cron/daily-digest",
+      "schedule": "0 23 * * *"
+    }
+  ]
 }

@@ -49,7 +49,7 @@ function ReviewGate({ r }: { r: ReviewItem }) {
     const midSt = mgrSt !== 'done'                         ? 'waiting'
                 : r.midApprovalStatus === '已核准'          ? 'done'
                 : r.midApprovalStatus === '退回'            ? 'rejected'
-                : r.midApprovalStatus === '待副總審核'       ? 'active'
+                : r.midApprovalStatus === '待加簽審核'       ? 'active'
                 : 'waiting'
     const vpSt = midSt !== 'done'                          ? 'waiting'
                : r.approvalStatus === '已核准'              ? 'done'
@@ -60,7 +60,7 @@ function ReviewGate({ r }: { r: ReviewItem }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'nowrap' }}>
         <GateNode label="主管複核" state={mgrSt} />
         <span style={{ color: '#d1d5db', fontSize: 12 }}>→</span>
-        <GateNode label="副總審核" state={midSt} />
+        <GateNode label="加簽審核" state={midSt} />
         <span style={{ color: '#d1d5db', fontSize: 12 }}>→</span>
         <GateNode label="執行副總閱" state={vpSt} />
       </div>
@@ -138,17 +138,19 @@ export default function ReviewsPage() {
     setLoading(false)
   }, [])
 
+  // 兩個分頁皆載入：非 VP（如加簽審核/承辦人）亦需在「待執行副總閱」追蹤已上送的案件，
+  // 後端 /api/reviews 已依角色 scope 過濾，前端不再限定 VP 才載入
   useEffect(() => {
     loadTab('pending')
-    if (isVP) loadTab('pendingVP')
-  }, [loadTab, isVP])
+    loadTab('pendingVP')
+  }, [loadTab])
 
   // ── Approve ────────────────────────────────────────────────────────────
   async function handleApprove(r: ReviewItem) {
     let action: string
     if (role === 'vp' && r.approvalStatus === '待執行副總閱') {
       action = 'vp_approve'
-    } else if (role === 'dept_manager' && r.midApprovalStatus === '待副總審核' && r.midApproverId === empId) {
+    } else if (role === 'dept_manager' && r.midApprovalStatus === '待加簽審核' && r.midApproverId === empId) {
       action = 'mid_approve'
     } else if (r.reviewStatus === '待複核') {
       action = 'approve'
@@ -159,13 +161,14 @@ export default function ReviewsPage() {
     const res = await api.patch(`/api/reviews/${r.id}`, { action })
     if (res.success) {
       const msgs: Record<string, string> = {
-        approve: r.requiresMidApproval ? '複核通過，已送副總審核' : r.requiresVP ? '複核通過，已送執行副總閱示' : '複核通過，審核完成',
-        mid_approve: '副總審核通過，已送執行副總閱示',
+        approve: r.requiresMidApproval ? '複核通過，已送加簽審核' : r.requiresVP ? '複核通過，已送執行副總閱示' : '複核通過，審核完成',
+        mid_approve: '加簽審核通過，已送執行副總閱示',
         vp_approve: '已核准',
       }
       message.success(msgs[action] ?? '操作成功')
-      loadTab(activeTab === 'pendingVP' ? 'pendingVP' : 'pending')
-      if (isVP) loadTab('pendingVP')
+      loadTab('pending')
+      loadTab('pendingVP')
+      window.dispatchEvent(new Event('nansan:case-updated'))  // FR-38：即時更新左側文件審核 badge
     } else {
       message.error(res.error ?? '操作失敗')
     }
@@ -184,7 +187,7 @@ export default function ReviewsPage() {
     let action: string
     if (role === 'vp' && rejectModal.approvalStatus === '待執行副總閱') {
       action = 'vp_reject'
-    } else if (role === 'dept_manager' && rejectModal.midApprovalStatus === '待副總審核' && rejectModal.midApproverId === empId) {
+    } else if (role === 'dept_manager' && rejectModal.midApprovalStatus === '待加簽審核' && rejectModal.midApproverId === empId) {
       action = 'mid_reject'
     } else {
       action = 'reject'
@@ -196,8 +199,9 @@ export default function ReviewsPage() {
       message.success('已退回')
       setRejectModal(null)
       rejectForm.resetFields()
-      loadTab(activeTab === 'pendingVP' ? 'pendingVP' : 'pending')
-      if (isVP) loadTab('pendingVP')
+      loadTab('pending')
+      loadTab('pendingVP')
+      window.dispatchEvent(new Event('nansan:case-updated'))  // FR-38：即時更新左側文件審核 badge
     } else {
       message.error(res.error ?? '操作失敗')
     }
@@ -208,7 +212,7 @@ export default function ReviewsPage() {
     if (role === 'vp') return r.approvalStatus === '待執行副總閱'
     if (role === 'dept_manager') {
       return (r.reviewStatus === '待複核') ||
-             (r.midApprovalStatus === '待副總審核' && r.midApproverId === empId)
+             (r.midApprovalStatus === '待加簽審核' && r.midApproverId === empId)
     }
     return false
   }
@@ -237,16 +241,16 @@ export default function ReviewsPage() {
 
   const baseColumns = [
     {
-      title: '公證編號', dataIndex: 'caseNumber', key: 'caseNumber', width: 160,
+      title: '公證編號', dataIndex: 'caseNumber', key: 'caseNumber', width: 120,
       render: (v: string, r: ReviewItem) => (
-        <a onClick={() => router.push(`/cases/${r.caseId}`)}
+        <a onClick={() => router.push(`/cases/${r.caseId}?from=reviews`)}
            style={{ color: '#1B4F8C', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
           {v}
         </a>
       ),
     },
-    { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName', width: 150 },
-    { title: '文件類型', dataIndex: 'documentType', key: 'documentType', width: 130 },
+    { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName', width: 140 },
+    { title: '文件類型', dataIndex: 'documentType', key: 'documentType', width: 150 },
     {
       title: '待審文件', key: 'checkedDocuments', width: 180,
       render: (_: unknown, r: ReviewItem) =>
@@ -262,7 +266,7 @@ export default function ReviewsPage() {
       title: '送審人', dataIndex: 'submitterName', key: 'submitter', width: 80,
     },
     {
-      title: '送審時間', dataIndex: 'submittedAt', key: 'submittedAt', width: 100,
+      title: '送審時間', dataIndex: 'submittedAt', key: 'submittedAt', width: 120,
       render: (v: string) => dayjs(v).format('MM/DD HH:mm'),
     },
     ...actionCol,

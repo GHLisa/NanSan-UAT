@@ -11,42 +11,39 @@ import dayjs from 'dayjs'
 
 const { Title, Text } = Typography
 
+// 已移除「SLA 預警」(sla) 與「兩年時效」(statute) 通知類型
+const HIDDEN_TYPES = ['sla', 'statute']
+
 const TYPE_COLOR: Record<string, string> = {
   review:            'blue',
   review_submitted:  'blue',
-  sla:               'orange',
   rejected:          'red',
   review_rejected:   'red',
   approved:          'green',
   review_approved:   'green',
   dispatch:          'purple',
   case_assigned:     'purple',
-  statute:           'volcano',
   system:            'default',
 }
 
 const TYPE_LABEL: Record<string, string> = {
   review:            '待審核',
   review_submitted:  '待審核',
-  sla:               'SLA 預警',
   rejected:          '審核退回',
   review_rejected:   '審核退回',
   approved:          '審核通過',
   review_approved:   '審核通過',
   dispatch:          '派案通知',
   case_assigned:     '派案通知',
-  statute:           '兩年時效',
   system:            '系統',
 }
 
 const TYPE_OPTIONS = [
   { value: '', label: '全部類型' },
   { value: 'review',   label: '待審核' },
-  { value: 'sla',      label: 'SLA 預警' },
   { value: 'rejected', label: '審核退回' },
   { value: 'approved', label: '審核通過' },
   { value: 'dispatch', label: '派案通知' },
-  { value: 'statute',  label: '兩年時效' },
 ]
 
 // type 群組：同一 label 的 types 合併篩選
@@ -78,7 +75,9 @@ export default function NotificationsPage() {
   const loadNotifications = useCallback(async () => {
     setLoading(true)
     const res = await api.get<NotificationItem[]>('/api/notifications')
-    if (res.success && res.data) setNotifications(res.data)
+    if (res.success && res.data) {
+      setNotifications(res.data.filter(n => !HIDDEN_TYPES.includes(n.type)))
+    }
     setLoading(false)
   }, [])
 
@@ -200,7 +199,7 @@ export default function NotificationsPage() {
                     <Button
                       size="small"
                       type="link"
-                      onClick={() => router.push(`/cases/${n.caseId}`)}
+                      onClick={() => router.push(`/cases/${n.caseId}?from=notifications`)}
                     >
                       查看案件
                     </Button>

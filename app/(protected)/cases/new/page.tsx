@@ -1,26 +1,34 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Card, Form, Input, Button, Select, DatePicker, InputNumber,
-  Switch, Typography, Space, Divider, message, Row, Col, Table,
+  Checkbox, Alert, Typography, Space, Divider, message, Modal, Row, Col, Table,
 } from 'antd'
 import { PlusOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
+import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
 
-const { Title } = Typography
+const { Title, Text } = Typography
 const { Option } = Select
 const { TextArea } = Input
+
+const INCIDENT_CAUSES = [
+  '本體損壞', '火災', '水災', '第三人損害', '施工意外',
+  '機械故障', '電氣損壞', '竊盜', '其他',
+]
+const CONTACT_FORM_STATUS = ['無', '待傳', '已回傳']
+const PARKING_STATUS = ['申訴中', '訴訟中', '待請求時效']
 
 interface MetaData {
   insuranceCompanies: { id: number; code: string; name: string }[]
   brokerCompanies: { id: number; name: string }[]
   departments: { id: number; name: string }[]
   employees: { id: number; name: string }[]
-  insuranceTypes: { name: string }[]
-  incidentLocations: { name: string }[]
+  insuranceTypes: { id: number; name: string }[]
+  incidentLocations: { id: number; name: string }[]
 }
 
 interface AssignmentRow {
@@ -30,8 +38,32 @@ interface AssignmentRow {
   contributionRatio: number
 }
 
+interface CoInsurerRow {
+  key: string
+  companyId: number | null
+  policyNumber: string
+  ratio: number | null
+}
+
+interface FeeBand {
+  range: string
+  amount: number
+  rate: number
+  fee: number
+}
+
+interface FeeCalcResult {
+  fee: number
+  bands: FeeBand[]
+  minApplied: boolean
+  feeCategory: string
+}
+
+const FEE_CALC_DEBOUNCE_MS = 500
+
 export default function CaseNewPage() {
   const router = useRouter()
+  const { session } = useAuth()
   const [form] = Form.useForm()
   const [meta, setMeta] = useState<MetaData>({
     insuranceCompanies: [],
@@ -44,13 +76,68 @@ export default function CaseNewPage() {
   const [assignments, setAssignments] = useState<AssignmentRow[]>([
     { key: '1', employeeId: null, role: '主辦', contributionRatio: 100 },
   ])
+  const [coInsurers, setCoInsurers] = useState<CoInsurerRow[]>([])
+  const [isSpecialCase, setIsSpecialCase] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+
+  // ── 公證費試算 ──
+  const [feeCalc, setFeeCalc] = useState<FeeCalcResult | null>(null)
+  const [estimatedAmount, setEstimatedAmount] = useState<number | null>(null)
+  const [insuranceCompanyId, setInsuranceCompanyId] = useState<number | null>(null)
+  const [insuranceTypeId, setInsuranceTypeId] = useState<number | null>(null)
+  const [commissionDate, setCommissionDate] = useState<string | null>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     api.get<MetaData>('/api/meta').then((res) => {
       if (res.success && res.data) setMeta(res.data)
     })
   }, [])
+
+  // 登入者部門帶入 form（送出時使用）
+  useEffect(() => {
+    if (session?.departmentId) {
+      form.setFieldsValue({ departmentId: session.departmentId })
+    }
+  }, [session, form])
+
+  // 預設第一筆承辦人為登入者本人（主辦、100%）
+  useEffect(() => {
+    if (!session) return
+    const selfId = parseInt(session.sub)
+    setAssignments((prev) => {
+      if (prev.length === 1 && prev[0].employeeId === null) {
+        return [{ ...prev[0], employeeId: selfId }]
+      }
+      return prev
+    })
+  }, [session])
+
+  // 預估金額 / 保司 / 險種 / 委託日變動時試算公證費（debounce）
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (!estimatedAmount || estimatedAmount <= 0 || !insuranceCompanyId || !insuranceTypeId) {
+      setFeeCalc(null)
+      return
+    }
+    debounceRef.current = setTimeout(async () => {
+      const res = await api.post<FeeCalcResult>('/api/fee-calc', {
+        amount: estimatedAmount,
+        insuranceCompanyId,
+        insuranceTypeId,
+        commissionDate,
+      })
+      if (res.success && res.data) {
+        setFeeCalc(res.data)
+        form.setFieldsValue({ estimatedFee: res.data.fee })
+      } else {
+        setFeeCalc(null)
+      }
+    }, FEE_CALC_DEBOUNCE_MS)
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [estimatedAmount, insuranceCompanyId, insuranceTypeId, commissionDate, form])
 
   const handleAddAssignment = () => {
     setAssignments((prev) => [...prev, { key: String(Date.now()), employeeId: null, role: '協辦', contributionRatio: 0 }])
@@ -64,6 +151,18 @@ export default function CaseNewPage() {
     setAssignments((prev) => prev.map((a) => a.key === key ? { ...a, [field]: value } : a))
   }
 
+  const handleAddCoInsurer = () => {
+    setCoInsurers((prev) => [...prev, { key: String(Date.now()), companyId: null, policyNumber: '', ratio: null }])
+  }
+
+  const handleRemoveCoInsurer = (key: string) => {
+    setCoInsurers((prev) => prev.filter((c) => c.key !== key))
+  }
+
+  const handleCoInsurerChange = (key: string, field: keyof CoInsurerRow, value: unknown) => {
+    setCoInsurers((prev) => prev.map((c) => c.key === key ? { ...c, [field]: value } : c))
+  }
+
   const handleSubmit = async (values: Record<string, unknown>) => {
     const totalRatio = assignments.reduce((s, a) => s + (a.contributionRatio ?? 0), 0)
     if (Math.abs(totalRatio - 100) > 0.01) {
@@ -75,10 +174,21 @@ export default function CaseNewPage() {
       message.error('至少需要一位主辦人')
       return
     }
+    // 共保資訊驗證
+    for (let i = 0; i < coInsurers.length; i++) {
+      const ci = coInsurers[i]
+      if (!ci.policyNumber?.trim()) { message.error(`共保資訊第 ${i + 1} 筆：保單號碼必填`); return }
+      if (!ci.ratio) { message.error(`共保資訊第 ${i + 1} 筆：共保比例必填`); return }
+    }
+    if (coInsurers.length > 0) {
+      const coSum = coInsurers.reduce((s, c) => s + (c.ratio || 0), 0)
+      if (coSum >= 100) { message.error('共保比例合計已達 100%，主保人須保留比例'); return }
+    }
 
-    setSubmitting(true)
+    const selectedType = meta.insuranceTypes.find((t) => t.id === values.insuranceTypeId)
+
     const body = {
-      departmentId: values.departmentId,
+      departmentId: session?.departmentId,
       insuranceCompanyId: values.insuranceCompanyId,
       brokerCompanyId: values.brokerCompanyId ?? null,
       insuranceContact: values.insuranceContact,
@@ -87,12 +197,24 @@ export default function CaseNewPage() {
       incidentLocation: values.incidentLocation,
       incidentDate: dayjs(values.incidentDate as string).toISOString(),
       commissionDate: dayjs(values.commissionDate as string).toISOString(),
-      insuranceType: values.insuranceType,
+      insuranceType: selectedType?.name ?? '',
       incidentCause: values.incidentCause,
       estimatedAmount: values.estimatedAmount ?? null,
       deductible: values.deductible ?? 0,
-      isSpecialCase: values.isSpecialCase ?? false,
+      estimatedFee: values.estimatedFee ?? undefined,
+      isSpecialCase,
       notes: values.notes,
+      parkingStatus: values.parkingStatus ?? null,
+      contactFormStatus: values.contactFormStatus,
+      contactReturnDate: values.contactReturnDate
+        ? dayjs(values.contactReturnDate as string).toISOString()
+        : null,
+      nasFolder: values.nasFolder,
+      coInsurers: coInsurers.map((c) => ({
+        companyId: c.companyId,
+        policyNumber: c.policyNumber,
+        ratio: c.ratio ?? 0,
+      })),
       assignments: assignments.filter((a) => a.employeeId).map((a) => ({
         employeeId: a.employeeId!,
         role: a.role,
@@ -100,14 +222,37 @@ export default function CaseNewPage() {
       })),
     }
 
-    const res = await api.post<{ id: number; caseNumber: string }>('/api/cases', body)
+    await doCreateCase(body, false)
+  }
+
+  const doCreateCase = async (body: Record<string, unknown>, confirmDuplicate: boolean) => {
+    setSubmitting(true)
+    const res = await api.post<{ id: number; caseNumber: string }>('/api/cases', {
+      ...body,
+      confirmDuplicate,
+    })
     setSubmitting(false)
+
     if (res.success && res.data) {
-      message.success(`案件 ${res.data.caseNumber} 建立成功`)
+      message.success(`案件 ${res.data.caseNumber} 成案成功！`)
+      window.dispatchEvent(new Event('nansan:case-updated'))
       router.push(`/cases/${res.data.id}`)
-    } else {
-      message.error(res.error ?? '建案失敗')
+      return
     }
+
+    // FR-80 重複保單防護
+    if ((res as { code?: string }).code === 'DUPLICATE_POLICY') {
+      Modal.confirm({
+        title: '可能重複建檔',
+        content: res.error ?? '此保單號碼可能已存在案件，確定仍要新增？',
+        okText: '確認新增',
+        cancelText: '取消',
+        onOk: () => doCreateCase(body, true),
+      })
+      return
+    }
+
+    message.error(res.error ?? '建案失敗')
   }
 
   const assignmentColumns = [
@@ -166,6 +311,58 @@ export default function CaseNewPage() {
     },
   ]
 
+  const coInsurerColumns = [
+    {
+      title: '共保公司（選填）',
+      key: 'company',
+      render: (_: unknown, record: CoInsurerRow) => (
+        <Select
+          style={{ width: 180 }}
+          allowClear showSearch placeholder="選填"
+          value={record.companyId ?? undefined}
+          onChange={(v) => handleCoInsurerChange(record.key, 'companyId', v ?? null)}
+          filterOption={(input, opt) => String(opt?.children ?? '').includes(input)}
+        >
+          {meta.insuranceCompanies.map((ic) => <Option key={ic.id} value={ic.id}>{ic.name}</Option>)}
+        </Select>
+      ),
+    },
+    {
+      title: '共保保單號碼',
+      key: 'policyNumber',
+      render: (_: unknown, record: CoInsurerRow) => (
+        <Input
+          style={{ width: 160 }}
+          placeholder="必填"
+          value={record.policyNumber}
+          status={record.policyNumber === '' ? 'error' : ''}
+          onChange={(e) => handleCoInsurerChange(record.key, 'policyNumber', e.target.value)}
+        />
+      ),
+    },
+    {
+      title: '共保比例 (%)',
+      key: 'ratio',
+      render: (_: unknown, record: CoInsurerRow) => (
+        <InputNumber
+          style={{ width: 110 }}
+          min={0.01} max={99.99} precision={2} step={5}
+          placeholder="必填"
+          value={record.ratio ?? undefined}
+          status={!record.ratio ? 'error' : ''}
+          onChange={(v) => handleCoInsurerChange(record.key, 'ratio', v ?? null)}
+        />
+      ),
+    },
+    {
+      title: '',
+      key: 'action',
+      render: (_: unknown, record: CoInsurerRow) => (
+        <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleRemoveCoInsurer(record.key)} />
+      ),
+    },
+  ]
+
   return (
     <div style={{ padding: 24 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
@@ -173,24 +370,39 @@ export default function CaseNewPage() {
         <Title level={4} style={{ margin: 0 }}>新增案件</Title>
       </div>
 
-      <Form form={form} layout="vertical" onFinish={handleSubmit} initialValues={{ isSpecialCase: false, deductible: 0 }}>
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={handleSubmit}
+        initialValues={{ deductible: 0, contactFormStatus: '待傳' }}
+      >
+        {/* departmentId 由 session 帶入，隱藏欄位保存值 */}
+        <Form.Item name="departmentId" hidden><Input /></Form.Item>
+
         <Card title="基本資訊" bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)', marginBottom: 16 }}>
           <Row gutter={[16, 0]}>
             <Col xs={24} sm={8}>
-              <Form.Item label="部門" name="departmentId" rules={[{ required: true, message: '必填' }]}>
-                <Select placeholder="選擇部門">
-                  {meta.departments.map((d) => <Option key={d.id} value={d.id}>{d.name}</Option>)}
-                </Select>
+              <Form.Item label="部門">
+                <Input value={session?.departmentName ?? '—'} readOnly disabled />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
-              <Form.Item label="受任日" name="commissionDate" rules={[{ required: true, message: '必填' }]}>
-                <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+              <Form.Item label="委託日期" name="commissionDate" rules={[{ required: true, message: '必填' }]}>
+                <DatePicker
+                  style={{ width: '100%' }}
+                  format="YYYY-MM-DD"
+                  disabledDate={(d) => d.isAfter(dayjs())}
+                  onChange={(v) => setCommissionDate(v ? v.format('YYYY-MM-DD') : null)}
+                />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
               <Form.Item label="保險公司" name="insuranceCompanyId" rules={[{ required: true, message: '必填' }]}>
-                <Select placeholder="選擇保險公司" showSearch filterOption={(i, o) => String(o?.children ?? '').includes(i)}>
+                <Select
+                  placeholder="選擇保險公司" showSearch
+                  filterOption={(i, o) => String(o?.children ?? '').includes(i)}
+                  onChange={(v) => setInsuranceCompanyId(v as number)}
+                >
                   {meta.insuranceCompanies.map((ic) => <Option key={ic.id} value={ic.id}>{ic.name}</Option>)}
                 </Select>
               </Form.Item>
@@ -203,9 +415,14 @@ export default function CaseNewPage() {
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
-              <Form.Item label="險種" name="insuranceType" rules={[{ required: true, message: '必填' }]}>
-                <Select placeholder="選擇險種">
-                  {meta.insuranceTypes.map((t) => <Option key={t.name} value={t.name}>{t.name}</Option>)}
+              <Form.Item label="保險公司承辦人" name="insuranceContact">
+                <Input placeholder="選填" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={8}>
+              <Form.Item label="險種" name="insuranceTypeId" rules={[{ required: true, message: '必填' }]}>
+                <Select placeholder="選擇險種" onChange={(v) => setInsuranceTypeId(v as number)}>
+                  {meta.insuranceTypes.map((t) => <Option key={t.id} value={t.id}>{t.name}</Option>)}
                 </Select>
               </Form.Item>
             </Col>
@@ -215,13 +432,13 @@ export default function CaseNewPage() {
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
-              <Form.Item label="被保人" name="insuredName" rules={[{ required: true, message: '必填' }]}>
+              <Form.Item label="被保險人" name="insuredName" rules={[{ required: true, message: '必填' }]}>
                 <Input />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
               <Form.Item label="出險日期" name="incidentDate" rules={[{ required: true, message: '必填' }]}>
-                <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+                <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" disabledDate={(d) => d.isAfter(dayjs())} />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
@@ -231,35 +448,143 @@ export default function CaseNewPage() {
                 </Select>
               </Form.Item>
             </Col>
-            <Col xs={24}>
+            <Col xs={24} sm={8}>
               <Form.Item label="出險原因" name="incidentCause" rules={[{ required: true, message: '必填' }]}>
-                <Input />
+                <Select placeholder="選擇出險原因">
+                  {INCIDENT_CAUSES.map((c) => <Option key={c} value={c}>{c}</Option>)}
+                </Select>
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={8}>
+              <Form.Item label="停泊案件狀態" name="parkingStatus">
+                <Select allowClear placeholder="無">
+                  {PARKING_STATUS.map((s) => <Option key={s} value={s}>{s}</Option>)}
+                </Select>
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Divider style={{ margin: '8px 0 16px' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <Text strong>共保資訊</Text>
+            <Button
+              size="small" type="primary" icon={<PlusOutlined />} onClick={handleAddCoInsurer}
+              style={{ background: '#2E86C1', borderColor: '#2E86C1' }}
+            >
+              新增共保
+            </Button>
+          </div>
+          {coInsurers.length > 0 && (
+            <>
+              <Table
+                dataSource={coInsurers}
+                columns={coInsurerColumns}
+                rowKey="key"
+                pagination={false}
+                size="small"
+              />
+              <div style={{ marginTop: 8, color: '#8c8c8c', fontSize: 12 }}>
+                主保人剩餘比例：{(100 - coInsurers.reduce((s, c) => s + (c.ratio || 0), 0)).toFixed(2).replace(/\.?0+$/, '')}%
+              </div>
+            </>
+          )}
+        </Card>
+
+        <Card title="金額資訊（選填）" bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)', marginBottom: 16 }}>
+          <Row gutter={[16, 0]}>
+            <Col xs={24} sm={8}>
+              <Form.Item label="預估金額" name="estimatedAmount">
+                <InputNumber
+                  style={{ width: '100%' }} min={0} step={100000}
+                  formatter={(v) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={(v: string | undefined) => parseInt(String(v ?? '0').replace(/,/g, ''), 10)}
+                  onChange={(v) => setEstimatedAmount(v as number | null)}
+                />
+              </Form.Item>
+
+              {/* FR-18 公證費試算結果 */}
+              {feeCalc && (
+                <Card
+                  size="small"
+                  style={{ background: '#EBF4FC', borderColor: '#2E86C1', marginTop: -8, marginBottom: 12 }}
+                >
+                  <Text strong style={{ color: '#1B4F8C' }}>
+                    預估公證費：${feeCalc.fee.toLocaleString()}
+                  </Text>
+                  {feeCalc.minApplied && (
+                    <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>（低於最低費用，以最低公證費計）</Text>
+                  )}
+                  <Divider style={{ margin: '8px 0' }} />
+                  {feeCalc.bands.map((b, i) => (
+                    <Text key={i} type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                      {b.range}：${b.amount.toLocaleString()} × {(b.rate * 100).toFixed(2)}% = ${Math.round(b.fee).toLocaleString()}
+                    </Text>
+                  ))}
+                </Card>
+              )}
+            </Col>
+            <Col xs={24} sm={8}>
+              <Form.Item label="預估公證費" name="estimatedFee">
+                <InputNumber
+                  style={{ width: '100%' }} min={0}
+                  formatter={(v) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={(v: string | undefined) => parseInt(String(v ?? '0').replace(/,/g, ''), 10)}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={8}>
+              <Form.Item label="自負額" name="deductible">
+                <InputNumber
+                  style={{ width: '100%' }} min={0}
+                  formatter={(v) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={(v: string | undefined) => parseInt(String(v ?? '0').replace(/,/g, ''), 10)}
+                />
               </Form.Item>
             </Col>
           </Row>
         </Card>
 
-        <Card title="損失資訊（選填）" bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)', marginBottom: 16 }}>
+        <Card title="其他" bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)', marginBottom: 16 }}>
           <Row gutter={[16, 0]}>
-            <Col xs={24} sm={8}>
-              <Form.Item label="估計損失金額" name="estimatedAmount">
-                <InputNumber style={{ width: '100%' }} min={0} step={100000} formatter={(v) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} parser={(v: string | undefined) => parseInt(String(v ?? '0').replace(/,/g, ''), 10)} />
+            <Col xs={24} sm={12}>
+              <Form.Item label="聯絡單狀態" name="contactFormStatus">
+                <Select>
+                  {CONTACT_FORM_STATUS.map((s) => <Option key={s} value={s}>{s}</Option>)}
+                </Select>
               </Form.Item>
             </Col>
-            <Col xs={24} sm={8}>
-              <Form.Item label="免賠額" name="deductible">
-                <InputNumber style={{ width: '100%' }} min={0} />
+            <Col xs={24} sm={12}>
+              <Form.Item label="回傳日期" name="contactReturnDate">
+                <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
               </Form.Item>
             </Col>
-            <Col xs={24} sm={8}>
-              <Form.Item label="保險窗口" name="insuranceContact">
-                <Input />
+            <Col xs={24}>
+              <Form.Item label="NAS 路徑" name="nasFolder">
+                <TextArea
+                  placeholder="\\NAS-TP\cases\..."
+                  autoSize={{ minRows: 1, maxRows: 3 }}
+                  style={{ fontFamily: 'monospace', fontSize: 12 }}
+                />
               </Form.Item>
             </Col>
-            <Col xs={24} sm={8}>
-              <Form.Item label="特殊案件" name="isSpecialCase" valuePropName="checked">
-                <Switch />
+            <Col xs={24}>
+              {/* FR-89 特殊案件 */}
+              <Form.Item>
+                <Checkbox checked={isSpecialCase} onChange={(e) => setIsSpecialCase(e.target.checked)}>
+                  特殊案件
+                </Checkbox>
+                <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>
+                  （如：關注案件、極大爭議、複雜度較高或金額較高）
+                </Text>
               </Form.Item>
+              {isSpecialCase && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="此案件將標記為特殊案件，送審文件不論金額均須呈送執行副總"
+                  style={{ marginTop: -8, marginBottom: 16 }}
+                />
+              )}
             </Col>
             <Col xs={24}>
               <Form.Item label="備註" name="notes">
