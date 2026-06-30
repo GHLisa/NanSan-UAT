@@ -3,13 +3,45 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import {
   Table, Card, Button, Typography, Modal, Form, Input, InputNumber,
-  Select, AutoComplete, Checkbox, Popconfirm, Space, Divider, Row, Col, Tabs, Tooltip, message,
+  Select, AutoComplete, Checkbox, Popconfirm, Space, Divider, Row, Col, Tabs, Tooltip, message, DatePicker,
 } from 'antd'
 import type { FormInstance } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined, InfoCircleOutlined } from '@ant-design/icons'
+import dayjs from 'dayjs'
 import { api } from '@/lib/api'
 
 const { Title, Text } = Typography
+
+// ── 費率適用年度篩選（以「年」為單位，單一年度，預設當年度）────────────────────────
+// 「適用年度 = Y」列出每間公司在 Y 年實際適用的費率版本：取生效年度 ≤ Y 之中「最新生效日」者。
+// 若該公司無 Y 年新版，表示舊年度費率繼續適用，仍會被列出；生效年度 > Y（未來才生效）則排除。
+type YearFilter = number | null
+
+function applicableRatesForYear<T extends { companyCode: string; effectiveDate: string }>(rows: T[], year: YearFilter): T[] {
+  if (!year) return rows
+  const latestByCompany = new Map<string, T>()
+  for (const r of rows) {
+    if (Number(r.effectiveDate.slice(0, 4)) > year) continue
+    const cur = latestByCompany.get(r.companyCode)
+    if (!cur || r.effectiveDate > cur.effectiveDate) latestByCompany.set(r.companyCode, r)
+  }
+  return [...latestByCompany.values()]
+}
+
+function EffectiveYearFilter({ year, onChange }: { year: YearFilter; onChange: (y: YearFilter) => void }) {
+  return (
+    <Space size={6}>
+      <Text type="secondary" style={{ fontSize: 12 }}>費率適用年度</Text>
+      <DatePicker
+        picker="year"
+        size="small"
+        style={{ width: 120 }}
+        value={year ? dayjs(String(year)) : null}
+        onChange={(v) => onChange(v ? v.year() : null)}
+      />
+    </Space>
+  )
+}
 
 // ── Band column definitions ────────────────────────────────────────────────
 const FR_BAND_COLS = [
@@ -560,6 +592,7 @@ function EngineeringTab() {
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<EngRate | null>(null)
+  const [year, setYear] = useState<YearFilter>(() => new Date().getFullYear())
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -575,10 +608,12 @@ function EngineeringTab() {
     else message.error(res.error ?? '刪除失敗')
   }
 
+  const filteredRates = useMemo(() => applicableRatesForYear(rates, year), [rates, year])
+
   // 主列＋附加險種子列（對齊 demo tableData：subRate 展開為第二列，共用欄位以 rowSpan 合併）
   const tableData = useMemo<EngRow[]>(() => {
     const rows: EngRow[] = []
-    rates.forEach(co => {
+    filteredRates.forEach(co => {
       const sub = parseSubRate(co.subRate)
       rows.push({
         ...co,
@@ -600,7 +635,7 @@ function EngineeringTab() {
       }
     })
     return rows
-  }, [rates])
+  }, [filteredRates])
 
   function handleEdit(r: EngRow) {
     setEditing(rates.find(co => co.id === r.id) ?? r)
@@ -693,7 +728,8 @@ function EngineeringTab() {
 
   return (
     <>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <EffectiveYearFilter year={year} onChange={setYear} />
         <Button type="primary" icon={<PlusOutlined />} style={{ background: '#1B4F8C' }}
           onClick={() => { setEditing(null); setModalOpen(true) }}>
           新增保險公司
@@ -717,6 +753,8 @@ function FireTab() {
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<FireRate | null>(null)
+  const [year, setYear] = useState<YearFilter>(() => new Date().getFullYear())
+  const filteredRates = useMemo(() => applicableRatesForYear(rates, year), [rates, year])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -791,18 +829,21 @@ function FireTab() {
 
   return (
     <>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <EffectiveYearFilter year={year} onChange={setYear} />
+          <Button type="primary" icon={<PlusOutlined />} style={{ background: '#1B4F8C', flexShrink: 0, marginLeft: 16 }}
+            onClick={() => { setEditing(null); setModalOpen(true) }}>
+            新增保險公司
+          </Button>
+        </div>
         <Text type="secondary" style={{ fontSize: 11 }}>
           ＊大多數保險公司採 4 段費率（≤500萬 / 500~2000萬 / 2000萬~1億 / 1億~5億）；「500~1000萬」與「1000~2000萬」顯示相同費率為正常現象。
           有 <InfoCircleOutlined style={{ color: '#d97706' }} /> 圖示者表示有特殊計費備註，滑鼠移入可查看。
         </Text>
-        <Button type="primary" icon={<PlusOutlined />} style={{ background: '#1B4F8C', flexShrink: 0, marginLeft: 16 }}
-          onClick={() => { setEditing(null); setModalOpen(true) }}>
-          新增保險公司
-        </Button>
       </div>
       <Card size="small">
-        <Table dataSource={rates} columns={columns} rowKey="id" loading={loading}
+        <Table dataSource={filteredRates} columns={columns} rowKey="id" loading={loading}
           size="small" scroll={{ x: 1500 }} pagination={false} bordered />
       </Card>
       <FireModal open={modalOpen} editing={editing}
