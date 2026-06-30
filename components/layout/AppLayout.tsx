@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import {
   Layout, Menu, Avatar, Dropdown, Badge, Typography, Space,
-  Select, Button, Drawer,
+  Select, Button, Drawer, Alert,
 } from 'antd'
 import {
   DashboardOutlined, FileTextOutlined, InboxOutlined, CheckCircleOutlined,
@@ -145,7 +145,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const fromKey = searchParams.get('from') // [2026/06/18] - Lisa - 來源模組 key（含 reviews / settlements 等）
-  const { session, logout, switchRole } = useAuth()
+  const { session, logout, switchRole, stopImpersonate } = useAuth()
   // FR-74：收折狀態從 localStorage 還原。SSR 階段 window 不存在，先預設 false，
   // 於 useEffect 內讀取，避免 hydration 不一致。
   const [collapsed, setCollapsed] = useState(false)
@@ -328,6 +328,22 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </Space>
         </Header>
 
+        {session.impersonatedBy && (
+          <Alert
+            type="warning"
+            banner
+            showIcon
+            message={
+              <span>
+                您正以 <b>{session.name}</b> 身分代理登入（原管理員：{session.impersonatedBy.name}）
+              </span>
+            }
+            action={
+              <Button size="small" type="link" onClick={stopImpersonate}>結束代理</Button>
+            }
+            style={{ position: 'sticky', top: 64, zIndex: 98 }}
+          />
+        )}
         <Content style={{ background: '#F5F7FA', minHeight: 'calc(100vh - 64px)' }}>
           {children}
         </Content>

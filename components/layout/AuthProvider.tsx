@@ -12,6 +12,8 @@ interface AuthContextType {
   logout: () => Promise<void>
   switchRole: (roleIndex: number) => Promise<void>
   refreshSession: () => Promise<void>
+  impersonate: (employeeId: number) => Promise<void>
+  stopImpersonate: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | null>(null)
@@ -56,8 +58,36 @@ export function AuthProvider({ children, initialSession }: {
     router.refresh()
   }, [refreshSession, router])
 
+  const impersonate = useCallback(async (employeeId: number) => {
+    setLoading(true)
+    const res = await api.post<{ name: string }>('/api/auth/impersonate', { employeeId })
+    setLoading(false)
+    if (!res.success) {
+      message.error(res.error ?? '代理登入失敗')
+      return
+    }
+    await refreshSession()
+    message.success(`已以 ${res.data?.name} 身分代理登入`)
+    router.push('/dashboard')
+    router.refresh()
+  }, [refreshSession, router])
+
+  const stopImpersonate = useCallback(async () => {
+    setLoading(true)
+    const res = await api.delete('/api/auth/impersonate')
+    setLoading(false)
+    if (!res.success) {
+      message.error(res.error ?? '結束代理失敗')
+      return
+    }
+    await refreshSession()
+    message.success('已結束代理登入')
+    router.push('/admin/users')
+    router.refresh()
+  }, [refreshSession, router])
+
   return (
-    <AuthContext.Provider value={{ session, loading, logout, switchRole, refreshSession }}>
+    <AuthContext.Provider value={{ session, loading, logout, switchRole, refreshSession, impersonate, stopImpersonate }}>
       {children}
     </AuthContext.Provider>
   )

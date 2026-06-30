@@ -477,7 +477,7 @@ function FireModal({ open, editing, onOk, onCancel }: { open: boolean; editing: 
         form.setFieldsValue({
           companyCode: editing.companyCode, companyName: editing.companyName,
           debitNoteType: editing.debitNoteType, minFee: editing.minFee,
-          effectiveDate: editing.effectiveDate, remarks: editing.remarks ?? '',
+          effectiveDate: editing.effectiveDate.slice(0, 10), remarks: editing.remarks ?? '',
         })
         populateBandFields(form, parseBands(editing.rateBands), 'fband_', FIRE_BAND_COLS)
       } else {

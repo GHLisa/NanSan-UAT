@@ -41,7 +41,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   const id = parseInt(params.id)
   const body = await req.json() as {
     name?: string; email?: string | null; isActive?: boolean; password?: string
-    unlock?: boolean
+    unlock?: boolean; resetPassword?: boolean
     primaryRole?: RoleInput; additionalRoles?: RoleInput[]
   }
 
@@ -61,6 +61,13 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     if (body.email !== undefined) updateData.email = body.email
     if (body.isActive !== undefined) updateData.isActive = body.isActive
     if (body.password) updateData.password = await bcrypt.hash(body.password, 10)
+    // 管理員重設密碼：回復預設密碼 nansan1234，並強制使用者下次登入改密；同時解除登入鎖定
+    if (body.resetPassword) {
+      updateData.password = await bcrypt.hash('nansan1234', 10)
+      updateData.mustChangePassword = true
+      updateData.loginFailCount = 0
+      updateData.lockedUntil = null
+    }
     // FR-01 解鎖：清除登入失敗計數與鎖定時間
     if (body.unlock) {
       updateData.loginFailCount = 0

@@ -41,6 +41,7 @@ model Employee {
   email          String?
   loginFailCount Int              @default(0)
   lockedUntil    DateTime?
+  mustChangePassword Boolean      @default(false) // 首次登入/重設後須強制改密
   roles        EmployeeRole[]
   assignments  CaseAssignment[]
   progressLogs CaseProgress[]

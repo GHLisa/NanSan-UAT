@@ -42,6 +42,18 @@ export async function middleware(req: NextRequest) {
   try {
     const { payload } = await jwtVerify(token, JWT_SECRET)
 
+    // 強制改密：mustChangePassword=true 時，除改密頁/改密 API/登出/me 外一律攔截，
+    // 避免使用者用初始密碼繞過直接操作系統
+    if (payload.mustChangePassword === true) {
+      const allowed = ['/change-password', '/api/auth/change-password', '/api/auth/logout', '/api/auth/me']
+      if (!allowed.some((p) => pathname.startsWith(p))) {
+        if (pathname.startsWith('/api/')) {
+          return NextResponse.json({ success: false, error: '請先變更密碼' }, { status: 403 })
+        }
+        return NextResponse.redirect(new URL('/change-password', req.url))
+      }
+    }
+
     // 角色守衛（P-04）：非授權角色導回儀表板
     const guard = ROLE_GUARDED_ROUTES.find((g) => pathname.startsWith(g.prefix))
     if (guard) {

@@ -129,6 +129,8 @@ export async function POST(req: NextRequest) {
       departmentName: primaryRole.departmentName,
       teamGroup: primaryRole.teamGroup,
       allRoles,
+      mustChangePassword: employee.mustChangePassword,
+      impersonatedBy: null,
     }
 
     const token = await signToken(payload)
@@ -148,6 +150,7 @@ export async function POST(req: NextRequest) {
         teamGroup: primaryRole.teamGroup,
         allRoles,
         requiresRoleSelect: allRoles.length > 1,
+        mustChangePassword: employee.mustChangePassword,
       },
     })
     res.headers.set('Set-Cookie', setCookieHeader(token))

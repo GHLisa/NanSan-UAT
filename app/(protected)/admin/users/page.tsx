@@ -5,8 +5,9 @@ import {
   Table, Button, Card, Row, Col, Typography, Tag, Space, Modal, Form,
   Input, Select, Switch, message, Divider, Popconfirm,
 } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, MailOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, MailOutlined, LoginOutlined, KeyOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
+import { useAuth } from '@/components/layout/AuthProvider'
 
 const { Title } = Typography
 
@@ -38,6 +39,7 @@ interface EmployeeItem {
 interface AdditionalRole { tempId: number; role: string | null; departmentId: number | null; teamGroup: string | null }
 
 export default function UsersPage() {
+  const { session, impersonate } = useAuth()
   const [employees, setEmployees] = useState<EmployeeItem[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
@@ -182,6 +184,13 @@ export default function UsersPage() {
     else message.error(res.error ?? '操作失敗')
   }
 
+  // 忘記密碼：管理員重設回預設 nansan1234，使用者下次登入須改密
+  async function handleResetPassword(emp: EmployeeItem) {
+    const res = await api.put(`/api/admin/users/${emp.id}`, { resetPassword: true })
+    if (res.success) { message.success(`已將「${emp.name}」密碼重設為 nansan1234，使用者下次登入須改密`); loadEmployees() }
+    else message.error(res.error ?? '操作失敗')
+  }
+
   const columns = [
     {
       title: 'No.', key: 'no', width: 55, align: 'center' as const,
@@ -217,10 +226,28 @@ export default function UsersPage() {
       ),
     },
     {
-      title: '操作', key: 'action', width: 180, fixed: 'right' as const,
+      title: '操作', key: 'action', width: 340, fixed: 'right' as const,
       render: (_: unknown, r: EmployeeItem) => (
         <Space size={0}>
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>編輯</Button>
+          <Popconfirm
+            title={`確認重設「${r.name}」的密碼？`}
+            description="密碼將重設為 nansan1234，使用者下次登入須改密。"
+            okText="重設密碼" cancelText="取消"
+            onConfirm={() => handleResetPassword(r)}
+          >
+            <Button size="small" type="link" icon={<KeyOutlined />}>重設密碼</Button>
+          </Popconfirm>
+          {r.isActive && r.id !== Number(session?.sub) && (
+            <Popconfirm
+              title={`確認以「${r.name}」身分代理登入？`}
+              description="系統會記錄此代理登入；可隨時在上方橫幅結束代理。"
+              okText="代理登入" cancelText="取消"
+              onConfirm={() => impersonate(r.id)}
+            >
+              <Button size="small" type="link" icon={<LoginOutlined />}>代理登入</Button>
+            </Popconfirm>
+          )}
           <Popconfirm
             title={r.isActive ? '確認停用此帳號？' : '確認啟用此帳號？'}
             okText={r.isActive ? '停用' : '啟用'} cancelText="取消"

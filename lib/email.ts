@@ -43,8 +43,8 @@ function fromAddress(): string {
   return process.env.MAIL_FROM ?? process.env.SMTP_USER ?? '南山公證案件管理系統'
 }
 
-// 系統測試階段：所有信件主旨統一在開頭加上「系統測試」前綴（已含則不重複）
-const SUBJECT_PREFIX = '系統測試'
+// 系統測試階段：所有信件主旨統一在開頭加上「系統測試(UAT)」前綴（已含則不重複）
+const SUBJECT_PREFIX = '系統測試(UAT)'
 function withSubjectPrefix(subject: string): string {
   return subject.startsWith(SUBJECT_PREFIX) ? subject : `${SUBJECT_PREFIX} ${subject}`
 }

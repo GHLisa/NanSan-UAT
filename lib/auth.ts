@@ -18,6 +18,8 @@ export interface JWTPayload {
   departmentName: string | null
   teamGroup: string | null
   allRoles: RoleInfo[]
+  mustChangePassword?: boolean   // true 時須先改密，middleware 會攔截導向 /change-password
+  impersonatedBy?: { id: number; name: string } | null  // sysadmin 代理登入時記錄原管理員，供稽核與「結束代理」
 }
 
 export interface RoleInfo {
