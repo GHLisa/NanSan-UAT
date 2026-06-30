@@ -3,8 +3,9 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  Table, Card, Row, Col, Typography, Tag, Select, Button, Statistic, Input, DatePicker,
+  Table, Card, Row, Col, Typography, Tag, Select, Button, Statistic, Input, DatePicker, message,
 } from 'antd'
+import { FileExcelOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
@@ -68,6 +69,7 @@ export default function CaseQueryPage() {
   const [incidentDateFrom, setIncidentDateFrom] = useState('')
   const [incidentDateTo, setIncidentDateTo] = useState('')
   const [page, setPage] = useState(1)
+  const [exporting, setExporting] = useState(false)
 
   // Sticky filter bar height
   useEffect(() => {
@@ -118,6 +120,34 @@ export default function CaseQueryPage() {
     setIncidentDateFrom('')
     setIncidentDateTo('')
     setPage(1)
+  }
+
+  // 匯出 Excel（彷照「工程113(24K)」格式，欄位 A~V；匯出整個查詢結果）
+  async function handleExport() {
+    setExporting(true)
+    try {
+      const params = new URLSearchParams({ status: filterStatus })
+      if (search) params.set('q', search)
+      if (incidentDateFrom) params.set('incidentDateFrom', incidentDateFrom)
+      if (incidentDateTo) params.set('incidentDateTo', incidentDateTo)
+      if (filterYear) params.set('year', filterYear)
+      if (filterYear && filterPeriod) params.set('quarter', filterPeriod)
+      const res = await fetch(`/api/cases/export?${params.toString()}`, { credentials: 'include' })
+      if (!res.ok) { message.error('匯出失敗，請稍後再試'); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `案件查詢_${dayjs().format('YYYYMMDD')}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      message.error('匯出失敗，請稍後再試')
+    } finally {
+      setExporting(false)
+    }
   }
 
   // 統計
@@ -186,6 +216,16 @@ export default function CaseQueryPage() {
       >
         <Row justify="space-between" align="middle" style={{ marginBottom: 12 }}>
           <Col><Title level={4} style={{ margin: 0 }}>案件查詢</Title></Col>
+          <Col>
+            <Button
+              icon={<FileExcelOutlined />}
+              onClick={handleExport}
+              loading={exporting}
+              disabled={!cases.length}
+            >
+              匯出 Excel
+            </Button>
+          </Col>
         </Row>
         <Card size="small">
           <Row gutter={[8, 8]} align="bottom">

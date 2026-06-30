@@ -2,8 +2,9 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import {
-  Card, Table, Select, Typography, Row, Col, Tabs, Tag,
+  Card, Table, Select, Typography, Row, Col, Tabs, Tag, Button, message,
 } from 'antd'
+import { FileExcelOutlined } from '@ant-design/icons'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts'
@@ -53,6 +54,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false)
   const [year, setYear] = useState(String(currentYear))
   const [deptId, setDeptId] = useState<string>('')
+  const [exporting, setExporting] = useState(false)
 
   const isWideRole = session ? ['vp', 'sysadmin', 'admin_staff'].includes(session.role) : false
 
@@ -66,6 +68,30 @@ export default function ReportsPage() {
   }, [year, deptId])
 
   useEffect(() => { loadReport() }, [loadReport])
+
+  // 匯出 Excel（與畫面相同年份/部門篩選；含員工績效＋接案件數兩個工作表）
+  async function handleExport() {
+    setExporting(true)
+    try {
+      const params = new URLSearchParams({ year })
+      if (deptId) params.set('deptId', deptId)
+      const res = await fetch(`/api/reports/export?${params.toString()}`, { credentials: 'include' })
+      if (!res.ok) { message.error('匯出失敗，請稍後再試'); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `年度案件統計_${year}_${dayjs().format('YYYYMMDD')}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      message.error('匯出失敗，請稍後再試')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   // ── 員工績效欄位 ──────────────────────────────────────────────────
   const perfColumns = [
@@ -248,7 +274,19 @@ export default function ReportsPage() {
 
   return (
     <div style={{ padding: 24 }}>
-      <Title level={4} style={{ marginBottom: 16 }}>年度案件統計</Title>
+      <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
+        <Col><Title level={4} style={{ margin: 0 }}>年度案件統計</Title></Col>
+        <Col>
+          <Button
+            icon={<FileExcelOutlined />}
+            onClick={handleExport}
+            loading={exporting}
+            disabled={loading || !data}
+          >
+            匯出 Excel
+          </Button>
+        </Col>
+      </Row>
       <Tabs items={tabItems} />
     </div>
   )

@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { Card, Typography, Select, Table, Row, Col, Spin } from 'antd'
+import { Card, Typography, Select, Table, Row, Col, Spin, Button, message } from 'antd'
+import { FileExcelOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
+import dayjs from 'dayjs'
 
 const { Title, Text } = Typography
 
@@ -30,6 +32,7 @@ export default function OpenFeeReportPage() {
   const [filterDeptId, setFilterDeptId] = useState<number | null>(isWide ? null : defaultDeptId)
   const [data, setData] = useState<ReportData | null>(null)
   const [loading, setLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -41,6 +44,29 @@ export default function OpenFeeReportPage() {
   }, [filterDeptId])
 
   useEffect(() => { loadData() }, [loadData])
+
+  // 匯出 Excel（與畫面相同部門篩選；含合計與預估公證費 60% 列）
+  async function handleExport() {
+    if (!filterDeptId) { message.warning('請先選擇部門'); return }
+    setExporting(true)
+    try {
+      const res = await fetch(`/api/reports/open-fee/export?deptId=${filterDeptId}`, { credentials: 'include' })
+      if (!res.ok) { message.error('匯出失敗，請稍後再試'); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `各員工未決件數預估公證費_${data?.deptName ?? ''}_${dayjs().format('YYYYMMDD')}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      message.error('匯出失敗，請稍後再試')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const { rows = [], employees = [], totals = {}, deptName = '' } = data ?? {}
 
@@ -160,7 +186,7 @@ export default function OpenFeeReportPage() {
         background: '#F5F7FA', paddingTop: 16, paddingBottom: 12,
         borderBottom: '1px solid #f0f0f0', marginBottom: 16,
       }}>
-        <Row align="middle" style={{ marginBottom: 4 }}>
+        <Row justify="space-between" align="middle" style={{ marginBottom: 4 }}>
           <Col>
             <Title level={4} style={{ margin: 0, display: 'inline', marginRight: 16 }}>
               各員工未決件數&amp;預估公證費
@@ -168,6 +194,16 @@ export default function OpenFeeReportPage() {
             <Text type="secondary" style={{ fontSize: 12 }}>
               訂定下一年度業績目標參考量化數據
             </Text>
+          </Col>
+          <Col>
+            <Button
+              icon={<FileExcelOutlined />}
+              onClick={handleExport}
+              loading={exporting}
+              disabled={loading || !filterDeptId || !rows.length}
+            >
+              匯出 Excel
+            </Button>
           </Col>
         </Row>
         <div style={{ marginTop: 12 }}>

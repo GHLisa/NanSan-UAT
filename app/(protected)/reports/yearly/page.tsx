@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { Card, Typography, Select, Table, Space, Row, Col, Spin } from 'antd'
+import { Card, Typography, Select, Table, Space, Row, Col, Spin, Button, message } from 'antd'
+import { FileExcelOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
+import dayjs from 'dayjs'
 
 const { Title, Text } = Typography
 
@@ -42,6 +44,7 @@ export default function YearlyCasesPage() {
   const [filterStatus, setFilterStatus] = useState('all')
   const [data, setData] = useState<ReportData | null>(null)
   const [loading, setLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -53,6 +56,30 @@ export default function YearlyCasesPage() {
   }, [filterDeptId, filterStatus])
 
   useEffect(() => { loadData() }, [loadData])
+
+  // 匯出 Excel（與畫面相同篩選條件；含各年度員工表＋各部門員工累計表）
+  async function handleExport() {
+    setExporting(true)
+    try {
+      const params = new URLSearchParams({ status: filterStatus })
+      if (filterDeptId) params.set('deptId', String(filterDeptId))
+      const res = await fetch(`/api/reports/yearly-cases/export?${params.toString()}`, { credentials: 'include' })
+      if (!res.ok) { message.error('匯出失敗，請稍後再試'); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `年度案件統計_${dayjs().format('YYYYMMDD')}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      message.error('匯出失敗，請稍後再試')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const deptName = data?.departments.find(d => d.id === filterDeptId)?.name ?? ''
 
@@ -159,6 +186,16 @@ export default function YearlyCasesPage() {
       }}>
         <Row justify="space-between" align="middle" style={{ marginBottom: 12 }}>
           <Col><Title level={4} style={{ margin: 0 }}>各年度已決&amp;未決案件數</Title></Col>
+          <Col>
+            <Button
+              icon={<FileExcelOutlined />}
+              onClick={handleExport}
+              loading={exporting}
+              disabled={loading || !data}
+            >
+              匯出 Excel
+            </Button>
+          </Col>
         </Row>
         <Card size="small">
           <Space wrap>

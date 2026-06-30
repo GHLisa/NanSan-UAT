@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { Card, Typography, Tabs, Select, Table, Space } from 'antd'
+import { Card, Typography, Tabs, Select, Table, Space, Button, message } from 'antd'
+import { FileExcelOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
@@ -139,12 +140,12 @@ function DetailTable({ groups, grandTotals }: { groups: EmpGroup[]; grandTotals:
 
 // ── Quarter Summary Table ─────────────────────────────────────────────────
 const QUARTER_COLS = [
-  { title: '序', key: 'seq', width: 44, align: 'center' as const },
+  { title: '序', dataIndex: 'seq', key: 'seq', width: 44, align: 'center' as const },
   { title: '經辦人', dataIndex: 'empName', key: 'empName', width: 100 },
-  { title: '件數', key: 'caseCount', width: 70, align: 'center' as const, render: (v: number) => fmtN(v) },
-  { title: '純公證費', key: 'actualFee', width: 130, align: 'right' as const, render: (v: number) => fmtFee(v) },
-  { title: '差旅其他費', key: 'travelFee', width: 120, align: 'right' as const, render: (v: number) => fmtFee(v) },
-  { title: '小計', key: 'subtotalFee', width: 130, align: 'right' as const, render: (v: number) => fmtFee(v) },
+  { title: '件數', dataIndex: 'caseCount', key: 'caseCount', width: 70, align: 'center' as const, render: (v: number) => fmtN(v) },
+  { title: '純公證費', dataIndex: 'actualFee', key: 'actualFee', width: 130, align: 'right' as const, render: (v: number) => fmtFee(v) },
+  { title: '差旅其他費', dataIndex: 'travelFee', key: 'travelFee', width: 120, align: 'right' as const, render: (v: number) => fmtFee(v) },
+  { title: '小計', dataIndex: 'subtotalFee', key: 'subtotalFee', width: 130, align: 'right' as const, render: (v: number) => fmtFee(v) },
 ]
 
 function QuarterTable({ groups }: { groups: EmpGroup[] }) {
@@ -184,6 +185,8 @@ export default function CaseDetailReportPage() {
   const [quarterData, setQuarterData] = useState<ReportData | null>(null)
   const [loadingM, setLoadingM] = useState(false)
   const [loadingQ, setLoadingQ] = useState(false)
+  const [exportingM, setExportingM] = useState(false)
+  const [exportingQ, setExportingQ] = useState(false)
 
   const [depts, setDepts] = useState<{ id: number; name: string }[]>([])
   useEffect(() => {
@@ -213,6 +216,47 @@ export default function CaseDetailReportPage() {
   useEffect(() => { loadMonth() }, [loadMonth])
   useEffect(() => { loadQuarter() }, [loadQuarter])
 
+  // 匯出 Excel（依當前分頁條件下載對應檔案）
+  async function downloadExport(params: URLSearchParams, fname: string) {
+    const res = await fetch(`/api/reports/case-detail/export?${params}`, { credentials: 'include' })
+    if (!res.ok) { message.error('匯出失敗，請稍後再試'); return }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fname
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleExportMonth() {
+    setExportingM(true)
+    try {
+      const p = new URLSearchParams({ type: 'monthly', year: String(filterYear), month: String(filterMonth) })
+      if (filterDeptId) p.set('deptId', String(filterDeptId))
+      await downloadExport(p, `已決案明細表_${filterYear}${String(filterMonth).padStart(2, '0')}_${dayjs().format('YYYYMMDD')}.xlsx`)
+    } catch {
+      message.error('匯出失敗，請稍後再試')
+    } finally {
+      setExportingM(false)
+    }
+  }
+
+  async function handleExportQuarter() {
+    setExportingQ(true)
+    try {
+      const p = new URLSearchParams({ type: 'quarterly', year: String(filterYear), quarter: filterQ })
+      if (filterDeptId) p.set('deptId', String(filterDeptId))
+      await downloadExport(p, `已決案明細表_${filterYear}${filterQ}_${dayjs().format('YYYYMMDD')}.xlsx`)
+    } catch {
+      message.error('匯出失敗，請稍後再試')
+    } finally {
+      setExportingQ(false)
+    }
+  }
+
   const deptSelect = isVP && (
     <Select
       value={filterDeptId}
@@ -233,6 +277,14 @@ export default function CaseDetailReportPage() {
               <Select value={filterYear} onChange={setFilterYear} options={YEAR_OPTIONS} style={{ width: 100 }} />
               <Select value={filterMonth} onChange={setFilterMonth} options={MONTH_OPTIONS} style={{ width: 80 }} />
               {deptSelect}
+              <Button
+                icon={<FileExcelOutlined />}
+                onClick={handleExportMonth}
+                loading={exportingM}
+                disabled={loadingM || !monthData?.groups.length}
+              >
+                匯出 Excel
+              </Button>
             </Space>
           </Card>
           {loadingM
@@ -253,6 +305,14 @@ export default function CaseDetailReportPage() {
               <Select value={filterYear} onChange={setFilterYear} options={YEAR_OPTIONS} style={{ width: 100 }} />
               <Select value={filterQ} onChange={setFilterQ} options={QUARTER_OPTIONS} style={{ width: 140 }} />
               {deptSelect}
+              <Button
+                icon={<FileExcelOutlined />}
+                onClick={handleExportQuarter}
+                loading={exportingQ}
+                disabled={loadingQ || !quarterData?.groups.length}
+              >
+                匯出 Excel
+              </Button>
             </Space>
           </Card>
           {loadingQ ? <Text type="secondary">載入中...</Text> : quarterData && (

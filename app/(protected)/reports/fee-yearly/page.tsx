@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { Card, Typography, Select, Table, Row, Col, Spin } from 'antd'
+import { Card, Typography, Select, Table, Row, Col, Spin, Button, message } from 'antd'
+import { FileExcelOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
+import dayjs from 'dayjs'
 
 const { Title, Text } = Typography
 
@@ -29,6 +31,7 @@ export default function FeeYearlyReportPage() {
   const [filterDeptId, setFilterDeptId] = useState<number | null>(isWide ? null : defaultDeptId)
   const [data, setData] = useState<ReportData | null>(null)
   const [loading, setLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -40,6 +43,29 @@ export default function FeeYearlyReportPage() {
   }, [filterDeptId])
 
   useEffect(() => { loadData() }, [loadData])
+
+  // 匯出 Excel（與畫面相同部門篩選）
+  async function handleExport() {
+    if (!filterDeptId) { message.warning('請先選擇部門'); return }
+    setExporting(true)
+    try {
+      const res = await fetch(`/api/reports/yearly-fees/export?deptId=${filterDeptId}`, { credentials: 'include' })
+      if (!res.ok) { message.error('匯出失敗，請稍後再試'); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `各年度已決未決公證費_${data?.deptName ?? ''}_${dayjs().format('YYYYMMDD')}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      message.error('匯出失敗，請稍後再試')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   // 合計列
   const sumRow = useMemo(() => {
@@ -100,6 +126,16 @@ export default function FeeYearlyReportPage() {
       }}>
         <Row justify="space-between" align="middle" style={{ marginBottom: 12 }}>
           <Col><Title level={4} style={{ margin: 0 }}>各年度已決&amp;未決公證費</Title></Col>
+          <Col>
+            <Button
+              icon={<FileExcelOutlined />}
+              onClick={handleExport}
+              loading={exporting}
+              disabled={loading || !filterDeptId || !data?.rows.length}
+            >
+              匯出 Excel
+            </Button>
+          </Col>
         </Row>
         <Card size="small">
           <Select
