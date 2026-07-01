@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { laterStage } from '@/lib/approvalFlow'
 import { z } from 'zod'
+import { parseBody } from '@/lib/apiError'
 
 const ProgressSchema = z.object({
   stage: z.string(),
@@ -40,7 +41,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const perm = await assertCanAddRecord(session, caseId)
   if (!perm.ok) return NextResponse.json({ success: false, error: perm.error }, { status: perm.status })
 
-  const body = ProgressSchema.parse(await req.json())
+  // [2026/07/01] - Lisa - 改用 parseBody：驗證失敗回 400 JSON，不再 throw 成 500 非 JSON
+  const parsed = await parseBody(req, ProgressSchema)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
 
   const progress = await prisma.caseProgress.create({
     data: {

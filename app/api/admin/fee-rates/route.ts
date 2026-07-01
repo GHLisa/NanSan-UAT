@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
+import { parseBody } from '@/lib/apiError'
 
 export async function GET(req: NextRequest) {
   const session = await getSession()
@@ -103,7 +104,10 @@ export async function POST(req: NextRequest) {
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
   if (session.role !== 'sysadmin') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
 
-  const body = FeeRateSchema.parse(await req.json())
+  // [2026/07/01] - Lisa - 改用 parseBody：驗證失敗回 400 JSON，不再 throw 成 500 非 JSON
+  const parsed = await parseBody(req, FeeRateSchema)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
   const effectiveDate = new Date(body.effectiveDate)
 
   if (body.type === '火險') {

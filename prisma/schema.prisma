@@ -14,6 +14,7 @@ model Region {
   id          Int          @id @default(autoincrement())
   name        String
   code        String       @unique
+  caseNoCode  String?      @map("case_no_code") // 公證編號代號（區域代號段；台北 ""、台中 T、高雄 K）
   departments Department[]
 
   @@map("regions")
@@ -23,6 +24,7 @@ model Department {
   id            Int             @id @default(autoincrement())
   name          String
   code          String          @unique
+  caseNoCode    String?         @map("case_no_code") // 公證編號代號（產生公證編號用的部門前綴；未設定時回退 code）
   regionId      Int
   region        Region          @relation(fields: [regionId], references: [id])
   employeeRoles EmployeeRole[]
@@ -118,6 +120,14 @@ model IncidentLocation {
   isActive Boolean @default(true)
 
   @@map("incident_locations")
+}
+
+model IncidentCause {
+  id       Int     @id @default(autoincrement())
+  name     String  @unique
+  isActive Boolean @default(true)
+
+  @@map("incident_causes")
 }
 
 model Case {

@@ -24,7 +24,6 @@ const SOURCE_PLACEHOLDER: Record<string, string> = {
   'NAS路徑': '例：\\\\NAS-TP\\incoming\\2025\\FB-20250408',
   '其他': '說明來源方式',
 }
-const INCIDENT_CAUSES = ['本體損壞', '火災', '水災', '第三人損害', '施工意外', '機械故障', '電氣損壞', '竊盜', '其他']
 const CONTACT_FORM_STATUS = ['待傳', '已回傳', '無']
 const PARKING_STATUS = ['申訴中', '訴訟中', '待請求時效']
 
@@ -62,6 +61,7 @@ interface MetaData {
   brokerCompanies: { id: number; name: string }[]
   insuranceTypes: { id: number; name: string; feeCategory: string }[]
   incidentLocations: { id: number; name: string }[]
+  incidentCauses: { id: number; name: string }[]
   employees: { id: number; name: string }[]
 }
 
@@ -314,6 +314,7 @@ export default function DispatchListPage() {
     if (!targetDeptId) { message.error('無法確認部門'); return }
 
     const body = {
+      caseNumber: (values.caseNumber as string)?.trim() || undefined,
       departmentId: targetDeptId,
       insuranceCompanyId: values.insuranceCompanyId as number,
       brokerCompanyId: (values.brokerCompanyId as number) || null,
@@ -405,11 +406,14 @@ export default function DispatchListPage() {
 
   // ── 新增派案 ─────────────────────────────────────────────────────────
   async function handleNewDispatch(values: Record<string, unknown>) {
+    // [2026/07/01] - Lisa - 公證編號人工填入 → 存入 draftData，成案時自動帶出沿用（成案才判重與寫入）
+    const manualCaseNumber = (values.caseNumber as string)?.trim()
     const res = await api.post('/api/dispatch', {
       ...values,
       insuranceCompanyId: Number(values.insuranceCompanyId),
       assignedDepartmentId: Number(values.assignedDepartmentId),
       brokerCompanyId: values.brokerCompanyId ? Number(values.brokerCompanyId) : null,
+      draftData: manualCaseNumber ? JSON.stringify({ formValues: { caseNumber: manualCaseNumber } }) : undefined,
     })
     if (res.success) {
       message.success('派案建立成功')
@@ -566,6 +570,11 @@ export default function DispatchListPage() {
               <Card title="基本資訊" size="small" style={{ marginBottom: 12 }}
                 styles={{ header: { background: '#EBF4FC', borderLeft: '4px solid #1B4F8C' } }}>
                 <Row gutter={[12, 0]}>
+                  <Col span={24}>
+                    <Form.Item label="公證編號" name="caseNumber" extra="留空則由系統自動產生">
+                      <Input placeholder="留空＝自動產生" maxLength={30} />
+                    </Form.Item>
+                  </Col>
                   <Col span={12}>
                     <Form.Item label="保險公司" name="insuranceCompanyId" rules={[{ required: true, message: '必選' }]}>
                       <Select options={(meta?.insuranceCompanies ?? []).map(i => ({ value: i.id, label: i.name }))}
@@ -601,7 +610,7 @@ export default function DispatchListPage() {
                   </Col>
                   <Col span={12}>
                     <Form.Item label="出險原因" name="incidentCause" rules={[{ required: true, message: '必選' }]}>
-                      <Select options={INCIDENT_CAUSES.map(c => ({ value: c, label: c }))} />
+                      <Select options={(meta?.incidentCauses ?? []).map(c => ({ value: c.name, label: c.name }))} />
                     </Form.Item>
                   </Col>
                   <Col span={12}>
@@ -831,6 +840,9 @@ export default function DispatchListPage() {
         width={520}
       >
         <Form form={dispatchForm} layout="vertical" onFinish={handleNewDispatch} style={{ marginTop: 16 }}>
+          <Form.Item name="caseNumber" label="公證編號" extra="留空則於成案時自動產生">
+            <Input placeholder="留空＝自動產生" maxLength={30} />
+          </Form.Item>
           <Form.Item name="sourceType" label="來源類型" initialValue="Email" rules={[{ required: true }]}>
             <Select options={SOURCE_OPTIONS} onChange={v => setSourceType(v)} />
           </Form.Item>

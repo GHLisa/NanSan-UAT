@@ -6,7 +6,7 @@ export async function GET() {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
 
-  const [regions, departments, insuranceCompanies, brokerCompanies, insuranceTypes, incidentLocations, employees] =
+  const [regions, departments, insuranceCompanies, brokerCompanies, insuranceTypes, incidentLocations, incidentCauses, employees] =
     await Promise.all([
       prisma.region.findMany({ orderBy: { id: 'asc' } }),
       prisma.department.findMany({ include: { region: { select: { name: true } } }, orderBy: { id: 'asc' } }),
@@ -14,6 +14,7 @@ export async function GET() {
       prisma.brokerCompany.findMany({ where: { isActive: true }, orderBy: { id: 'asc' } }),
       prisma.insuranceType.findMany({ where: { isActive: true }, orderBy: { id: 'asc' } }),
       prisma.incidentLocation.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } }),
+      prisma.incidentCause.findMany({ where: { isActive: true }, orderBy: { id: 'asc' } }),
       prisma.employee.findMany({
         where: { isActive: true },
         select: { id: true, name: true, username: true },
@@ -30,6 +31,7 @@ export async function GET() {
       brokerCompanies,
       insuranceTypes,
       incidentLocations,
+      incidentCauses,
       employees,
     },
   })

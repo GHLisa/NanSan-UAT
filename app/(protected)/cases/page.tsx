@@ -110,7 +110,7 @@ export default function CasesPage() {
   // [2026/06/18] - Lisa - 行政人員無部門＝全公司，視為 wide（可選任一部門/承辦人篩選）
   const isWide = !!session && (['vp', 'sysadmin'].includes(session.role) || (session.role === 'admin_staff' && !session.departmentId))
   const isHandler = session?.role === 'handler'
-  const canCreate = session && ['handler', 'admin_staff'].includes(session.role)
+  const canCreate = !!session // [2026/07/01] Lisa - 新增案件開放所有角色
 
   // Sticky filter bar height
   useEffect(() => {

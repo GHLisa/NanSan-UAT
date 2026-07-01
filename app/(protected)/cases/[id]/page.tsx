@@ -27,7 +27,6 @@ const REVIEW_STATUS_COLOR: Record<string, string> = {
   待複核: 'orange', 已核准: 'green', 退回: 'red',
   待執行副總閱: 'purple', 待加簽審核: 'geekblue', 加簽退回: 'red',
 }
-const INCIDENT_CAUSES = ['本體損壞', '火災', '水災', '第三人損害', '施工意外', '機械故障', '電氣損壞', '竊盜', '其他']
 const CONTACT_FORM_STATUSES = ['待傳', '已回傳', '無']
 const PARKING_STATUSES = ['申訴中', '訴訟中', '待請求時效']
 const TRAVEL_REQUIRED_DOCS = ['結案報告書', '公證費 DEBIT NOTE']
@@ -89,6 +88,7 @@ interface MetaData {
   brokerCompanies: { id: number; name: string }[]
   insuranceTypes: { id: number; name: string }[]
   incidentLocations: { id: number; name: string }[]
+  incidentCauses: { id: number; name: string }[]
   employees: { id: number; name: string }[]
 }
 
@@ -840,7 +840,7 @@ export default function CaseDetailPage() {
                   </Col>
                   <Col span={12}>
                     <Form.Item name="incidentCause" label="出險原因" rules={[{ required: true, message: '必填' }]}>
-                      <Select options={INCIDENT_CAUSES.map((c) => ({ value: c, label: c }))} />
+                      <Select options={(meta?.incidentCauses ?? []).map((c) => ({ value: c.name, label: c.name }))} />
                     </Form.Item>
                   </Col>
                   <Col span={12}>
@@ -849,7 +849,7 @@ export default function CaseDetailPage() {
                     </Form.Item>
                   </Col>
                   <Col span={12}>
-                    <Form.Item name="insuranceContact" label="保險公司承辦人"><Input /></Form.Item>
+                    <Form.Item name="insuranceContact" label="保險公司承辦人" rules={[{ required: true, message: '必填' }]}><Input /></Form.Item>
                   </Col>
                   <Col span={12}>
                     <Form.Item name="incidentDate" label="出險日期" rules={[{ required: true, message: '必填' }]}><DatePicker style={{ width: '100%' }} /></Form.Item>

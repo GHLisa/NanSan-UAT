@@ -260,12 +260,17 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
   }
 
+  // [2026/07/01] - Lisa - 保險公司承辦人改必填：編輯時若帶入此欄位不可為空
+  if ('insuranceContact' in body && !String(body.insuranceContact ?? '').trim()) {
+    return NextResponse.json({ success: false, error: '保險公司承辦人必填' }, { status: 400 })
+  }
+
   // 欄位變更比對 + 寫 log（FR-77）
   const updates: Record<string, unknown> = {}
   const logs: { fieldName: string; oldValue: string | null; newValue: string | null }[] = []
 
   for (const [key, value] of Object.entries(body)) {
-    if (key === 'assignees' || key === 'action' || key === 'cancelReason') continue
+    if (key === 'assignees' || key === 'action' || key === 'cancelReason' || key === 'caseNumber') continue // caseNumber 成案後不可修改
     if (!(key in existing)) continue
 
     let normalized: unknown = value

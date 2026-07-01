@@ -18,7 +18,7 @@ async function main() {
       cases, dispatch_queue, employee_roles, company_fee_rates,
       company_fire_rates, employees, departments, regions,
       insurance_companies, broker_companies, insurance_types,
-      incident_locations, case_number_seq
+      incident_locations, incident_causes, case_number_seq
     RESTART IDENTITY CASCADE
   `
 
@@ -31,7 +31,7 @@ async function main() {
       { name: '台北', code: 'TP' },
       { name: '台中', code: 'TC' },
       { name: '高雄', code: 'KH' },
-    ],
+    ], // 公證編號代號(caseNoCode) 不於種子設定，改由基礎資料「區域」維護
   })
 
   // ── Departments (FR-91) ───────────────────────────────────────────────
@@ -48,7 +48,7 @@ async function main() {
       { name: '高雄責任險部', code: 'KB', regionId: 3 },
       { name: '台北火險部',   code: 'NF', regionId: 1 },
       { name: '高雄火險部',   code: 'KF', regionId: 3 },
-    ],
+    ], // 公證編號代號(caseNoCode) 不於種子設定，改由基礎資料「部門」維護
   })
 
   // ── Insurance Companies ───────────────────────────────────────────────
@@ -106,6 +106,14 @@ async function main() {
       '雲林縣', '嘉義市', '嘉義縣', '屏東縣', '宜蘭縣', '花蓮縣',
       '台東縣', '澎湖縣', '金門縣', '連江縣', '台中市烏日區',
       '高雄市前鎮區', '台北市內湖區', '新北市中和區', '桃園市中壢區',
+    ].map((name) => ({ name, isActive: true })),
+  })
+
+  // ── Incident Causes（出險原因，對齊原前端寫死清單）─────────────────────
+  await prisma.incidentCause.createMany({
+    data: [
+      '本體損壞', '火災', '水災', '第三人損害', '施工意外',
+      '機械故障', '電氣損壞', '竊盜', '其他',
     ].map((name) => ({ name, isActive: true })),
   })
 

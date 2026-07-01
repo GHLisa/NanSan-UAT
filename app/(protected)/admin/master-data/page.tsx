@@ -3,9 +3,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   Card, Table, Tabs, Button, Modal, Form, Input, Switch, Select,
-  Typography, message, Tag, Tooltip,
+  Typography, message, Tag, Tooltip, Popconfirm, Space,
 } from 'antd'
-import { PlusOutlined, EditOutlined, InfoCircleOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, InfoCircleOutlined, DeleteOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 
 const { Title, Text } = Typography
@@ -158,9 +158,12 @@ function BrokerCompanyTab() {
 
 // ── 部門 Tab ──────────────────────────────────────────────────────────────
 function DepartmentTab() {
-  type Dept = { id: number; code: string; name: string; regionId: number; regionName: string }
+  type Dept = { id: number; code: string; caseNoCode: string | null; name: string; regionId: number; regionName: string }
   const [items, setItems] = useState<Dept[]>([])
   const [loading, setLoading] = useState(false)
+  const [modal, setModal] = useState(false)
+  const [editTarget, setEditTarget] = useState<Dept | null>(null)
+  const [form] = Form.useForm()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -170,20 +173,73 @@ function DepartmentTab() {
   }, [])
   useEffect(() => { load() }, [load])
 
+  async function handleSubmit(values: { caseNoCode?: string }) {
+    const res = await api.patch(
+      `/api/admin/master-data/departments?id=${editTarget!.id}`,
+      { caseNoCode: values.caseNoCode?.trim() || null },
+    )
+    if (res.success) { message.success('已更新'); setModal(false); load() }
+    else message.error(res.error ?? '操作失敗')
+  }
+
   const columns = [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 50 },
     { title: '代碼', dataIndex: 'code', key: 'code', width: 70 },
     { title: '名稱', dataIndex: 'name', key: 'name' },
     { title: '區域', dataIndex: 'regionName', key: 'regionName', width: 80 },
+    {
+      title: (
+        <span>
+          公證編號代號
+          <Tooltip title="產生公證編號時使用的部門前綴；未設定則沿用左側「代碼」">
+            <InfoCircleOutlined style={{ marginLeft: 4, color: '#aaa', fontSize: 12 }} />
+          </Tooltip>
+        </span>
+      ),
+      key: 'caseNoCode', width: 140,
+      render: (_: unknown, r: Dept) =>
+        r.caseNoCode ? <Tag color="blue">{r.caseNoCode}</Tag> : <Text type="secondary">（同代碼 {r.code}）</Text>,
+    },
+    {
+      title: '操作', key: 'action', width: 70,
+      render: (_: unknown, r: Dept) => (
+        <Button size="small" type="link" icon={<EditOutlined />}
+          onClick={() => { setEditTarget(r); form.setFieldsValue({ caseNoCode: r.caseNoCode ?? '' }); setModal(true) }}>
+          編輯
+        </Button>
+      ),
+    },
   ]
 
   return (
     <>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-        <Button size="small" type="primary" icon={<PlusOutlined />} style={{ background: '#1B4F8C' }}
-          onClick={() => message.info('部門新增功能（示意）')}>新增</Button>
-      </div>
+      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 10 }}>
+        「公證編號代號」為產生公證編號時的部門前綴，可獨立於部門代碼調整；未設定時沿用部門代碼。
+        部門代碼／名稱／區域涉及審核分類與權限，不開放於此編輯。
+      </Text>
       <Table dataSource={items} columns={columns} rowKey="id" loading={loading} size="small" pagination={false} />
+      <Modal
+        title={`編輯公證編號代號 — ${editTarget?.name ?? ''}`}
+        open={modal}
+        onCancel={() => { setModal(false); form.resetFields(); setEditTarget(null) }}
+        onOk={() => form.submit()}
+        okText="儲存"
+        okButtonProps={{ style: { background: '#1B4F8C' } }}
+        destroyOnClose
+      >
+        <Form form={form} layout="vertical" onFinish={handleSubmit} style={{ marginTop: 16 }}>
+          <Form.Item label="部門">
+            <Input value={`${editTarget?.name ?? ''}（代碼 ${editTarget?.code ?? ''}）`} disabled />
+          </Form.Item>
+          <Form.Item
+            name="caseNoCode"
+            label="公證編號代號"
+            extra="留空則沿用部門代碼。變更後僅影響該部門「之後新建」案件的公證編號前綴，既有案件不變。"
+          >
+            <Input placeholder={editTarget?.code ?? ''} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </>
   )
 }
@@ -274,15 +330,38 @@ function InsuranceTypeTab() {
   useEffect(() => { load() }, [load])
 
   async function handleSubmit(values: { name: string; feeCategory: string; isActive: boolean }) {
+    // [2026/07/01] - Lisa - 名稱重複檢查（新增或改名皆須，排除自身）
+    const isDupe = items.some(t => t.name === values.name && t.id !== editTarget?.id)
+    if (isDupe) { message.error('險種名稱已存在'); return }
+
     if (!editTarget) {
-      const isDupe = items.some(t => t.name === values.name)
-      if (isDupe) { message.error('險種名稱已存在'); return }
+      const res = await api.post('/api/admin/master-data/insurance-types', values)
+      if (res.success) { message.success('已新增'); setModal(false); load() }
+      else message.error(res.error ?? '操作失敗')
+      return
     }
-    const res = editTarget
-      ? await api.patch(`/api/admin/master-data/insurance-types?id=${editTarget.id}`, { feeCategory: values.feeCategory, isActive: values.isActive })
-      : await api.post('/api/admin/master-data/insurance-types', values)
-    if (res.success) { message.success(editTarget ? '已更新' : '已新增'); setModal(false); load() }
-    else message.error(res.error ?? '操作失敗')
+    // [2026/07/01] - Lisa - 開放編輯險種名稱：改名時若已有案件使用，後端回 409 提示，確認後同步更新既有案件
+    await doUpdate(values, false)
+  }
+
+  async function doUpdate(values: { name: string; feeCategory: string; isActive: boolean }, confirmRename: boolean) {
+    const res = await api.patch(
+      `/api/admin/master-data/insurance-types?id=${editTarget!.id}`,
+      { name: values.name, feeCategory: values.feeCategory, isActive: values.isActive, confirmRename },
+    )
+    if (res.success) { message.success('已更新'); setModal(false); load(); return }
+    if ((res as { code?: string }).code === 'RENAME_AFFECTS_CASES') {
+      Modal.confirm({
+        title: '此險種已被案件使用',
+        content: res.error ?? '改名將同步更新既有案件，確定要更新嗎？',
+        okText: '確認更新',
+        cancelText: '取消',
+        okButtonProps: { style: { background: '#1B4F8C' } },
+        onOk: () => doUpdate(values, true),
+      })
+      return
+    }
+    message.error(res.error ?? '操作失敗')
   }
 
   const columns = [
@@ -335,7 +414,7 @@ function InsuranceTypeTab() {
       >
         <Form form={form} layout="vertical" onFinish={handleSubmit} style={{ marginTop: 16 }}>
           <Form.Item name="name" label="險種名稱" rules={[{ required: true, message: '必填' }]}>
-            <Input disabled={!!editTarget} />
+            <Input />
           </Form.Item>
           <Form.Item name="feeCategory" label="費率表類別" rules={[{ required: true, message: '必選' }]}>
             <Select options={FEE_CATEGORIES.map(c => ({ value: c, label: c }))} placeholder="請選擇" />
@@ -351,9 +430,12 @@ function InsuranceTypeTab() {
 
 // ── 區域 Tab ──────────────────────────────────────────────────────────────
 function RegionTab() {
-  type Region = { id: number; code: string; name: string }
+  type Region = { id: number; code: string; name: string; caseNoCode: string | null }
   const [items, setItems] = useState<Region[]>([])
   const [loading, setLoading] = useState(false)
+  const [modal, setModal] = useState(false)
+  const [editTarget, setEditTarget] = useState<Region | null>(null)
+  const [form] = Form.useForm()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -363,16 +445,187 @@ function RegionTab() {
   }, [])
   useEffect(() => { load() }, [load])
 
+  async function handleSubmit(values: { caseNoCode?: string }) {
+    const res = await api.patch(
+      `/api/admin/master-data/regions?id=${editTarget!.id}`,
+      { caseNoCode: (values.caseNoCode ?? '').trim() },
+    )
+    if (res.success) { message.success('已更新'); setModal(false); load() }
+    else message.error(res.error ?? '操作失敗')
+  }
+
+  const columns = [
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 50 },
+    { title: '代碼', dataIndex: 'code', key: 'code', width: 70 },
+    { title: '名稱', dataIndex: 'name', key: 'name' },
+    {
+      title: (
+        <span>
+          公證編號代號
+          <Tooltip title="產生公證編號時的區域代號段（台北空白、台中 T、高雄 K）">
+            <InfoCircleOutlined style={{ marginLeft: 4, color: '#aaa', fontSize: 12 }} />
+          </Tooltip>
+        </span>
+      ),
+      key: 'caseNoCode', width: 140,
+      render: (_: unknown, r: Region) =>
+        r.caseNoCode ? <Tag color="blue">{r.caseNoCode}</Tag> : <Text type="secondary">（空白）</Text>,
+    },
+    {
+      title: '操作', key: 'action', width: 70,
+      render: (_: unknown, r: Region) => (
+        <Button size="small" type="link" icon={<EditOutlined />}
+          onClick={() => { setEditTarget(r); form.setFieldsValue({ caseNoCode: r.caseNoCode ?? '' }); setModal(true) }}>
+          編輯
+        </Button>
+      ),
+    },
+  ]
+
   return (
-    <Table
-      dataSource={items} loading={loading}
-      columns={[
-        { title: 'ID', dataIndex: 'id', key: 'id', width: 50 },
-        { title: '代碼', dataIndex: 'code', key: 'code', width: 70 },
-        { title: '名稱', dataIndex: 'name', key: 'name' },
-      ]}
-      rowKey="id" size="small" pagination={false}
-    />
+    <>
+      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 10 }}>
+        「公證編號代號」為產生公證編號時的區域代號段（台北留空白、台中 T、高雄 K）。留空即代表該區域無區域代號。
+      </Text>
+      <Table dataSource={items} columns={columns} rowKey="id" loading={loading} size="small" pagination={false} />
+      <Modal
+        title={`編輯公證編號代號 — ${editTarget?.name ?? ''}`}
+        open={modal}
+        onCancel={() => { setModal(false); form.resetFields(); setEditTarget(null) }}
+        onOk={() => form.submit()}
+        okText="儲存"
+        okButtonProps={{ style: { background: '#1B4F8C' } }}
+        destroyOnClose
+      >
+        <Form form={form} layout="vertical" onFinish={handleSubmit} style={{ marginTop: 16 }}>
+          <Form.Item label="區域">
+            <Input value={`${editTarget?.name ?? ''}（代碼 ${editTarget?.code ?? ''}）`} disabled />
+          </Form.Item>
+          <Form.Item
+            name="caseNoCode"
+            label="公證編號代號"
+            extra="留空代表無區域代號（如台北）。變更後僅影響之後新建案件的公證編號。"
+          >
+            <Input placeholder="（留空）" maxLength={4} />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </>
+  )
+}
+
+// ── 出險原因 Tab ──────────────────────────────────────────────────────────
+function IncidentCauseTab() {
+  type ICause = { id: number; name: string; isActive: boolean }
+  const [items, setItems] = useState<ICause[]>([])
+  const [loading, setLoading] = useState(false)
+  const [modal, setModal] = useState(false)
+  const [editTarget, setEditTarget] = useState<ICause | null>(null)
+  const [form] = Form.useForm()
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const res = await api.get<ICause[]>('/api/admin/master-data/incident-causes')
+    if (res.success && res.data) setItems(res.data)
+    setLoading(false)
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  async function handleSubmit(values: { name: string; isActive: boolean }) {
+    // 名稱重複檢查（新增或改名皆須，排除自身）
+    const isDupe = items.some(t => t.name === values.name && t.id !== editTarget?.id)
+    if (isDupe) { message.error('出險原因已存在'); return }
+
+    if (!editTarget) {
+      const res = await api.post('/api/admin/master-data/incident-causes', values)
+      if (res.success) { message.success('已新增'); setModal(false); load() }
+      else message.error(res.error ?? '操作失敗')
+      return
+    }
+    // 改名時若已有案件使用，後端回 409 提示，確認後同步更新既有案件
+    await doUpdate(values, false)
+  }
+
+  async function doUpdate(values: { name: string; isActive: boolean }, confirmRename: boolean) {
+    const res = await api.patch(
+      `/api/admin/master-data/incident-causes?id=${editTarget!.id}`,
+      { name: values.name, isActive: values.isActive, confirmRename },
+    )
+    if (res.success) { message.success('已更新'); setModal(false); load(); return }
+    if (res.code === 'RENAME_AFFECTS_CASES') {
+      Modal.confirm({
+        title: '此出險原因已被案件使用',
+        content: res.error ?? '改名將同步更新既有案件，確定要更新嗎？',
+        okText: '確認更新',
+        cancelText: '取消',
+        okButtonProps: { style: { background: '#1B4F8C' } },
+        onOk: () => doUpdate(values, true),
+      })
+      return
+    }
+    message.error(res.error ?? '操作失敗')
+  }
+
+  async function handleDelete(r: ICause) {
+    const res = await api.delete(`/api/admin/master-data/incident-causes?id=${r.id}`)
+    if (res.success) { message.success('已刪除'); load() }
+    else message.error(res.error ?? '刪除失敗')
+  }
+
+  const columns = [
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 50 },
+    { title: '出險原因', dataIndex: 'name', key: 'name' },
+    { title: '狀態', dataIndex: 'isActive', key: 'isActive', width: 80,
+      render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? '啟用' : '停用'}</Tag> },
+    {
+      title: '操作', key: 'action', width: 140,
+      render: (_: unknown, r: ICause) => (
+        <Space size={0}>
+          <Button size="small" type="link" icon={<EditOutlined />}
+            onClick={() => { setEditTarget(r); form.setFieldsValue({ name: r.name, isActive: r.isActive }); setModal(true) }}>
+            編輯
+          </Button>
+          <Popconfirm
+            title="確定刪除此出險原因？"
+            description="既有案件已填寫的值不受影響。"
+            okText="刪除" cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => handleDelete(r)}
+          >
+            <Button size="small" type="link" danger icon={<DeleteOutlined />}>刪除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  return (
+    <>
+      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 10 }}>
+        維護案件表單「出險原因」下拉選項。停用的原因不會出現在案件表單的下拉選單中。
+      </Text>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+        <Button size="small" type="primary" icon={<PlusOutlined />} style={{ background: '#1B4F8C' }}
+          onClick={() => { setEditTarget(null); form.resetFields(); setModal(true) }}>新增</Button>
+      </div>
+      <Table dataSource={items} columns={columns} rowKey="id" loading={loading} size="small" pagination={false} />
+      <Modal
+        title={editTarget ? '編輯出險原因' : '新增出險原因'}
+        open={modal}
+        onCancel={() => { setModal(false); form.resetFields(); setEditTarget(null) }}
+        onOk={() => form.submit()}
+        okText={editTarget ? '儲存' : '新增'}
+        okButtonProps={{ style: { background: '#1B4F8C' } }}
+        destroyOnClose
+      >
+        <Form form={form} layout="vertical" onFinish={handleSubmit} style={{ marginTop: 16 }}>
+          <Form.Item name="name" label="出險原因" rules={[{ required: true, message: '必填' }]}><Input /></Form.Item>
+          <Form.Item name="isActive" label="狀態" valuePropName="checked" initialValue={true}>
+            <Switch checkedChildren="啟用" unCheckedChildren="停用" />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </>
   )
 }
 
@@ -384,6 +637,7 @@ export default function MasterDataPage() {
     { key: '3', label: '部門',          children: <DepartmentTab /> },
     { key: '5', label: '出險/查勘地點', children: <IncidentLocationTab /> },
     { key: '6', label: '險種',          children: <InsuranceTypeTab /> },
+    { key: '7', label: '出險原因',      children: <IncidentCauseTab /> },
     { key: '4', label: '區域',          children: <RegionTab /> },
   ]
 

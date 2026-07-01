@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth'
 import { canDispatch } from '@/lib/permissions'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
+import { parseBody } from '@/lib/apiError'
 
 export async function GET(req: NextRequest) {
   const session = await getSession()
@@ -143,7 +144,10 @@ export async function POST(req: NextRequest) {
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
   if (!canDispatch(session.role)) return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
 
-  const body = CreateSchema.parse(await req.json())
+  // [2026/07/01] - Lisa - 改用 parseBody：驗證失敗回 400 JSON，不再 throw 成 500 非 JSON
+  const parsed = await parseBody(req, CreateSchema)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
   const item = await prisma.dispatchQueue.create({
     data: { ...body, assignedBy: parseInt(session.sub) },
   })

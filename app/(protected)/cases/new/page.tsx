@@ -15,10 +15,6 @@ const { Title, Text } = Typography
 const { Option } = Select
 const { TextArea } = Input
 
-const INCIDENT_CAUSES = [
-  '本體損壞', '火災', '水災', '第三人損害', '施工意外',
-  '機械故障', '電氣損壞', '竊盜', '其他',
-]
 const CONTACT_FORM_STATUS = ['無', '待傳', '已回傳']
 const PARKING_STATUS = ['申訴中', '訴訟中', '待請求時效']
 
@@ -29,6 +25,7 @@ interface MetaData {
   employees: { id: number; name: string }[]
   insuranceTypes: { id: number; name: string }[]
   incidentLocations: { id: number; name: string }[]
+  incidentCauses: { id: number; name: string }[]
 }
 
 interface AssignmentRow {
@@ -72,6 +69,7 @@ export default function CaseNewPage() {
     employees: [],
     insuranceTypes: [],
     incidentLocations: [],
+    incidentCauses: [],
   })
   const [assignments, setAssignments] = useState<AssignmentRow[]>([
     { key: '1', employeeId: null, role: '主辦', contributionRatio: 100 },
@@ -101,9 +99,9 @@ export default function CaseNewPage() {
     }
   }, [session, form])
 
-  // 預設第一筆承辦人為登入者本人（主辦、100%）
+  // 預設第一筆承辦人為登入者本人（主辦、100%）；行政人員除外（由其指派他人）
   useEffect(() => {
-    if (!session) return
+    if (!session || session.role === 'admin_staff') return
     const selfId = parseInt(session.sub)
     setAssignments((prev) => {
       if (prev.length === 1 && prev[0].employeeId === null) {
@@ -188,7 +186,8 @@ export default function CaseNewPage() {
     const selectedType = meta.insuranceTypes.find((t) => t.id === values.insuranceTypeId)
 
     const body = {
-      departmentId: session?.departmentId,
+      caseNumber: (values.caseNumber as string)?.trim() || undefined,
+      departmentId: values.departmentId ?? session?.departmentId,
       insuranceCompanyId: values.insuranceCompanyId,
       brokerCompanyId: values.brokerCompanyId ?? null,
       insuranceContact: values.insuranceContact,
@@ -376,15 +375,31 @@ export default function CaseNewPage() {
         onFinish={handleSubmit}
         initialValues={{ deductible: 0, contactFormStatus: '待傳' }}
       >
-        {/* departmentId 由 session 帶入，隱藏欄位保存值 */}
-        <Form.Item name="departmentId" hidden><Input /></Form.Item>
+        {/* departmentId：有部門者由 session 帶入（隱藏保存）；無部門者改於下方欄位下拉選擇 */}
+        {session?.departmentId ? <Form.Item name="departmentId" hidden><Input /></Form.Item> : null}
 
         <Card title="基本資訊" bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)', marginBottom: 16 }}>
           <Row gutter={[16, 0]}>
             <Col xs={24} sm={8}>
-              <Form.Item label="部門">
-                <Input value={session?.departmentName ?? '—'} readOnly disabled />
+              <Form.Item label="公證編號" name="caseNumber" extra="留空則由系統自動產生">
+                <Input placeholder="留空＝自動產生" maxLength={30} />
               </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={[16, 0]}>
+            <Col xs={24} sm={8}>
+              {session?.departmentId ? (
+                <Form.Item label="部門">
+                  <Input value={session?.departmentName ?? '—'} readOnly disabled />
+                </Form.Item>
+              ) : (
+                <Form.Item label="部門" name="departmentId" rules={[{ required: true, message: '必填' }]}>
+                  <Select
+                    placeholder="選擇部門" showSearch optionFilterProp="label"
+                    options={meta.departments.map((d) => ({ value: d.id, label: d.name }))}
+                  />
+                </Form.Item>
+              )}
             </Col>
             <Col xs={24} sm={8}>
               <Form.Item label="委託日期" name="commissionDate" rules={[{ required: true, message: '必填' }]}>
@@ -415,8 +430,8 @@ export default function CaseNewPage() {
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
-              <Form.Item label="保險公司承辦人" name="insuranceContact">
-                <Input placeholder="選填" />
+              <Form.Item label="保險公司承辦人" name="insuranceContact" rules={[{ required: true, message: '必填' }]}>
+                <Input />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
@@ -451,7 +466,7 @@ export default function CaseNewPage() {
             <Col xs={24} sm={8}>
               <Form.Item label="出險原因" name="incidentCause" rules={[{ required: true, message: '必填' }]}>
                 <Select placeholder="選擇出險原因">
-                  {INCIDENT_CAUSES.map((c) => <Option key={c} value={c}>{c}</Option>)}
+                  {meta.incidentCauses.map((c) => <Option key={c.id} value={c.name}>{c.name}</Option>)}
                 </Select>
               </Form.Item>
             </Col>

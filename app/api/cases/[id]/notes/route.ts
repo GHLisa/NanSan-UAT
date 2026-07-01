@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
+import { parseBody } from '@/lib/apiError'
 
 const NoteSchema = z.object({
   content: z.string().min(1),
@@ -36,7 +37,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const perm = await assertCanAddRecord(session, caseId)
   if (!perm.ok) return NextResponse.json({ success: false, error: perm.error }, { status: perm.status })
 
-  const body = NoteSchema.parse(await req.json())
+  // [2026/07/01] - Lisa - 改用 parseBody：驗證失敗回 400 JSON，不再 throw 成 500 非 JSON
+  const parsed = await parseBody(req, NoteSchema)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
 
   const note = await prisma.caseNote.create({
     data: {

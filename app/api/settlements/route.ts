@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
+import { parseBody } from '@/lib/apiError'
 
 export async function GET(req: NextRequest) {
   const session = await getSession()
@@ -94,7 +95,10 @@ export async function POST(req: NextRequest) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
 
-  const body = SettlementSchema.parse(await req.json())
+  // [2026/07/01] - Lisa - 改用 parseBody：驗證失敗回 400 JSON，不再 throw 成 500 非 JSON
+  const parsed = await parseBody(req, SettlementSchema)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
 
   const existing = await prisma.settlement.findUnique({ where: { caseId: body.caseId } })
   if (existing) {

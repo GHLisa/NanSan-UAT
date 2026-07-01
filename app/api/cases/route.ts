@@ -5,6 +5,7 @@ import { z } from 'zod'
 import dayjs from 'dayjs'
 import { mailNewAssignment } from '@/lib/caseMail'
 import { newAssignmentNotification } from '@/lib/caseNotify'
+import { parseBody } from '@/lib/apiError'
 
 async function buildCaseScope(session: Awaited<ReturnType<typeof getSession>>) {
   if (!session) return {}
@@ -187,10 +188,11 @@ export async function GET(req: NextRequest) {
 }
 
 const CaseSchema = z.object({
+  caseNumber: z.string().optional(), // [2026/07/01] 可人工填入公證編號；留空則系統自動產生
   departmentId: z.number(),
   insuranceCompanyId: z.number(),
   brokerCompanyId: z.number().nullable().optional(),
-  insuranceContact: z.string().optional(),
+  insuranceContact: z.string().min(1, '保險公司承辦人必填'),
   policyNumber: z.string(),
   insuredName: z.string(),
   incidentLocation: z.string(),
@@ -225,13 +227,12 @@ export async function POST(req: NextRequest) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
 
-  const body = CaseSchema.parse(await req.json())
+  // [2026/07/01] - Lisa - 改用 parseBody：驗證失敗回傳 400 JSON（含欄位訊息），不再 throw 成 500 非 JSON
+  const parsed = await parseBody(req, CaseSchema)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
 
-  // ── 角色驗證：直接新增案件僅承辦人／行政人員（對齊 UI canCreate）；
-  //    派案池取件成案（帶 dispatchId）依 demo 基準開放所有角色 ──────────────
-  if (!body.dispatchId && session.role !== 'handler' && session.role !== 'admin_staff') {
-    return NextResponse.json({ success: false, error: '僅承辦人或行政人員可新增案件' }, { status: 403 })
-  }
+  // [2026/07/01] - Lisa - 新增案件開放所有角色（原限承辦人／行政人員）；已於上方確認登入
 
   // ── FR-44/76 後端驗證補強 ────────────────────────────────────────────
   const assignments = body.assignments ?? []
@@ -294,18 +295,27 @@ export async function POST(req: NextRequest) {
   }
 
   // ── FR-08 公證編號格式 ───────────────────────────────────────────────
-  // 格式：[部門代碼][保司代碼][CO?]-[年度2碼][區域代號]-[三位流水號]
-  // 區域代號依部門所屬區域動態帶入（台北/北區→''、台中/中區→'T'、高雄/南區→'K'）
-  const REGION_CASE_CODE: Record<string, string> = {
-    TP: '', TC: 'T', KH: 'K', // seed v3.0 區域代碼
-    NORTH: '', CENTRAL: 'T', SOUTH: 'K', // 舊代碼相容
-  }
-  const regionCode = REGION_CASE_CODE[dept.region.code] ?? ''
+  // 格式：[公證編號代號][保司代碼][CO?]-[年度2碼][區域代號]-[三位流水號]
+  // [2026/07/01] - Lisa - 區域代號改抓「區域基礎資料」的公證編號代號（Region.caseNoCode），不再 hardcode；
+  // 未設定（null）時回退空字串（等同台北無區域段）
+  const regionCode = dept.region.caseNoCode ?? ''
   const year = String(dayjs().year()).slice(-2)
   const hasCoInsurance = !!(body.coInsurers && body.coInsurers.length > 0)
   const coTag = hasCoInsurance ? 'CO' : ''
-  // 序號 key 含年度＋部門，避免跨部門／跨年度共用
-  const seqKey = `${dept.code}-${year}`
+  // [2026/07/01] - Lisa - 公證編號前綴改用「公證編號代號」(caseNoCode)；未設定時回退部門代碼
+  const caseNoCode = dept.caseNoCode || dept.code
+  // [2026/07/01] - Lisa - 序號 key = 公證編號代號＋區域代號＋年度；
+  // 同業務線不同區域（如台北/台中/高雄工程部皆 NL）各自從 001 計號，不跨區共用
+  const seqKey = `${caseNoCode}${regionCode}-${year}`
+
+  // [2026/07/01] - Lisa - 公證編號可人工填入：有填則沿用並先檢查重複；留空則自動取號
+  const manualCaseNumber = body.caseNumber?.trim()
+  if (manualCaseNumber) {
+    const dup = await prisma.case.findFirst({ where: { caseNumber: manualCaseNumber }, select: { id: true } })
+    if (dup) {
+      return NextResponse.json({ success: false, error: `公證編號「${manualCaseNumber}」已存在，請確認` }, { status: 409 })
+    }
+  }
 
   const dispatchId = body.dispatchId
 
@@ -334,14 +344,48 @@ export async function POST(req: NextRequest) {
         if (entry) dispatchInfo = { createdAt: entry.createdAt, assignerName: entry.assigner.name }
       }
 
-      // FR-08 原子取號
-      const seq = await tx.caseNumberSeq.upsert({
-        where: { deptCode: seqKey },
-        create: { deptCode: seqKey, nextSeq: 2 },
-        update: { nextSeq: { increment: 1 } },
-      })
-      const seqNo = String(seq.nextSeq - 1).padStart(3, '0')
-      const generated = `${dept.code}${ic.code}${coTag}-${year}${regionCode}-${seqNo}`
+      // FR-08 取號：人工填入則沿用該號；否則原子遞增自動產生
+      let generated: string
+      if (manualCaseNumber) {
+        generated = manualCaseNumber
+        // 若人工號符合本部門/區域/年度的自動格式，將流水號計數器推進至其序號之後，
+        // 避免日後自動取號回頭撞到此號
+        const m = manualCaseNumber.match(/-(\d{3,})$/)
+        if (m && manualCaseNumber.includes(`-${year}${regionCode}-`)) {
+          const target = parseInt(m[1], 10) + 1
+          const cur = await tx.caseNumberSeq.findUnique({ where: { deptCode: seqKey } })
+          if (!cur) {
+            await tx.caseNumberSeq.create({ data: { deptCode: seqKey, nextSeq: target } })
+          } else if (cur.nextSeq < target) {
+            await tx.caseNumberSeq.update({ where: { deptCode: seqKey }, data: { nextSeq: target } })
+          }
+        }
+      } else {
+        // 自動取號：先原子遞增計數器
+        const seq = await tx.caseNumberSeq.upsert({
+          where: { deptCode: seqKey },
+          create: { deptCode: seqKey, nextSeq: 2 },
+          update: { nextSeq: { increment: 1 } },
+        })
+        let candidate = seq.nextSeq - 1
+        // [2026/07/01] - Lisa - 防重號自癒：計數器可能落後於既有資料（人工號/匯入/重灌造成），
+        // 對齊到該部門/區域/年度實際最大序號 +1，避免自動號撞到既有案件而卡在交易回滾迴圈
+        const sameKeyCases = await tx.case.findMany({
+          where: { caseNumber: { startsWith: caseNoCode, contains: `-${year}${regionCode}-` } },
+          select: { caseNumber: true },
+        })
+        let maxSeq = 0
+        for (const r of sameKeyCases) {
+          const mm = r.caseNumber.match(/-(\d+)$/)
+          if (mm) { const n = parseInt(mm[1], 10); if (n > maxSeq) maxSeq = n }
+        }
+        if (candidate <= maxSeq) {
+          candidate = maxSeq + 1
+          await tx.caseNumberSeq.update({ where: { deptCode: seqKey }, data: { nextSeq: candidate + 1 } })
+        }
+        const seqNo = String(candidate).padStart(3, '0')
+        generated = `${caseNoCode}${ic.code}${coTag}-${year}${regionCode}-${seqNo}`
+      }
 
       const created = await tx.case.create({
         data: {
@@ -357,8 +401,11 @@ export async function POST(req: NextRequest) {
           commissionDate: new Date(body.commissionDate),
           insuranceType: body.insuranceType,
           incidentCause: body.incidentCause,
-          estimatedAmount: body.estimatedAmount != null ? BigInt(body.estimatedAmount) : null,
-          deductible: BigInt(body.deductible ?? 0),
+          // [2026/07/01] - Lisa - 防呆：僅在有限整數時轉 BigInt，避免 NaN/浮點值讓 BigInt() throw 成 500 非 JSON
+          estimatedAmount: Number.isFinite(body.estimatedAmount)
+            ? BigInt(Math.trunc(body.estimatedAmount as number))
+            : null,
+          deductible: BigInt(Math.trunc(Number.isFinite(body.deductible) ? (body.deductible as number) : 0)),
           isSpecialCase: body.isSpecialCase ?? false,
           notes: body.notes,
           contactFormStatus: body.contactFormStatus,
@@ -428,6 +475,10 @@ export async function POST(req: NextRequest) {
     const status = (e as Error & { httpStatus?: number }).httpStatus
     if (status === 409) {
       return NextResponse.json({ success: false, error: (e as Error).message }, { status: 409 })
+    }
+    // [2026/07/01] - Lisa - 公證編號唯一鍵衝突（競態）→ 回 409
+    if ((e as { code?: string }).code === 'P2002') {
+      return NextResponse.json({ success: false, error: '公證編號重複，請確認後重試' }, { status: 409 })
     }
     throw e
   }
