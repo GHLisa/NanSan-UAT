@@ -36,13 +36,22 @@ function validateRoles(primaryRole: RoleInput | undefined, additionalRoles: Role
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
-  if (session.role !== 'sysadmin') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
+  if (session.role !== 'sysadmin' && session.role !== 'admin_staff') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
 
   const id = parseInt(params.id)
   const body = await req.json() as {
     name?: string; email?: string | null; isActive?: boolean; password?: string
     unlock?: boolean; resetPassword?: boolean
     primaryRole?: RoleInput; additionalRoles?: RoleInput[]
+  }
+
+  // [2026/07/01] - Lisa - 行政人員不可編輯系統管理員帳號，也不可指派系統管理員角色
+  if (session.role === 'admin_staff') {
+    if (body.primaryRole?.role === 'sysadmin' || (body.additionalRoles ?? []).some((r) => r.role === 'sysadmin')) {
+      return NextResponse.json({ success: false, error: '行政人員不可指派系統管理員角色' }, { status: 403 })
+    }
+    const targetSysadmin = await prisma.employeeRole.findFirst({ where: { employeeId: id, role: 'sysadmin' }, select: { id: true } })
+    if (targetSysadmin) return NextResponse.json({ success: false, error: '行政人員不可編輯系統管理員帳號' }, { status: 403 })
   }
 
   // FR-29/75 角色驗證（僅在有提供角色時）
@@ -112,10 +121,19 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
-  if (session.role !== 'sysadmin') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
+  if (session.role !== 'sysadmin' && session.role !== 'admin_staff') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
 
   const id = parseInt(params.id)
   const body = await req.json() as { action: string; roleId?: number; role?: string; roleName?: string; departmentId?: number | null; teamGroup?: string | null; isPrimary?: boolean }
+
+  // [2026/07/01] - Lisa - 行政人員不可指派系統管理員角色、不可編輯系統管理員帳號
+  if (session.role === 'admin_staff') {
+    if (body.role === 'sysadmin') {
+      return NextResponse.json({ success: false, error: '行政人員不可指派系統管理員角色' }, { status: 403 })
+    }
+    const targetSysadmin = await prisma.employeeRole.findFirst({ where: { employeeId: id, role: 'sysadmin' }, select: { id: true } })
+    if (targetSysadmin) return NextResponse.json({ success: false, error: '行政人員不可編輯系統管理員帳號' }, { status: 403 })
+  }
 
   if (body.action === 'remove' && body.roleId) {
     await prisma.employeeRole.delete({ where: { id: body.roleId } })

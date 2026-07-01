@@ -11,7 +11,7 @@ const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/cron']
 // 頁面級角色守衛：直接輸入 URL 也須符合角色（選單可見性之外的第二道防線）
 // /admin/fee-rates 為全角色可見（唯讀），寫入權限由 API 層把關，不在此限制
 const ROLE_GUARDED_ROUTES: { prefix: string; roles: string[] }[] = [
-  { prefix: '/admin/users',       roles: ['sysadmin'] },
+  { prefix: '/admin/users',       roles: ['sysadmin', 'admin_staff'] }, // [2026/07/01] Lisa - 使用者帳號開放行政人員（代理登入仍限 sysadmin）
   { prefix: '/admin/master-data', roles: ['sysadmin', 'admin_staff'] }, // [2026/07/01] Lisa - 基礎資料開放行政人員
   { prefix: '/admin/login-logs',  roles: ['sysadmin'] },
   { prefix: '/performance',       roles: ['team_lead', 'dept_manager'] },

@@ -36,9 +36,19 @@ function validateRoles(primaryRole: RoleInput | undefined, additionalRoles: Role
 export async function GET() {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
-  if (session.role !== 'sysadmin') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
+  if (session.role !== 'sysadmin' && session.role !== 'admin_staff') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
 
+  // [2026/07/01] - Lisa - 對非 sysadmin 隱藏「純系統管理員」帳號（角色僅有 sysadmin 者）；
+  // 同時具 sysadmin＋其他角色仍顯示；sysadmin 本人可見全部
   const employees = await prisma.employee.findMany({
+    where: session.role === 'sysadmin' ? {} : {
+      NOT: {
+        AND: [
+          { roles: { some: { role: 'sysadmin' } } },
+          { roles: { none: { role: { not: 'sysadmin' } } } },
+        ],
+      },
+    },
     include: { roles: { include: { department: { select: { name: true } } }, orderBy: [{ isPrimary: 'desc' }, { id: 'asc' }] } },
     orderBy: { id: 'asc' },
   })
@@ -60,11 +70,17 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
-  if (session.role !== 'sysadmin') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
+  if (session.role !== 'sysadmin' && session.role !== 'admin_staff') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
 
   const body = await req.json() as {
     name: string; username: string; email?: string; isActive?: boolean
     primaryRole?: RoleInput; additionalRoles?: RoleInput[]
+  }
+
+  // [2026/07/01] - Lisa - 行政人員不可指派系統管理員角色
+  if (session.role === 'admin_staff' &&
+      (body.primaryRole?.role === 'sysadmin' || (body.additionalRoles ?? []).some((r) => r.role === 'sysadmin'))) {
+    return NextResponse.json({ success: false, error: '行政人員不可指派系統管理員角色' }, { status: 403 })
   }
 
   if (!body.name || !body.username) {

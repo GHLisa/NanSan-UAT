@@ -238,7 +238,7 @@ export default function UsersPage() {
           >
             <Button size="small" type="link" icon={<KeyOutlined />}>重設密碼</Button>
           </Popconfirm>
-          {r.isActive && r.id !== Number(session?.sub) && (
+          {session?.role === 'sysadmin' && r.isActive && r.id !== Number(session?.sub) && (
             <Popconfirm
               title={`確認以「${r.name}」身分代理登入？`}
               description="系統會記錄此代理登入；可隨時在上方橫幅結束代理。"
