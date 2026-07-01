@@ -83,7 +83,11 @@ function buildMenuItems(permissions: string[], dispatchCount: number, myCaseCoun
         ? (() => {
             const parent = ALL_MENU_ITEMS.find((i) => i.key === group.flatten)
             if (!parent || !permissions.includes(group.flatten!)) return []
-            return (parent.children ?? []).map((c) => ({ key: c.key, label: c.label }))
+            // [2026/07/01] - Lisa - 系統管理子項改為逐子項授權（依 permissions 的各子項 key），
+            // 使行政人員僅顯示「基礎資料」而非全部管理子項
+            return (parent.children ?? [])
+              .filter((c) => permissions.includes(c.key))
+              .map((c) => ({ key: c.key, label: c.label }))
           })()
         : []
 

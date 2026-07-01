@@ -58,7 +58,8 @@ export async function GET(_req: NextRequest, { params }: { params: { type: strin
 export async function POST(req: NextRequest, { params }: { params: { type: string } }) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
-  if (session.role !== 'sysadmin') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
+  // [2026/07/01] - Lisa - 基礎資料開放行政人員：sysadmin 或 admin_staff 皆可寫入
+  if (session.role !== 'sysadmin' && session.role !== 'admin_staff') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
 
   const type = params.type as MasterDataType
   const info = getModelAndFields(type)
@@ -75,7 +76,8 @@ export async function POST(req: NextRequest, { params }: { params: { type: strin
 export async function PATCH(req: NextRequest, { params }: { params: { type: string } }) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
-  if (session.role !== 'sysadmin') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
+  // [2026/07/01] - Lisa - 基礎資料開放行政人員：sysadmin 或 admin_staff 皆可寫入
+  if (session.role !== 'sysadmin' && session.role !== 'admin_staff') return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
 
   const { searchParams } = req.nextUrl
   const id = parseInt(searchParams.get('id') ?? '0')
