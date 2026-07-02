@@ -758,10 +758,10 @@ export default function DispatchListPage() {
                 <Row gutter={[12, 0]}>
                   <Col span={12}>
                     <Form.Item label="預估金額" name="estimatedAmount">
-                      <InputNumber style={{ width: '100%' }} min={1} max={9_999_999_999}
+                      <InputNumber style={{ width: '100%' }} min={0} max={9_999_999_999}
                         formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
                         parser={v => parseInt((v ?? '').replace(/,/g, ''), 10) as unknown as never}
-                        onChange={v => setEstimatedAmount(v || 0)} />
+                        onChange={v => setEstimatedAmount(v ?? 0)} />
                     </Form.Item>
                   </Col>
                   <Col span={12}>

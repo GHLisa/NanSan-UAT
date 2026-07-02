@@ -217,7 +217,7 @@ export default function CaseNewPage() {
       assignments: assignments.filter((a) => a.employeeId).map((a) => ({
         employeeId: a.employeeId!,
         role: a.role,
-        contributionRatio: a.contributionRatio,
+        contributionRatio: a.contributionRatio / 100,
       })),
     }
 
