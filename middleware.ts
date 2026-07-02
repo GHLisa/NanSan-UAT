@@ -13,6 +13,7 @@ const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/cron']
 const ROLE_GUARDED_ROUTES: { prefix: string; roles: string[] }[] = [
   { prefix: '/admin/users',       roles: ['sysadmin', 'admin_staff'] }, // [2026/07/01] Lisa - 使用者帳號開放行政人員（代理登入仍限 sysadmin）
   { prefix: '/admin/master-data', roles: ['sysadmin', 'admin_staff'] }, // [2026/07/01] Lisa - 基礎資料開放行政人員
+  { prefix: '/admin/case-number', roles: ['sysadmin', 'admin_staff'] }, // [2026/07/02] Lisa - 公證編號修正開放行政人員
   { prefix: '/admin/login-logs',  roles: ['sysadmin'] },
   { prefix: '/performance',       roles: ['team_lead', 'dept_manager'] },
 ]

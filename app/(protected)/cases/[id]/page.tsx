@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import {
   Card, Row, Col, Typography, Tag, Button, Space, Steps, Timeline, Descriptions,
-  Modal, Form, Select, Input, message, Tooltip, Divider, DatePicker, InputNumber,
+  Modal, Form, Select, AutoComplete, Input, message, Tooltip, Divider, DatePicker, InputNumber,
   Table, Checkbox, Radio, Spin, Collapse,
 } from 'antd'
 import {
@@ -840,7 +840,7 @@ export default function CaseDetailPage() {
                   </Col>
                   <Col span={12}>
                     <Form.Item name="incidentCause" label="出險原因" rules={[{ required: true, message: '必填' }]}>
-                      <Select options={(meta?.incidentCauses ?? []).map((c) => ({ value: c.name, label: c.name }))} />
+                      <AutoComplete placeholder="選擇或輸入出險原因" allowClear options={(meta?.incidentCauses ?? []).map((c) => ({ value: c.name }))} filterOption={(i, o) => String(o?.value ?? '').toLowerCase().includes(i.toLowerCase())} />
                     </Form.Item>
                   </Col>
                   <Col span={12}>
@@ -867,7 +867,7 @@ export default function CaseDetailPage() {
                   </Col>
                   <Col span={12}>
                     <Form.Item name="incidentLocation" label="出險地點" rules={[{ required: true, message: '必填' }]}>
-                      <Select showSearch allowClear placeholder="請選擇出險/查勘地點" optionFilterProp="label" options={meta?.incidentLocations.map((l) => ({ value: l.name, label: l.name }))} />
+                      <AutoComplete allowClear placeholder="選擇或輸入出險/查勘地點" options={meta?.incidentLocations.map((l) => ({ value: l.name }))} filterOption={(i, o) => String(o?.value ?? '').toLowerCase().includes(i.toLowerCase())} />
                     </Form.Item>
                   </Col>
                   <Col span={12}>

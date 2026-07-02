@@ -3,7 +3,8 @@ import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import dayjs from 'dayjs'
 
-const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin']
+// [2026/07/02] - Lisa - 開放行政人員查看：各年度已決&未決案件數（全公司範圍）
+const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin', 'admin_staff']
 
 export async function GET(req: NextRequest) {
   const session = await getSession()
@@ -19,9 +20,11 @@ export async function GET(req: NextRequest) {
   const { role, departmentId } = session
 
   // ── 角色可見範圍 WHERE ────────────────────────────────────────────────
+  // [2026/07/02] - Lisa - 行政人員比照 vp/sysadmin 視為全公司範圍（不加部門條件）
+  const isWideRole = canViewAllDepts(role) || role === 'admin_staff'
   const scopeWhere: Record<string, unknown> = {}
-  if (!canViewAllDepts(role)) {
-    if (role === 'handler' || role === 'admin_staff') {
+  if (!isWideRole) {
+    if (role === 'handler') {
       scopeWhere.assignments = { some: { employeeId: empId } }
     } else if (departmentId) {
       scopeWhere.departmentId = departmentId

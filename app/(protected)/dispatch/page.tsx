@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import {
-  Table, Button, Card, Typography, Tag, Space, Modal, Form, Input, Select,
+  Table, Button, Card, Typography, Tag, Space, Modal, Form, Input, Select, AutoComplete,
   message, Tooltip, DatePicker, InputNumber, Divider, Alert, Descriptions, Checkbox, Row, Col,
 } from 'antd'
 import { PlusOutlined, MinusCircleOutlined, DeleteOutlined } from '@ant-design/icons'
@@ -610,19 +610,21 @@ export default function DispatchListPage() {
                   </Col>
                   <Col span={12}>
                     <Form.Item label="出險原因" name="incidentCause" rules={[{ required: true, message: '必選' }]}>
-                      <Select options={(meta?.incidentCauses ?? []).map(c => ({ value: c.name, label: c.name }))} />
+                      <AutoComplete placeholder="選擇或輸入出險原因" allowClear
+                        options={(meta?.incidentCauses ?? []).map(c => ({ value: c.name }))}
+                        filterOption={(i, o) => String(o?.value ?? '').toLowerCase().includes(i.toLowerCase())} />
                     </Form.Item>
                   </Col>
                   <Col span={12}>
-                    <Form.Item label="保險公司承辦人" name="insuranceContact">
-                      <Input placeholder="選填" />
+                    <Form.Item label="保險公司承辦人" name="insuranceContact" rules={[{ required: true, message: '必填' }]}>
+                      <Input placeholder="請輸入" />
                     </Form.Item>
                   </Col>
                   <Col span={12}>
                     <Form.Item label="出險地點" name="incidentLocation" rules={[{ required: true, message: '必填' }]}>
-                      <Select showSearch allowClear placeholder="請選擇出險/查勘地點"
-                        options={(meta?.incidentLocations ?? []).map(l => ({ value: l.name, label: l.name }))}
-                        filterOption={(input, opt) => (opt?.label ?? '').includes(input)} />
+                      <AutoComplete allowClear placeholder="選擇或輸入出險/查勘地點"
+                        options={(meta?.incidentLocations ?? []).map(l => ({ value: l.name }))}
+                        filterOption={(i, o) => String(o?.value ?? '').toLowerCase().includes(i.toLowerCase())} />
                     </Form.Item>
                   </Col>
                   <Col span={12}>

@@ -6,7 +6,8 @@ import dayjs from 'dayjs'
 
 export const runtime = 'nodejs'
 
-const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin']
+// [2026/07/02] - Lisa - 開放行政人員匯出：各年度已決&未決案件數（全公司範圍）
+const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin', 'admin_staff']
 
 const STATUS_LABEL: Record<string, string> = {
   all: '全部案件', 已決: '已決', 未決: '未決',
@@ -33,9 +34,11 @@ export async function GET(req: NextRequest) {
   const { role, departmentId } = session
 
   // ── 角色可見範圍 WHERE（與 GET /api/reports/yearly-cases 相同）────────────
+  // [2026/07/02] - Lisa - 行政人員比照 vp/sysadmin 視為全公司範圍（不加部門條件）
+  const isWideRole = canViewAllDepts(role) || role === 'admin_staff'
   const scopeWhere: Record<string, unknown> = {}
-  if (!canViewAllDepts(role)) {
-    if (role === 'handler' || role === 'admin_staff') {
+  if (!isWideRole) {
+    if (role === 'handler') {
       scopeWhere.assignments = { some: { employeeId: empId } }
     } else if (departmentId) {
       scopeWhere.departmentId = departmentId

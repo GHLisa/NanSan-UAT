@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  Card, Form, Input, Button, Select, DatePicker, InputNumber,
+  Card, Form, Input, Button, Select, AutoComplete, DatePicker, InputNumber,
   Checkbox, Alert, Typography, Space, Divider, message, Modal, Row, Col, Table,
 } from 'antd'
 import { PlusOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons'
@@ -458,16 +458,22 @@ export default function CaseNewPage() {
             </Col>
             <Col xs={24} sm={8}>
               <Form.Item label="出險地點" name="incidentLocation" rules={[{ required: true, message: '必填' }]}>
-                <Select placeholder="選擇出險地點" showSearch filterOption={(i, o) => String(o?.children ?? '').includes(i)}>
-                  {meta.incidentLocations.map((l) => <Option key={l.name} value={l.name}>{l.name}</Option>)}
-                </Select>
+                <AutoComplete
+                  placeholder="選擇或輸入出險地點"
+                  allowClear
+                  options={meta.incidentLocations.map((l) => ({ value: l.name }))}
+                  filterOption={(i, o) => String(o?.value ?? '').toLowerCase().includes(i.toLowerCase())}
+                />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
               <Form.Item label="出險原因" name="incidentCause" rules={[{ required: true, message: '必填' }]}>
-                <Select placeholder="選擇出險原因">
-                  {meta.incidentCauses.map((c) => <Option key={c.id} value={c.name}>{c.name}</Option>)}
-                </Select>
+                <AutoComplete
+                  placeholder="選擇或輸入出險原因"
+                  allowClear
+                  options={meta.incidentCauses.map((c) => ({ value: c.name }))}
+                  filterOption={(i, o) => String(o?.value ?? '').toLowerCase().includes(i.toLowerCase())}
+                />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>

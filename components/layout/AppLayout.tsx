@@ -34,6 +34,7 @@ const ALL_MENU_ITEMS = [
     children: [
       { key: 'admin-users', label: '使用者帳號', path: '/admin/users' },
       { key: 'admin-master', label: '基礎資料', path: '/admin/master-data' },
+      { key: 'admin-case-number', label: '公證編號修正', path: '/admin/case-number' },
       { key: 'admin-maillog', label: '發信紀錄', path: '/admin/mail-logs' },
       { key: 'admin-loginlog', label: '登入紀錄', path: '/admin/login-logs' },
     ],

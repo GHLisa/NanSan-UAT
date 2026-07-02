@@ -6,7 +6,8 @@ import dayjs from 'dayjs'
 
 export const runtime = 'nodejs'
 
-const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin']
+// [2026/07/02] - Lisa - 開放行政人員匯出：各年度已決&未決公證費（全公司範圍）
+const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin', 'admin_staff']
 
 const HEADER_FILL = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FFD9E1F2' } }
 const SUM_FILL = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FFFAFAFA' } }
@@ -36,8 +37,10 @@ export async function GET(req: NextRequest) {
   const empMap = new Map(employees.map(e => [e.id, e.name]))
 
   // ── 角色可見範圍 WHERE（與 GET /api/reports/yearly-fees 相同）────────────
+  // [2026/07/02] - Lisa - 行政人員比照 vp/sysadmin 視為全公司範圍（可查任一部門）
+  const isWideRole = canViewAllDepts(role) || role === 'admin_staff'
   const scopeWhere: Record<string, unknown> = { departmentId: deptId }
-  if (!canViewAllDepts(role) && departmentId && departmentId !== deptId) {
+  if (!isWideRole && departmentId && departmentId !== deptId) {
     return NextResponse.json({ success: false, error: '權限不足' }, { status: 403 })
   }
 

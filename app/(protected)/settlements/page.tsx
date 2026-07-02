@@ -62,6 +62,7 @@ export default function CaseQueryPage() {
   const [cases, setCases] = useState<CaseItem[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
+  const [searchInput, setSearchInput] = useState('')
   const [filterStatus, setFilterStatus] = useState<string>('all')
   const [filterYear, setFilterYear] = useState('')
   const [filterPeriod, setFilterPeriod] = useState('')
@@ -113,6 +114,7 @@ export default function CaseQueryPage() {
 
   function handleReset() {
     setSearch('')
+    setSearchInput('')
     setFilterStatus('all')
     setFilterYear('')
     setFilterPeriod('')
@@ -235,9 +237,9 @@ export default function CaseQueryPage() {
               </div>
               <Input.Search
                 placeholder="公證編號 / 被保險人 / 保險公司 / 保單號碼"
-                value={search}
+                value={searchInput}
                 onSearch={v => { setSearch(v); setPage(1) }}
-                onChange={e => !e.target.value && setSearch('')}
+                onChange={e => { setSearchInput(e.target.value); if (!e.target.value) setSearch('') }}
                 allowClear
               />
             </Col>

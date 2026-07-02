@@ -1,0 +1,212 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { getSession } from '@/lib/auth'
+import { prisma } from '@/lib/prisma'
+import type { Prisma } from '@prisma/client'
+
+// 公證編號修正（系統管理）— sysadmin / 行政人員可用
+// GET  ?keyword=  依公證編號或被保險人搜尋案件（供選取欲修正的案件）
+// PATCH { id, newCaseNumber }  修正公證編號，並同步 MailLog 快照、重算受影響 seqKey 計數器
+const ALLOWED_ROLES = ['sysadmin', 'admin_staff']
+
+function assertRole(role: string): boolean {
+  return ALLOWED_ROLES.includes(role)
+}
+
+// ── GET：搜尋案件 ─────────────────────────────────────────────────────────
+export async function GET(req: NextRequest) {
+  const session = await getSession()
+  if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
+  if (!assertRole(session.role)) return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
+
+  const keyword = (req.nextUrl.searchParams.get('keyword') ?? '').trim()
+  if (!keyword) return NextResponse.json({ success: true, data: [] })
+
+  const where: Prisma.CaseWhereInput = {
+    OR: [
+      { caseNumber: { contains: keyword, mode: 'insensitive' } },
+      { insuredName: { contains: keyword, mode: 'insensitive' } },
+    ],
+  }
+
+  const rows = await prisma.case.findMany({
+    where,
+    select: {
+      id: true,
+      caseNumber: true,
+      insuredName: true,
+      status: true,
+      commissionDate: true,
+      department: { select: { name: true } },
+    },
+    orderBy: { commissionDate: 'desc' },
+    take: 20,
+  })
+
+  return NextResponse.json({
+    success: true,
+    data: rows.map((r) => ({
+      id: r.id,
+      caseNumber: r.caseNumber,
+      insuredName: r.insuredName,
+      status: r.status,
+      commissionDate: r.commissionDate.toISOString(),
+      departmentName: r.department.name,
+    })),
+  })
+}
+
+// ── 依公證編號推導 seqKey（比照建案取號規則）──────────────────────────────
+// 公證編號格式：[caseNoCode][保司代碼][CO?]-[年度2碼][區域代號]-[三位流水號]
+// seqKey = `${caseNoCode}${regionCode}-${year}`；caseNoCode / regionCode 取自案件當前
+// 的部門／區域基礎資料（與建案 route 一致），year 由編號中段解析。
+// 若編號非自動格式（人工自訂）而無法解析年度，回傳 null（該號不屬任何計數器群組）。
+function deriveSeqKey(
+  caseNumber: string,
+  caseNoCode: string,
+  regionCode: string,
+): { seqKey: string; year: string } | null {
+  const parts = caseNumber.split('-')
+  if (parts.length < 3) return null
+  const ym = parts[1].match(/^(\d{2})/)
+  if (!ym) return null
+  const year = ym[1]
+  return { seqKey: `${caseNoCode}${regionCode}-${year}`, year }
+}
+
+// ── 重算單一 seqKey 計數器 → 該群組實際最大流水號 + 1 ─────────────────────
+async function recomputeSeq(
+  tx: Prisma.TransactionClient,
+  seqKey: string,
+  caseNoCode: string,
+  regionCode: string,
+  year: string,
+): Promise<{ seqKey: string; nextSeq: number }> {
+  const rows = await tx.case.findMany({
+    where: { caseNumber: { startsWith: caseNoCode, contains: `-${year}${regionCode}-` } },
+    select: { caseNumber: true },
+  })
+  let maxSeq = 0
+  for (const r of rows) {
+    const mm = r.caseNumber.match(/-(\d+)$/)
+    if (mm) {
+      const n = parseInt(mm[1], 10)
+      if (n > maxSeq) maxSeq = n
+    }
+  }
+  const nextSeq = maxSeq + 1
+  await tx.caseNumberSeq.upsert({
+    where: { deptCode: seqKey },
+    create: { deptCode: seqKey, nextSeq },
+    update: { nextSeq },
+  })
+  return { seqKey, nextSeq }
+}
+
+// ── PATCH：修正公證編號 ───────────────────────────────────────────────────
+export async function PATCH(req: NextRequest) {
+  const session = await getSession()
+  if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
+  if (!assertRole(session.role)) return NextResponse.json({ success: false, error: '無權限' }, { status: 403 })
+
+  const body = await req.json().catch(() => ({}))
+  const id = Number(body.id)
+  const newCaseNumber = String(body.newCaseNumber ?? '').trim()
+
+  if (!Number.isInteger(id) || id <= 0) {
+    return NextResponse.json({ success: false, error: '案件 id 無效' }, { status: 400 })
+  }
+  if (!newCaseNumber) {
+    return NextResponse.json({ success: false, error: '新公證編號不可為空' }, { status: 400 })
+  }
+
+  const target = await prisma.case.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      caseNumber: true,
+      insuredName: true,
+      department: {
+        select: { caseNoCode: true, code: true, region: { select: { caseNoCode: true } } },
+      },
+    },
+  })
+  if (!target) return NextResponse.json({ success: false, error: '找不到案件' }, { status: 404 })
+
+  const oldCaseNumber = target.caseNumber
+  if (newCaseNumber === oldCaseNumber) {
+    return NextResponse.json({ success: false, error: '新公證編號與現有相同，無需修正' }, { status: 400 })
+  }
+
+  // 唯一性檢查：新號不可與其他案件重複
+  const dup = await prisma.case.findFirst({
+    where: { caseNumber: newCaseNumber, id: { not: id } },
+    select: { id: true },
+  })
+  if (dup) {
+    return NextResponse.json(
+      { success: false, error: `公證編號「${newCaseNumber}」已存在於其他案件，請確認` },
+      { status: 409 },
+    )
+  }
+
+  const empId = parseInt(session.sub)
+  const caseNoCode = target.department.caseNoCode || target.department.code
+  const regionCode = target.department.region.caseNoCode ?? ''
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // 1) 更新案件公證編號
+      await tx.case.update({ where: { id }, data: { caseNumber: newCaseNumber } })
+
+      // 2) 同步 MailLog 去正規化快照（該案件既有發信紀錄一併改為新號）
+      const mailLogUpdated = await tx.mailLog.updateMany({
+        where: { caseId: id },
+        data: { caseNumber: newCaseNumber },
+      })
+
+      // 3) 寫入 CaseLog 稽核軌跡
+      await tx.caseLog.create({
+        data: {
+          caseId: id,
+          employeeId: empId,
+          fieldName: '公證編號',
+          oldValue: oldCaseNumber,
+          newValue: newCaseNumber,
+          logType: 'case_number_fix',
+        },
+      })
+
+      // 4) 重算受影響 seqKey（舊號群組 + 新號群組）→ 各自實際最大流水號 + 1
+      //    以案件當前部門／區域推導 seqKey，year 由新舊編號中段解析；去重後逐一重算。
+      const seqInfos = [
+        deriveSeqKey(oldCaseNumber, caseNoCode, regionCode),
+        deriveSeqKey(newCaseNumber, caseNoCode, regionCode),
+      ].filter((x): x is { seqKey: string; year: string } => x !== null)
+
+      const seen = new Set<string>()
+      const recomputed: { seqKey: string; nextSeq: number }[] = []
+      for (const info of seqInfos) {
+        if (seen.has(info.seqKey)) continue
+        seen.add(info.seqKey)
+        recomputed.push(await recomputeSeq(tx, info.seqKey, caseNoCode, regionCode, info.year))
+      }
+
+      return { mailLogUpdated: mailLogUpdated.count, recomputed }
+    })
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        id,
+        insuredName: target.insuredName,
+        oldCaseNumber,
+        newCaseNumber,
+        mailLogUpdated: result.mailLogUpdated,
+        recomputed: result.recomputed,
+      },
+    })
+  } catch (e) {
+    console.error('[case-number fix] 修正失敗：', e)
+    return NextResponse.json({ success: false, error: '修正失敗，請稍後再試' }, { status: 500 })
+  }
+}
