@@ -50,10 +50,11 @@ model Employee {
   notes        CaseNote[]
   logs         CaseLog[]
 
-  reviewsSubmitted   CaseReview[] @relation("SubmittedBy")
-  reviewsReviewed    CaseReview[] @relation("ReviewedBy")
-  reviewsApproved    CaseReview[] @relation("ApprovedBy")
-  reviewsMidApproved CaseReview[] @relation("MidApprovedBy")
+  reviewsSubmitted    CaseReview[] @relation("SubmittedBy")
+  reviewsReviewed     CaseReview[] @relation("ReviewedBy")
+  reviewsApproved     CaseReview[] @relation("ApprovedBy")
+  reviewsMidApproved  CaseReview[] @relation("MidApprovedBy")
+  reviewsReportIssued CaseReview[] @relation("ReportIssuedBy")
 
   dispatchesAssigned DispatchQueue[] @relation("AssignedBy")
   dispatchesPicked   DispatchQueue[] @relation("PickedBy")
@@ -290,11 +291,16 @@ model CaseReview {
   recordStatus   String?
   supersededById Int?
 
-  case        Case      @relation(fields: [caseId], references: [id])
-  submitter   Employee  @relation("SubmittedBy", fields: [submittedBy], references: [id])
-  reviewer    Employee  @relation("ReviewedBy", fields: [reviewerId], references: [id])
-  approver    Employee? @relation("ApprovedBy", fields: [approverId], references: [id])
-  midApprover Employee? @relation("MidApprovedBy", fields: [midApproverId], references: [id])
+  // [2026/07/03] - Lisa - 出具報告：文件通過整個審核流程後，行政人員登錄實際出具日期；null=尚未出具
+  reportIssuedAt DateTime?
+  reportIssuedBy Int?
+
+  case         Case      @relation(fields: [caseId], references: [id])
+  submitter    Employee  @relation("SubmittedBy", fields: [submittedBy], references: [id])
+  reviewer     Employee  @relation("ReviewedBy", fields: [reviewerId], references: [id])
+  approver     Employee? @relation("ApprovedBy", fields: [approverId], references: [id])
+  midApprover  Employee? @relation("MidApprovedBy", fields: [midApproverId], references: [id])
+  reportIssuer Employee? @relation("ReportIssuedBy", fields: [reportIssuedBy], references: [id])
 
   @@index([caseId])
   @@index([reviewerId, reviewStatus])

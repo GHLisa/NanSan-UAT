@@ -30,6 +30,8 @@ const REVIEW_STATUS_COLOR: Record<string, string> = {
 const CONTACT_FORM_STATUSES = ['待傳', '已回傳', '無']
 const PARKING_STATUSES = ['申訴中', '訴訟中', '待請求時效']
 const TRAVEL_REQUIRED_DOCS = ['結案報告書', '公證費 DEBIT NOTE']
+// 送審「隨附文件勾選」選項：DOCUMENT_TYPES 之外另加「保險理賠案預警檢查表」（僅供勾選隨附，非可送審之文件類型）
+const ATTACH_DOC_OPTIONS = [...DOCUMENT_TYPES, '保險理賠案預警檢查表']
 
 const numFmt = {
   formatter: (v?: string | number) =>
@@ -1538,7 +1540,7 @@ export default function CaseDetailPage() {
           <Form.Item name="checkedDocuments" style={{ marginBottom: 12 }}>
             <Checkbox.Group style={{ width: '100%' }}>
               <Row gutter={[0, 6]}>
-                {DOCUMENT_TYPES.map((t) => <Col span={12} key={t}><Checkbox value={t} style={{ fontSize: 13 }}>{t}</Checkbox></Col>)}
+                {ATTACH_DOC_OPTIONS.map((t) => <Col span={12} key={t}><Checkbox value={t} style={{ fontSize: 13 }}>{t}</Checkbox></Col>)}
               </Row>
             </Checkbox.Group>
           </Form.Item>

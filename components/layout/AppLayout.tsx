@@ -11,7 +11,7 @@ import {
   BarChartOutlined, SettingOutlined, BellOutlined, LogoutOutlined, UserOutlined,
   SwapOutlined, PercentageOutlined, LineChartOutlined, AccountBookOutlined,
   FundOutlined, ProfileOutlined, MenuFoldOutlined, MenuUnfoldOutlined,
-  AppstoreOutlined, FileSearchOutlined, TrophyOutlined,
+  AppstoreOutlined, FileSearchOutlined, TrophyOutlined, PrinterOutlined,
 } from '@ant-design/icons'
 import { useAuth } from './AuthProvider'
 import { getMenuPermissions } from '@/lib/permissions'
@@ -27,6 +27,7 @@ const ALL_MENU_ITEMS = [
   { key: 'dispatch', icon: <InboxOutlined />, label: '派案池', path: '/dispatch' },
   { key: 'cases', icon: <FileTextOutlined />, label: '案件管理', path: '/cases' },
   { key: 'reviews', icon: <CheckCircleOutlined />, label: '文件審核', path: '/reviews' },
+  { key: 'report-issue', icon: <PrinterOutlined />, label: '出具報告', path: '/report-issue' },
   { key: 'fee-target', icon: <TrophyOutlined />, label: '純公證費業績設定', path: '/performance' },
   { key: 'admin-fee', icon: <PercentageOutlined />, label: '費率表', path: '/admin/fee-rates' },
   {
@@ -49,7 +50,7 @@ const ALL_MENU_ITEMS = [
 ]
 
 const MENU_GROUPS = [
-  { key: 'grp-main', icon: <AppstoreOutlined />, label: '主要功能', keys: ['dashboard', 'dispatch', 'cases', 'reviews', 'fee-target', 'notifications'] },
+  { key: 'grp-main', icon: <AppstoreOutlined />, label: '主要功能', keys: ['dashboard', 'dispatch', 'cases', 'reviews', 'report-issue', 'fee-target', 'notifications'] },
   { key: 'grp-reports', icon: <BarChartOutlined />, label: '查詢統計管理', keys: ['settlements', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report'] },
   { key: 'grp-admin', icon: <SettingOutlined />, label: '系統管理', keys: ['admin-fee'], flatten: 'admin' },
 ]

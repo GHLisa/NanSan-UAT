@@ -55,15 +55,21 @@ interface CaseItem {
 
 export default function CaseQueryPage() {
   const router = useRouter()
-  useAuth()
+  const { session } = useAuth()
   const filterBarRef = useRef<HTMLDivElement>(null)
   const [offsetHeader, setOffsetHeader] = useState(185)
 
+  // 部門篩選僅對可跨部門角色（執行副總／系統管理員／無部門行政人員）有意義；
+  // 其餘角色後端已依 buildCaseScope 限定本部門範圍，不另顯示篩選
+  const isWide = !!session && (['vp', 'sysadmin'].includes(session.role) || (session.role === 'admin_staff' && !session.departmentId))
+
   const [cases, setCases] = useState<CaseItem[]>([])
+  const [departments, setDepartments] = useState<{ id: number; name: string }[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [filterStatus, setFilterStatus] = useState<string>('all')
+  const [filterDept, setFilterDept] = useState('')
   const [filterYear, setFilterYear] = useState('')
   const [filterPeriod, setFilterPeriod] = useState('')
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
@@ -83,10 +89,17 @@ export default function CaseQueryPage() {
     return () => { cancelAnimationFrame(id); obs.disconnect() }
   }, [])
 
+  useEffect(() => {
+    api.get<{ departments: { id: number; name: string }[] }>('/api/meta').then(res => {
+      if (res.success && res.data) setDepartments(res.data.departments)
+    })
+  }, [])
+
   const loadCases = useCallback(async () => {
     setLoading(true)
     const params = new URLSearchParams({ status: filterStatus, pageSize: '200' })
     if (search) params.set('q', search)
+    if (filterDept) params.set('deptId', filterDept)
     if (incidentDateFrom) params.set('incidentDateFrom', incidentDateFrom)
     if (incidentDateTo) params.set('incidentDateTo', incidentDateTo)
     if (filterYear) params.set('year', filterYear)
@@ -94,7 +107,7 @@ export default function CaseQueryPage() {
     const res = await api.get<CaseItem[]>(`/api/cases?${params.toString()}`)
     if (res.success && res.data) setCases(res.data)
     setLoading(false)
-  }, [search, filterStatus, filterYear, filterPeriod, incidentDateFrom, incidentDateTo])
+  }, [search, filterStatus, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo])
 
   useEffect(() => { loadCases() }, [loadCases])
 
@@ -116,6 +129,7 @@ export default function CaseQueryPage() {
     setSearch('')
     setSearchInput('')
     setFilterStatus('all')
+    setFilterDept('')
     setFilterYear('')
     setFilterPeriod('')
     setDateRange(null)
@@ -130,6 +144,7 @@ export default function CaseQueryPage() {
     try {
       const params = new URLSearchParams({ status: filterStatus })
       if (search) params.set('q', search)
+      if (filterDept) params.set('deptId', filterDept)
       if (incidentDateFrom) params.set('incidentDateFrom', incidentDateFrom)
       if (incidentDateTo) params.set('incidentDateTo', incidentDateTo)
       if (filterYear) params.set('year', filterYear)
@@ -251,6 +266,18 @@ export default function CaseQueryPage() {
                 style={{ width: 110 }}
               />
             </Col>
+            {isWide && (
+              <Col>
+                <Select
+                  value={filterDept}
+                  onChange={v => { setFilterDept(v); setPage(1) }}
+                  options={[{ value: '', label: '全部部門' }, ...departments.map(d => ({ value: String(d.id), label: d.name }))]}
+                  style={{ width: 145 }}
+                  showSearch
+                  optionFilterProp="label"
+                />
+              </Col>
+            )}
             <Col>
               <DatePicker.RangePicker
                 placeholder={['出險日期起', '出險日期迄']}

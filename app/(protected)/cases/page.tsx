@@ -40,6 +40,7 @@ interface CaseItem {
   policyNumber: string
   insuredName: string
   insuranceType: string
+  incidentLocation: string
   incidentDate: string
   commissionDate: string
   status: string
@@ -212,6 +213,10 @@ export default function CasesPage() {
       render: (v: string) => v || '—',
     },
     {
+      title: '出險地點', dataIndex: 'incidentLocation', key: 'incidentLocation', width: 140, ellipsis: true,
+      render: (v: string) => v || '—',
+    },
+    {
       title: '保代/保經', dataIndex: 'brokerCompanyName', key: 'broker', width: 120, ellipsis: true,
       render: (v: string | null) => v ?? '—',
     },
@@ -337,7 +342,7 @@ export default function CasesPage() {
           rowKey="id"
           size="small"
           loading={loading}
-          scroll={{ x: 1520 }}
+          scroll={{ x: 1660 }}
           sticky={{ offsetHeader }}
           rowClassName={(r: CaseItem) => r.hasRejectedReview ? 'row-rejected' : ''}
           pagination={{

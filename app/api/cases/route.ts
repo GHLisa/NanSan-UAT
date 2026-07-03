@@ -161,6 +161,7 @@ export async function GET(req: NextRequest) {
       policyNumber: c.policyNumber,
       insuredName: c.insuredName,
       insuranceType: c.insuranceType,
+      incidentLocation: c.incidentLocation,
       incidentDate: c.incidentDate.toISOString(),
       commissionDate: c.commissionDate.toISOString(),
       status: c.status,
