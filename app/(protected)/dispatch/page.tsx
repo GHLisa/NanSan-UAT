@@ -5,7 +5,7 @@ import {
   Table, Button, Card, Typography, Tag, Space, Modal, Form, Input, Select, AutoComplete,
   message, Tooltip, DatePicker, InputNumber, Divider, Alert, Descriptions, Checkbox, Row, Col,
 } from 'antd'
-import { PlusOutlined, MinusCircleOutlined, DeleteOutlined } from '@ant-design/icons'
+import { PlusOutlined, MinusCircleOutlined, DeleteOutlined, ExclamationCircleOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import { canDispatch } from '@/lib/permissions'
@@ -33,6 +33,7 @@ interface DraftPayload {
   assignees?: Assignee[]
   insuranceType?: string
   estimatedAmount?: number
+  coverageLimit?: number
   deductible?: number
   savedAt?: string
 }
@@ -42,6 +43,7 @@ interface PoolItem {
   _type: 'queue' | 'case'
   id: number
   desc: string
+  caseNumber: string | null
   draftData: string | null
   insuranceCompanyId: number
   insuranceCompanyName: string
@@ -147,6 +149,7 @@ export default function DispatchListPage() {
   const [activeDispatch, setActiveDispatch] = useState<PoolItem | null>(null)
   const [assignees, setAssignees] = useState<Assignee[]>([])
   const [estimatedAmount, setEstimatedAmount] = useState(0)
+  const [coverageLimit, setCoverageLimit] = useState(0)
   const [deductible, setDeductible] = useState(0)
   const [insuranceType, setInsuranceType] = useState('營造綜合險')
   const [selectedIcId, setSelectedIcId] = useState<number | null>(null)
@@ -247,12 +250,14 @@ export default function DispatchListPage() {
       })
       setAssignees(draft.assignees ?? defaultAssignees())
       setEstimatedAmount(draft.estimatedAmount ?? 0)
+      setCoverageLimit(draft.coverageLimit ?? 0)
       setDeductible(draft.deductible ?? 0)
       setInsuranceType(draft.insuranceType ?? '營造綜合險')
       setCommDate((fv.commissionDate as string) ?? null)
     } else {
       setAssignees(defaultAssignees())
       setEstimatedAmount(0)
+      setCoverageLimit(0)
       setDeductible(0)
       setInsuranceType('營造綜合險')
       setCommDate(null)
@@ -279,6 +284,7 @@ export default function DispatchListPage() {
       assignees,
       insuranceType,
       estimatedAmount,
+      coverageLimit,
       deductible,
       savedAt: dayjs().format(),
     }
@@ -327,6 +333,7 @@ export default function DispatchListPage() {
       insuranceType: values.insuranceType as string,
       incidentCause: values.incidentCause as string,
       estimatedAmount: estimatedAmount || null,
+      coverageLimit: coverageLimit || null,
       deductible: deductible || 0,
       isSpecialCase: values.isSpecialCase as boolean || false,
       notes: values.notes as string || undefined,
@@ -426,6 +433,41 @@ export default function DispatchListPage() {
     }
   }
 
+  // ── 派案池刪除（case：刪案件並提示跳號；queue：刪派案）──────────────────
+  function handleDelete(record: PoolItem) {
+    const isCase = record._type === 'case'
+    const hasCaseNo = !!record.caseNumber
+    Modal.confirm({
+      title: isCase ? '刪除案件' : '刪除派案',
+      icon: <ExclamationCircleOutlined style={{ color: hasCaseNo ? '#ff4d4f' : '#faad14' }} />,
+      okText: '確認刪除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      content: hasCaseNo ? (
+        <div>
+          <p style={{ color: '#ff4d4f', marginBottom: 8 }}>
+            此案件已配發公證編號 <b>{record.caseNumber}</b>，刪除後<b>會造成公證編號跳號</b>（該編號不會回收、也不會補號）。
+          </p>
+          <p style={{ marginBottom: 0 }}>確定仍要刪除嗎？</p>
+        </div>
+      ) : (
+        <span>確定要刪除派案「{record.desc}」嗎？此動作無法復原。</span>
+      ),
+      onOk: async () => {
+        const url = isCase ? `/api/cases/${record.id}` : `/api/dispatch/${record.id}`
+        const res = await api.delete(url)
+        if (res.success) {
+          message.success('已刪除')
+          fetchPool()
+        } else {
+          message.error(res.error ?? '刪除失敗')
+        }
+      },
+    })
+  }
+
+  const canDelete = !!session && (canDispatch(session.role) || session.role === 'sysadmin')
+
   // ── 表格欄位 ──────────────────────────────────────────────────────────
   const columns = [
     {
@@ -464,12 +506,19 @@ export default function DispatchListPage() {
         : dayjs(r.time).format('YYYY/MM/DD'),
     },
     {
-      title: '操作', key: 'action', width: 80, fixed: 'right' as const,
+      title: '操作', key: 'action', width: 140, fixed: 'right' as const,
       render: (_: unknown, r: PoolItem) => (
-        <Button size="small" type="primary" style={{ background: '#1B4F8C' }}
-          onClick={() => r._type === 'queue' ? handleQueuePickup(r) : handleCasePickup(r)}>
-          取件
-        </Button>
+        <Space size={4}>
+          <Button size="small" type="primary" style={{ background: '#1B4F8C' }}
+            onClick={() => r._type === 'queue' ? handleQueuePickup(r) : handleCasePickup(r)}>
+            取件
+          </Button>
+          {canDelete && (
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r)}>
+              刪除
+            </Button>
+          )}
+        </Space>
       ),
     },
   ]
@@ -778,6 +827,14 @@ export default function DispatchListPage() {
                     <Form.Item label="預估賠償額">
                       <InputNumber style={{ width: '100%' }} value={estimatedCompensation} disabled
                         formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={12}>
+                    <Form.Item label="保額(賠償限額)" name="coverageLimit">
+                      <InputNumber style={{ width: '100%' }} min={0} max={9_999_999_999}
+                        formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                        parser={v => parseInt((v ?? '').replace(/,/g, ''), 10) as unknown as never}
+                        onChange={v => setCoverageLimit(v ?? 0)} />
                     </Form.Item>
                   </Col>
                 </Row>

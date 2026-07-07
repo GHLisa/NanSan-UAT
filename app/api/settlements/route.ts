@@ -126,7 +126,8 @@ export async function POST(req: NextRequest) {
 
   await prisma.case.update({
     where: { id: body.caseId },
-    data: { status: '已決', closeDate: new Date(), actualFee: body.totalFee },
+    // 已決日期(closeDate) 採用使用者填的出報告日期，支援補登舊案溯及舊日期（非寫死今日）
+    data: { status: '已決', closeDate: new Date(body.reportDate), actualFee: body.totalFee },
   })
 
   await prisma.caseLog.create({

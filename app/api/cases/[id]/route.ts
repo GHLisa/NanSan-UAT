@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
+import { canDispatch } from '@/lib/permissions'
 import { prisma } from '@/lib/prisma'
 
 function parseJsonArray(s: string | null): string[] {
@@ -135,6 +136,7 @@ const FIELD_LABELS: Record<string, string> = {
   nasFolder: 'NAS 路徑',
   deductible: '自負額',
   estimatedAmount: '預估金額',
+  coverageLimit: '保額(賠償限額)',
   estimatedFee: '預估公證費',
   adjustmentAmount: '理算損失額',
   salvageValue: '殘餘物價值',
@@ -152,7 +154,7 @@ const DATE_FIELDS = new Set([
 
 // 案件金額欄位採 BigInt（對齊 ERD bigint，避免大額理算溢位 int4）
 const AMOUNT_BIGINT_FIELDS = new Set([
-  'estimatedAmount', 'deductible', 'adjustmentAmount', 'salvageValue', 'finalAmount',
+  'estimatedAmount', 'coverageLimit', 'deductible', 'adjustmentAmount', 'salvageValue', 'finalAmount',
 ])
 
 // FR-35/37/58：確認呼叫者可編輯本案
@@ -241,6 +243,39 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ success: true })
   }
 
+  // ── 結案日期(closeDate) 溯及修正 ──────────────────────────────
+  // 繞過「已決不可編輯」鎖，僅開放 sysadmin／本部門主管／行政人員，且僅能改此欄位、寫修改記錄
+  if (body.action === 'fixCloseDate') {
+    const allowed =
+      session.role === 'sysadmin' ||
+      (session.role === 'dept_manager' && session.departmentId === existing.departmentId) ||
+      (session.role === 'admin_staff' && (session.departmentId == null || session.departmentId === existing.departmentId))
+    if (!allowed) return NextResponse.json({ success: false, error: '無權限修正結案日期' }, { status: 403 })
+    if (existing.status !== '已決') {
+      return NextResponse.json({ success: false, error: '僅已決案件可修正結案日期' }, { status: 400 })
+    }
+    const raw = String(body.closeDate ?? '').trim()
+    const newDate = raw ? new Date(raw) : null
+    if (!newDate || isNaN(newDate.getTime())) {
+      return NextResponse.json({ success: false, error: '請提供正確的結案日期' }, { status: 400 })
+    }
+    const oldStr = existing.closeDate ? existing.closeDate.toISOString().slice(0, 10) : ''
+    const newStr = newDate.toISOString().slice(0, 10)
+    if (oldStr !== newStr) {
+      await prisma.$transaction([
+        prisma.case.update({ where: { id }, data: { closeDate: newDate } }),
+        prisma.caseLog.create({
+          data: {
+            caseId: id, employeeId: empId, fieldName: '結案日期',
+            oldValue: oldStr || null, newValue: newStr, logType: 'edit',
+          },
+        }),
+      ])
+    }
+    const updated = await prisma.case.findUnique({ where: { id } })
+    return NextResponse.json({ success: true, data: updated })
+  }
+
   // ── 一般編輯（含承辦人整批覆寫 FR-45）─────────────────────────
   const perm = await assertCanEdit(session, id)
   if (!perm.ok) return NextResponse.json({ success: false, error: perm.error }, { status: perm.status })
@@ -260,6 +295,34 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
   }
 
+  // 共保資訊整批覆寫（與建案一致；主保人須保留比例，合計須 < 100%）
+  const coInsurers = body.coInsurers as
+    | { companyId: number | null; policyNumber: string; ratio: number }[]
+    | undefined
+  let coInsurersChanged = false
+  if (coInsurers) {
+    for (const ci of coInsurers) {
+      if (!ci.policyNumber?.trim()) {
+        return NextResponse.json({ success: false, error: '共保資訊：保單號碼必填' }, { status: 400 })
+      }
+      if (!ci.ratio || ci.ratio <= 0) {
+        return NextResponse.json({ success: false, error: '共保資訊：共保比例必填' }, { status: 400 })
+      }
+    }
+    const coSum = coInsurers.reduce((s, c) => s + (c.ratio ?? 0), 0)
+    if (coSum >= 100) {
+      return NextResponse.json({ success: false, error: '共保比例合計已達 100%，主保人須保留比例' }, { status: 400 })
+    }
+    // 與現有共保比對（不分順序）：未變更則不動 DB、不寫 log
+    const existingCo = await prisma.caseCoInsurer.findMany({
+      where: { caseId: id },
+      select: { companyId: true, policyNumber: true, ratio: true },
+    })
+    const normCo = (list: { companyId: number | null; policyNumber: string; ratio: number }[]) =>
+      list.map((c) => `${c.companyId ?? ''}|${(c.policyNumber ?? '').trim()}|${c.ratio}`).sort().join(';')
+    coInsurersChanged = normCo(existingCo) !== normCo(coInsurers)
+  }
+
   // [2026/07/01] - Lisa - 保險公司承辦人改必填：編輯時若帶入此欄位不可為空
   if ('insuranceContact' in body && !String(body.insuranceContact ?? '').trim()) {
     return NextResponse.json({ success: false, error: '保險公司承辦人必填' }, { status: 400 })
@@ -270,7 +333,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const logs: { fieldName: string; oldValue: string | null; newValue: string | null }[] = []
 
   for (const [key, value] of Object.entries(body)) {
-    if (key === 'assignees' || key === 'action' || key === 'cancelReason' || key === 'caseNumber') continue // caseNumber 成案後不可修改
+    if (key === 'assignees' || key === 'coInsurers' || key === 'action' || key === 'cancelReason' || key === 'caseNumber') continue // caseNumber 成案後不可修改
     if (!(key in existing)) continue
 
     let normalized: unknown = value
@@ -288,7 +351,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   }
 
   const hasFieldChanges = Object.keys(updates).length > 0
-  if (!hasFieldChanges && !assignees) {
+  if (!hasFieldChanges && !assignees && !coInsurersChanged) {
     return NextResponse.json({ success: true, data: existing })
   }
 
@@ -321,8 +384,66 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         },
       })
     }
+    if (coInsurers && coInsurersChanged) {
+      await tx.caseCoInsurer.deleteMany({ where: { caseId: id } })
+      if (coInsurers.length > 0) {
+        await tx.caseCoInsurer.createMany({
+          data: coInsurers.map((ci) => ({
+            caseId: id,
+            companyId: ci.companyId ?? null,
+            policyNumber: ci.policyNumber,
+            ratio: ci.ratio,
+          })),
+        })
+      }
+      await tx.caseLog.create({
+        data: {
+          caseId: id, employeeId: empId, fieldName: '共保資訊',
+          newValue: '共保資訊已變更', logType: 'edit',
+        },
+      })
+    }
   })
 
   const updated = await prisma.case.findUnique({ where: { id } })
   return NextResponse.json({ success: true, data: updated })
+}
+
+// 派案池刪除案件：連同關聯紀錄一併刪除。
+// 注意：公證編號序號（case_number_seq）採遞增不回補，刪除已配號案件會造成公證編號跳號。
+export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
+  const session = await getSession()
+  if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
+  if (!canDispatch(session.role) && session.role !== 'sysadmin') {
+    return NextResponse.json({ success: false, error: '無權限刪除' }, { status: 403 })
+  }
+
+  const id = parseInt(params.id)
+  const c = await prisma.case.findUnique({ where: { id } })
+  if (!c) return NextResponse.json({ success: false, error: '找不到案件' }, { status: 404 })
+
+  // 已決／銷案案件含結算等紀錄，不可刪除
+  if (c.status !== '未決') {
+    return NextResponse.json({ success: false, error: '已決／銷案案件不可刪除' }, { status: 409 })
+  }
+  // 部門主管僅可刪除本部門案件（副總／行政／系統管理員不限）
+  if (session.role === 'dept_manager' && c.departmentId !== session.departmentId) {
+    return NextResponse.json({ success: false, error: '僅可刪除本部門案件' }, { status: 403 })
+  }
+
+  // 依外鍵相依序刪除子表（Case 關聯未設 onDelete cascade）；MailLog 為去正規化快照不刪
+  await prisma.$transaction(async (tx) => {
+    await tx.settlementSplit.deleteMany({ where: { settlement: { caseId: id } } })
+    await tx.settlement.deleteMany({ where: { caseId: id } })
+    await tx.notification.deleteMany({ where: { caseId: id } })
+    await tx.caseReview.deleteMany({ where: { caseId: id } })
+    await tx.caseLog.deleteMany({ where: { caseId: id } })
+    await tx.caseNote.deleteMany({ where: { caseId: id } })
+    await tx.caseProgress.deleteMany({ where: { caseId: id } })
+    await tx.caseAssignment.deleteMany({ where: { caseId: id } })
+    await tx.caseCoInsurer.deleteMany({ where: { caseId: id } })
+    await tx.case.delete({ where: { id } })
+  })
+
+  return NextResponse.json({ success: true })
 }

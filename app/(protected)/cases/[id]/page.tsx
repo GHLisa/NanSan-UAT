@@ -73,7 +73,7 @@ interface CaseDetail {
   contactFormStatus: string | null; contactReturnDate: string | null
   preliminaryReportDate: string | null; finalReportDate: string | null; closeDate: string | null
   nasFolder: string | null; isSpecialCase: boolean; notes: string | null
-  estimatedAmount: number | null; deductible: number | null; adjustmentAmount: number | null
+  estimatedAmount: number | null; coverageLimit: number | null; deductible: number | null; adjustmentAmount: number | null
   salvageValue: number | null
   finalAmount: number | null; estimatedFee: number | null; actualFee: number | null
   travelOtherExpense: number | null
@@ -150,6 +150,11 @@ export default function CaseDetailPage() {
   const [closeModalOpen, setCloseModalOpen] = useState(false)
   const [closeForm] = Form.useForm()
   const [closing, setClosing] = useState(false)
+
+  // 結案日期溯及修正
+  const [fixDateOpen, setFixDateOpen] = useState(false)
+  const [fixDateValue, setFixDateValue] = useState<dayjs.Dayjs | null>(null)
+  const [fixingDate, setFixingDate] = useState(false)
 
   const [reviewerRejectOpen, setReviewerRejectOpen] = useState(false)
   const [reviewerRejectForm] = Form.useForm()
@@ -242,6 +247,15 @@ export default function CaseDetailPage() {
     return false
   }, [caseData, isClosed, isAssignee, role, session])
 
+  // 結案日期溯及修正權限：sysadmin／本部門主管／行政人員（有部門限本部門、無部門全公司），且案件為已決
+  const canFixCloseDate = useMemo(() => {
+    if (!caseData || caseData.status !== '已決') return false
+    if (role === 'sysadmin') return true
+    if (role === 'dept_manager' && session?.departmentId === caseData.departmentId) return true
+    if (role === 'admin_staff' && (session?.departmentId == null || session.departmentId === caseData.departmentId)) return true
+    return false
+  }, [caseData, role, session])
+
   function getDocTypes(r: ReviewItem) {
     return r.documentType ? [r.documentType] : []
   }
@@ -319,6 +333,7 @@ export default function CaseDetailPage() {
       nasFolder: caseData.nasFolder ?? '',
       deductible: caseData.deductible,
       estimatedAmount: caseData.estimatedAmount,
+      coverageLimit: caseData.coverageLimit,
       estimatedFee: caseData.estimatedFee,
       adjustmentAmount: caseData.adjustmentAmount,
       salvageValue: caseData.salvageValue,
@@ -384,6 +399,7 @@ export default function CaseDetailPage() {
       nasFolder: values.nasFolder || null,
       deductible: values.deductible ?? null,
       estimatedAmount: values.estimatedAmount ?? null,
+      coverageLimit: values.coverageLimit ?? null,
       estimatedFee: values.estimatedFee ?? null,
       adjustmentAmount: values.adjustmentAmount ?? null,
       salvageValue: values.salvageValue ?? null,
@@ -396,6 +412,11 @@ export default function CaseDetailPage() {
         employeeId: a.employeeId,
         role: a.role,
         contributionRatio: a.contributionRatio,
+      })),
+      coInsurers: editCoInsurers.map((c) => ({
+        companyId: c.companyId ?? null,
+        policyNumber: c.policyNumber,
+        ratio: c.ratio,
       })),
     }
     const res = await api.patch(`/api/cases/${id}`, payload)
@@ -613,6 +634,30 @@ export default function CaseDetailPage() {
   }
   // [2026/06/18] - Lisa - 結案登錄（FR-23）- end
 
+  // 結案日期溯及修正：開啟 modal（預帶現值）與送出
+  function openFixDate() {
+    if (!caseData) return
+    setFixDateValue(caseData.closeDate ? dayjs(caseData.closeDate) : dayjs())
+    setFixDateOpen(true)
+  }
+  async function handleFixCloseDate() {
+    if (!caseData || !fixDateValue) { message.error('請選擇結案日期'); return }
+    setFixingDate(true)
+    const res = await api.patch(`/api/cases/${id}`, {
+      action: 'fixCloseDate',
+      closeDate: fixDateValue.format('YYYY-MM-DD'),
+    })
+    setFixingDate(false)
+    if (res.success) {
+      message.success('結案日期已更新')
+      setFixDateOpen(false)
+      dispatchUpdated()
+      loadCase()
+    } else {
+      message.error(res.error ?? '更新失敗')
+    }
+  }
+
   // ── 審核快捷（FR-64）通過 / 退回 ─────────────────────────────────────
   function reviewerAction(r: ReviewItem): 'approve' | 'mid_approve' | 'vp_approve' | null {
     if (role === 'vp' && r.approvalStatus === '待執行副總閱') return 'vp_approve'
@@ -783,6 +828,9 @@ export default function CaseDetailPage() {
             ) : (
               <Space>
                 <Button icon={<ArrowLeftOutlined />} onClick={() => router.push(backPath)}>返回列表</Button>
+                {canFixCloseDate && (
+                  <Button icon={<EditOutlined />} onClick={openFixDate}>修正結案日期</Button>
+                )}
                 {fromReviews && actionableReview && (
                   <>
                     <Button type="primary" icon={<CheckOutlined />} style={{ background: '#52c41a', borderColor: '#52c41a' }} onClick={handleReviewerApprove}>通過</Button>
@@ -1065,6 +1113,9 @@ export default function CaseDetailPage() {
                     <Form.Item name="deductible" label="自負額"><InputNumber style={{ width: '100%' }} min={0} step={10000} {...numFmt} /></Form.Item>
                   </Col>
                   <Col span={12}>
+                    <Form.Item name="coverageLimit" label="保額(賠償限額)"><InputNumber style={{ width: '100%' }} min={0} step={100000} {...numFmt} /></Form.Item>
+                  </Col>
+                  <Col span={12}>
                     <Form.Item name="estimatedFee" label="預估公證費"><InputNumber style={{ width: '100%' }} min={0} step={10000} {...numFmt} /></Form.Item>
                   </Col>
                   {editEstFee && (
@@ -1140,6 +1191,7 @@ export default function CaseDetailPage() {
                     {row('預估金額', caseData.estimatedAmount, { fontWeight: 700, fontSize: 15 })}
                     {row('自負額', caseData.deductible)}
                     {row('預估賠償額', estComp)}
+                    {row('保額(賠償限額)', caseData.coverageLimit)}
                     <Divider style={{ margin: '8px 0' }} />
                     {row('理算損失額', caseData.adjustmentAmount, { fontWeight: 700, color: '#1B4F8C' })}
                     {row('殘餘物價值', caseData.salvageValue)}
@@ -1414,7 +1466,7 @@ export default function CaseDetailPage() {
         <Form form={closeForm} layout="vertical" onFinish={handleCloseCase} style={{ marginTop: 8 }}>
           <Row gutter={12}>
             <Col span={12}>
-              <Form.Item name="reportDate" label="出報告日期" rules={[{ required: true, message: '請選擇出報告日期' }]}>
+              <Form.Item name="reportDate" label="結案日期" rules={[{ required: true, message: '請選擇結案日期' }]}>
                 <DatePicker style={{ width: '100%' }} format="YYYY/MM/DD" inputReadOnly={false} />
               </Form.Item>
             </Col>
@@ -1461,6 +1513,29 @@ export default function CaseDetailPage() {
             </Text>
           </Card>
         </Form>
+      </Modal>
+
+      {/* ── 結案日期溯及修正 Modal ── */}
+      <Modal
+        title={<Space><EditOutlined /><span>修正結案日期</span></Space>}
+        open={fixDateOpen}
+        onCancel={() => setFixDateOpen(false)}
+        onOk={handleFixCloseDate}
+        okText="確定修正"
+        cancelText="取消"
+        okButtonProps={{ loading: fixingDate, style: { background: '#1B4F8C' } }}
+        width={420}
+        destroyOnClose
+      >
+        <div style={{ marginTop: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            調整此已決案件的「結案日期」。此日期為年度統計、業績分攤的歸戶依據，修正將記入修改記錄。
+          </Text>
+          <div style={{ marginTop: 12 }}>
+            <Text strong style={{ marginRight: 8 }}>結案日期</Text>
+            <DatePicker value={fixDateValue} onChange={setFixDateValue} format="YYYY/MM/DD" allowClear={false} style={{ width: 200 }} />
+          </div>
+        </div>
       </Modal>
 
       {/* ── 送審 Modal（FR-12/36/47/85/86）── */}

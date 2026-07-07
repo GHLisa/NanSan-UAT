@@ -42,7 +42,8 @@ export async function GET(req: NextRequest) {
   if (role === 'handler') {
     scopeWhere.assignments = { some: { employeeId: empId } }
     if (departmentId) scopeWhere.departmentId = departmentId
-  } else if (canViewAllDepts(role)) {
+  } else if (canViewAllDepts(role) || role === 'admin_staff') {
+    // [2026/07/07] - Lisa - 行政人員比照副總：全公司範圍，可依部門查詢條件篩選
     if (deptId) scopeWhere.departmentId = deptId
   } else if (departmentId) {
     scopeWhere.departmentId = departmentId

@@ -75,6 +75,10 @@ export default function CaseQueryPage() {
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
   const [incidentDateFrom, setIncidentDateFrom] = useState('')
   const [incidentDateTo, setIncidentDateTo] = useState('')
+  const [filterIcId, setFilterIcId] = useState('')            // 保險公司（第一層）
+  const [filterContacts, setFilterContacts] = useState<string[]>([])  // 保險公司承辦人（第二層多選）
+  const [insuranceCompanies, setInsuranceCompanies] = useState<{ id: number; name: string }[]>([])
+  const [contactOptions, setContactOptions] = useState<string[]>([])
   const [page, setPage] = useState(1)
   const [exporting, setExporting] = useState(false)
 
@@ -90,10 +94,21 @@ export default function CaseQueryPage() {
   }, [])
 
   useEffect(() => {
-    api.get<{ departments: { id: number; name: string }[] }>('/api/meta').then(res => {
-      if (res.success && res.data) setDepartments(res.data.departments)
+    api.get<{ departments: { id: number; name: string }[]; insuranceCompanies: { id: number; name: string }[] }>('/api/meta').then(res => {
+      if (res.success && res.data) {
+        setDepartments(res.data.departments)
+        setInsuranceCompanies(res.data.insuranceCompanies)
+      }
     })
   }, [])
+
+  // 選定保險公司後載入其承辦人選項（第二層連動）；未選則清空
+  useEffect(() => {
+    if (!filterIcId) { setContactOptions([]); return }
+    api.get<string[]>(`/api/cases?mode=contacts&insuranceCompanyId=${filterIcId}`).then(res => {
+      if (res.success && res.data) setContactOptions(res.data)
+    })
+  }, [filterIcId])
 
   const loadCases = useCallback(async () => {
     setLoading(true)
@@ -104,10 +119,12 @@ export default function CaseQueryPage() {
     if (incidentDateTo) params.set('incidentDateTo', incidentDateTo)
     if (filterYear) params.set('year', filterYear)
     if (filterYear && filterPeriod) params.set('quarter', filterPeriod)
+    if (filterIcId) params.set('insuranceCompanyId', filterIcId)
+    if (filterContacts.length) params.set('contacts', filterContacts.join(','))
     const res = await api.get<CaseItem[]>(`/api/cases?${params.toString()}`)
     if (res.success && res.data) setCases(res.data)
     setLoading(false)
-  }, [search, filterStatus, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo])
+  }, [search, filterStatus, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo, filterIcId, filterContacts])
 
   useEffect(() => { loadCases() }, [loadCases])
 
@@ -135,6 +152,9 @@ export default function CaseQueryPage() {
     setDateRange(null)
     setIncidentDateFrom('')
     setIncidentDateTo('')
+    setFilterIcId('')
+    setFilterContacts([])
+    setContactOptions([])
     setPage(1)
   }
 
@@ -149,6 +169,8 @@ export default function CaseQueryPage() {
       if (incidentDateTo) params.set('incidentDateTo', incidentDateTo)
       if (filterYear) params.set('year', filterYear)
       if (filterYear && filterPeriod) params.set('quarter', filterPeriod)
+      if (filterIcId) params.set('insuranceCompanyId', filterIcId)
+      if (filterContacts.length) params.set('contacts', filterContacts.join(','))
       const res = await fetch(`/api/cases/export?${params.toString()}`, { credentials: 'include' })
       if (!res.ok) { message.error('匯出失敗，請稍後再試'); return }
       const blob = await res.blob()
@@ -278,6 +300,34 @@ export default function CaseQueryPage() {
                 />
               </Col>
             )}
+            <Col>
+              <Select
+                value={filterIcId || undefined}
+                onChange={v => { setFilterIcId(v ?? ''); setFilterContacts([]); setPage(1) }}
+                options={insuranceCompanies.map(c => ({ value: String(c.id), label: c.name }))}
+                placeholder="全部保險公司"
+                style={{ width: 160 }}
+                showSearch
+                optionFilterProp="label"
+                allowClear
+              />
+            </Col>
+            <Col>
+              <Select
+                mode="multiple"
+                value={filterContacts}
+                onChange={vals => { setFilterContacts(vals); setPage(1) }}
+                options={contactOptions.map(c => ({ value: c, label: c }))}
+                placeholder={filterIcId ? '保險公司承辦人（可多選）' : '請先選保險公司'}
+                style={{ minWidth: 200, maxWidth: 320 }}
+                disabled={!filterIcId}
+                showSearch
+                optionFilterProp="label"
+                maxTagCount="responsive"
+                allowClear
+                notFoundContent={filterIcId ? '此保險公司無承辦人資料' : null}
+              />
+            </Col>
             <Col>
               <DatePicker.RangePicker
                 placeholder={['出險日期起', '出險日期迄']}

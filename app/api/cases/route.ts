@@ -33,6 +33,30 @@ export async function GET(req: NextRequest) {
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
 
   const { searchParams } = req.nextUrl
+
+  // 案件查詢第二層連動：某保險公司在可視範圍內既有案件的 distinct 承辦人（去空白後去重）
+  if (searchParams.get('mode') === 'contacts') {
+    const icIdParam = searchParams.get('insuranceCompanyId')
+    if (!icIdParam) return NextResponse.json({ success: true, data: [] })
+    const scope = await buildCaseScope(session)
+    const rows = await prisma.case.findMany({
+      where: {
+        ...scope,
+        insuranceCompanyId: parseInt(icIdParam),
+        insuranceContact: { not: null },
+        ...(session.role === 'handler' ? { assignments: { some: { employeeId: parseInt(session.sub) } } } : {}),
+      },
+      select: { insuranceContact: true },
+      distinct: ['insuranceContact'],
+    })
+    // 回傳「原始 distinct 值」而非 trim 後的值，確保選項與後續 IN 篩選完全對得起來；僅濾掉空白項
+    const contacts = rows
+      .map((r) => r.insuranceContact)
+      .filter((c): c is string => !!c && c.trim() !== '')
+      .sort((a, b) => a.localeCompare(b, 'zh-Hant'))
+    return NextResponse.json({ success: true, data: contacts })
+  }
+
   const page = parseInt(searchParams.get('page') ?? '1')
   const pageSize = parseInt(searchParams.get('pageSize') ?? '15')
   const status = searchParams.get('status') ?? '未決'   // 預設只顯示未決；'all' = 不篩選
@@ -44,12 +68,19 @@ export async function GET(req: NextRequest) {
   const incidentDateTo = searchParams.get('incidentDateTo')
   const filterYear = searchParams.get('year')       // 依結案日年份
   const filterQuarter = searchParams.get('quarter') // Q1~Q4
+  const icId = searchParams.get('insuranceCompanyId')  // 保險公司（第一層篩選）
+  const contactsParam = searchParams.get('contacts')   // 保險公司承辦人（第二層，逗號分隔多選）
 
   const scopeFilter = await buildCaseScope(session)
 
   const where: Record<string, unknown> = { ...scopeFilter }
   if (status && status !== 'all') where.status = status
   if (deptId) where.departmentId = parseInt(deptId)
+  if (icId) where.insuranceCompanyId = parseInt(icId)
+  if (contactsParam) {
+    const list = contactsParam.split(',').map((s) => s.trim()).filter(Boolean)
+    if (list.length) where.insuranceContact = { in: list }
+  }
   if (stage) where.currentStage = stage
   if (session.role === 'handler') {
     // 承辦人只能查詢自己為主辦或協辦的案件
@@ -202,6 +233,7 @@ const CaseSchema = z.object({
   insuranceType: z.string(),
   incidentCause: z.string(),
   estimatedAmount: z.number().nullable().optional(),
+  coverageLimit: z.number().nullable().optional(),
   deductible: z.number().optional(),
   isSpecialCase: z.boolean().optional(),
   notes: z.string().optional(),
@@ -405,6 +437,9 @@ export async function POST(req: NextRequest) {
           // [2026/07/01] - Lisa - 防呆：僅在有限整數時轉 BigInt，避免 NaN/浮點值讓 BigInt() throw 成 500 非 JSON
           estimatedAmount: Number.isFinite(body.estimatedAmount)
             ? BigInt(Math.trunc(body.estimatedAmount as number))
+            : null,
+          coverageLimit: Number.isFinite(body.coverageLimit)
+            ? BigInt(Math.trunc(body.coverageLimit as number))
             : null,
           deductible: BigInt(Math.trunc(Number.isFinite(body.deductible) ? (body.deductible as number) : 0)),
           isSpecialCase: body.isSpecialCase ?? false,

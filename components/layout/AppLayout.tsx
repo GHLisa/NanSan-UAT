@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import {
-  Layout, Menu, Avatar, Dropdown, Badge, Typography, Space,
+  Layout, Menu, Avatar, Dropdown, Badge, Typography, Space, Tag,
   Select, Button, Drawer, Alert,
 } from 'antd'
 import {
@@ -290,12 +290,22 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           alignItems: 'center', justifyContent: 'space-between',
           borderBottom: '1px solid #f0f0f0', position: 'sticky', top: 0, zIndex: 99,
         }}>
-          <Button
-            type="text"
-            icon={isMobile ? <MenuUnfoldOutlined /> : collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            onClick={() => isMobile ? setDrawerOpen((d) => !d) : toggleCollapsed()}
-            style={{ fontSize: 16, color: '#1A202C', width: 40, height: 40 }}
-          />
+          <Space size={8}>
+            <Button
+              type="text"
+              icon={isMobile ? <MenuUnfoldOutlined /> : collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              onClick={() => isMobile ? setDrawerOpen((d) => !d) : toggleCollapsed()}
+              style={{ fontSize: 16, color: '#1A202C', width: 40, height: 40 }}
+            />
+            {!isMobile && process.env.NEXT_PUBLIC_APP_ENV && (
+              <Tag
+                color={process.env.NEXT_PUBLIC_APP_ENV === 'UAT' ? 'orange' : 'blue'}
+                style={{ margin: 0, fontSize: 12, fontWeight: 500 }}
+              >
+                {process.env.NEXT_PUBLIC_APP_ENV} v.{process.env.NEXT_PUBLIC_DEPLOY_DATE}
+              </Tag>
+            )}
+          </Space>
           <Space size={12}>
             <Badge count={unreadCount} size="small">
               <BellOutlined

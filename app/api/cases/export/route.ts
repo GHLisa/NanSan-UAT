@@ -53,12 +53,19 @@ export async function GET(req: NextRequest) {
   const incidentDateTo = searchParams.get('incidentDateTo')
   const filterYear = searchParams.get('year')
   const filterQuarter = searchParams.get('quarter')
+  const icId = searchParams.get('insuranceCompanyId')
+  const contactsParam = searchParams.get('contacts')
 
   const scopeFilter = await buildCaseScope(session)
 
   const where: Record<string, unknown> = { ...scopeFilter }
   if (status && status !== 'all') where.status = status
   if (deptId) where.departmentId = parseInt(deptId)
+  if (icId) where.insuranceCompanyId = parseInt(icId)
+  if (contactsParam) {
+    const list = contactsParam.split(',').map((s) => s.trim()).filter(Boolean)
+    if (list.length) where.insuranceContact = { in: list }
+  }
   if (stage) where.currentStage = stage
   if (session.role === 'handler') {
     where.assignments = { some: { employeeId: parseInt(session.sub) } }

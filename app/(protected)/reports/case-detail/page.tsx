@@ -175,7 +175,7 @@ function QuarterTable({ groups }: { groups: EmpGroup[] }) {
 export default function CaseDetailReportPage() {
   const { session } = useAuth()
   const role  = session?.role ?? ''
-  const isVP  = role === 'vp'
+  const isWide = ['vp', 'sysadmin', 'admin_staff'].includes(role)
 
   const [filterYear,  setFilterYear]  = useState(dayjs().year())
   const [filterMonth, setFilterMonth] = useState(dayjs().month() + 1)
@@ -257,7 +257,7 @@ export default function CaseDetailReportPage() {
     }
   }
 
-  const deptSelect = isVP && (
+  const deptSelect = isWide && (
     <Select
       value={filterDeptId}
       onChange={setFilterDeptId}

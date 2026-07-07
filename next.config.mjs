@@ -8,6 +8,11 @@ const nextConfig = {
   ...(isProd
     ? { experimental: { optimizePackageImports: ['antd', '@ant-design/icons'] } }
     : {}),
+  // 主頁面環境資訊（部署日期以台北時區 UTC+8 於 build 時自動帶入）
+  env: {
+    NEXT_PUBLIC_APP_ENV: 'UAT',
+    NEXT_PUBLIC_DEPLOY_DATE: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10),
+  },
 };
 
 export default nextConfig;

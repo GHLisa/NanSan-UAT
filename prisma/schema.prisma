@@ -146,6 +146,7 @@ model Case {
   insuranceType         String
   incidentCause         String
   estimatedAmount       BigInt?
+  coverageLimit         BigInt?
   deductible            BigInt?   @default(0)
   adjustmentAmount      BigInt?
   salvageValue          BigInt?

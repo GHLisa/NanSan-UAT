@@ -103,6 +103,33 @@ export async function mailAssignmentChanged(caseId: number, caseNumber: string, 
   )
 }
 
+// 出險日期格式：YYYY/MM/DD（Asia/Taipei，避免 UTC 位移造成日期偏移）
+function fmtIncidentDate(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+    .format(d)
+    .replace(/-/g, '/')
+}
+
+// 審核通知信共用抬頭：公證編號 / 出險日期 / 被保險人 / 出險地點 / 文件類型
+async function reviewHeaderLines(caseId: number, caseNumber: string, documentType: string): Promise<string[]> {
+  const c = await prisma.case.findUnique({
+    where: { id: caseId },
+    select: { insuredName: true, incidentDate: true, incidentLocation: true },
+  })
+  return [
+    `公證編號：${caseNumber}`,
+    ...(c
+      ? [`出險日期：${fmtIncidentDate(c.incidentDate)}`, `被保險人：${c.insuredName}`, `出險地點：${c.incidentLocation}`]
+      : []),
+    `文件類型：${documentType}`,
+  ]
+}
+
 // ── (2) 文件送審 → 當前關卡審核人 ───────────────────────────────────────
 export async function mailReviewSubmitted(
   caseId: number,
@@ -112,10 +139,11 @@ export async function mailReviewSubmitted(
 ): Promise<void> {
   const to = await emailsByIds([reviewerId])
   if (to.length === 0) return
+  const lines = await reviewHeaderLines(caseId, caseNumber, documentType)
   await safeSend(
     to,
     `【文件待審】${caseNumber}　${documentType}`,
-    wrap('有文件待您審核', [`案號：${caseNumber}`, `文件類型：${documentType}`, '此文件已送至您的審核關卡，請至系統進行審核。'], caseId),
+    wrap('有文件待您審核', [...lines, '此文件已送至您的審核關卡，請至系統進行審核。'], caseId),
     { category: 'review_submitted', caseId, caseNumber },
   )
 }
@@ -128,10 +156,11 @@ export async function mailReviewCascade(
   to: string[],
 ): Promise<void> {
   if (to.length === 0) return
+  const lines = await reviewHeaderLines(caseId, caseNumber, documentType)
   await safeSend(
     to,
     `【文件待審】${caseNumber}　${documentType}`,
-    wrap('有文件進入您的審核關卡', [`案號：${caseNumber}`, `文件類型：${documentType}`, '此文件已通過前一關卡，請至系統進行審核。'], caseId),
+    wrap('有文件進入您的審核關卡', [...lines, '此文件已通過前一關卡，請至系統進行審核。'], caseId),
     { category: 'review_cascade', caseId, caseNumber },
   )
 }
@@ -145,12 +174,12 @@ export async function mailReviewRejected(
 ): Promise<void> {
   const to = await assigneeEmails(caseId)
   if (to.length === 0) return
+  const lines = await reviewHeaderLines(caseId, caseNumber, documentType)
   await safeSend(
     to,
     `【文件退回】${caseNumber}　${documentType}`,
     wrap('您的送審文件已被退回', [
-      `案號：${caseNumber}`,
-      `文件類型：${documentType}`,
+      ...lines,
       remarks ? `退回原因：${remarks}` : '請查看退回原因並修正後重新送審。',
     ], caseId),
     { category: 'review_rejected', caseId, caseNumber },

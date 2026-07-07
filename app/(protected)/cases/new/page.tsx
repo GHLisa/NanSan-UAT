@@ -199,6 +199,7 @@ export default function CaseNewPage() {
       insuranceType: selectedType?.name ?? '',
       incidentCause: values.incidentCause,
       estimatedAmount: values.estimatedAmount ?? null,
+      coverageLimit: values.coverageLimit ?? null,
       deductible: values.deductible ?? 0,
       estimatedFee: values.estimatedFee ?? undefined,
       isSpecialCase,
@@ -557,6 +558,15 @@ export default function CaseNewPage() {
               <Form.Item label="自負額" name="deductible">
                 <InputNumber
                   style={{ width: '100%' }} min={0}
+                  formatter={(v) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={(v: string | undefined) => parseInt(String(v ?? '0').replace(/,/g, ''), 10)}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={8}>
+              <Form.Item label="保額(賠償限額)" name="coverageLimit">
+                <InputNumber
+                  style={{ width: '100%' }} min={0} step={100000}
                   formatter={(v) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
                   parser={(v: string | undefined) => parseInt(String(v ?? '0').replace(/,/g, ''), 10)}
                 />
