@@ -170,6 +170,9 @@ async function assertCanEdit(
   if (c.status !== '未決') {
     return { ok: false, status: 409, error: '已決／銷案案件不可編輯' }
   }
+  // [2026/07/08] - Lisa - 全面開放編輯政策：案件在文件審核中（待複核／待加簽審核／待執行副總閱）仍允許編輯欄位，
+  // 不阻擋 pending review；所有異動皆寫入 CaseLog，前端於送審記錄標示「送審後已修改」提醒審核者。
+  // （撤案 action='cancel' 仍維持審核中不可撤案的既有防護，不受此政策影響。）
   const empId = parseInt(session.sub)
   const isAssignee = c.assignments.some((a) => a.employeeId === empId)
   // 主管／系統管理員可調整本部門案件（FR-07）
@@ -276,6 +279,60 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ success: true, data: updated })
   }
 
+  // ── 已決案件金額資訊修正 ──────────────────────────────
+  // 繞過「已決不可編輯」鎖，僅開放 sysadmin／本部門主管／行政人員，且僅能改金額欄位、寫修改記錄
+  if (body.action === 'fixAmounts') {
+    const allowed =
+      session.role === 'sysadmin' ||
+      (session.role === 'dept_manager' && session.departmentId === existing.departmentId) ||
+      (session.role === 'admin_staff' && (session.departmentId == null || session.departmentId === existing.departmentId))
+    if (!allowed) return NextResponse.json({ success: false, error: '無權限修正金額資訊' }, { status: 403 })
+    if (existing.status !== '已決') {
+      return NextResponse.json({ success: false, error: '僅已決案件可修正金額資訊' }, { status: 400 })
+    }
+
+    const AMOUNT_FIELDS = [
+      'estimatedAmount', 'deductible', 'coverageLimit', 'estimatedFee',
+      'adjustmentAmount', 'salvageValue', 'finalAmount', 'actualFee', 'travelOtherExpense',
+    ]
+    const updates: Record<string, unknown> = {}
+    const logs: { fieldName: string; oldValue: string | null; newValue: string | null }[] = []
+
+    for (const key of AMOUNT_FIELDS) {
+      if (!(key in body)) continue
+      const value = body[key]
+      const normalized: bigint | number | null =
+        value == null || value === ''
+          ? null
+          : AMOUNT_BIGINT_FIELDS.has(key)
+            ? BigInt(Math.trunc(Number(value)))
+            : Math.trunc(Number(value))
+
+      const oldRaw = (existing as Record<string, unknown>)[key] as bigint | number | null
+      const oldStr = oldRaw == null ? '' : oldRaw.toString()
+      const newStr = normalized == null ? '' : normalized.toString()
+
+      if (oldStr !== newStr) {
+        updates[key] = normalized
+        logs.push({ fieldName: FIELD_LABELS[key] ?? key, oldValue: oldStr || null, newValue: newStr || null })
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await prisma.$transaction([
+        prisma.case.update({ where: { id }, data: updates }),
+        prisma.caseLog.createMany({
+          data: logs.map((l) => ({
+            caseId: id, employeeId: empId,
+            fieldName: l.fieldName, oldValue: l.oldValue, newValue: l.newValue, logType: 'edit',
+          })),
+        }),
+      ])
+    }
+    const updated = await prisma.case.findUnique({ where: { id } })
+    return NextResponse.json({ success: true, data: updated })
+  }
+
   // ── 一般編輯（含承辦人整批覆寫 FR-45）─────────────────────────
   const perm = await assertCanEdit(session, id)
   if (!perm.ok) return NextResponse.json({ success: false, error: perm.error }, { status: perm.status })
@@ -285,6 +342,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     | { employeeId: number; role: string; contributionRatio: number }[]
     | undefined
 
+  let assigneesChanged = false
   if (assignees) {
     const total = assignees.reduce((s, a) => s + (a.contributionRatio ?? 0), 0)
     if (Math.abs(total - 1.0) > 0.01) {
@@ -293,6 +351,18 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         { status: 400 },
       )
     }
+    // 承辦人須恰有一位主辦
+    if (assignees.filter((a) => a.role === '主辦').length !== 1) {
+      return NextResponse.json({ success: false, error: '承辦人須恰有一位主辦' }, { status: 400 })
+    }
+    // [2026/07/08] - Lisa - 與現有承辦人比對（不分順序）：未變更則不刪改、不寫 log，避免每次儲存都產生「承辦人已變更」
+    const existingAssign = await prisma.caseAssignment.findMany({
+      where: { caseId: id },
+      select: { employeeId: true, role: true, contributionRatio: true },
+    })
+    const normAssign = (list: { employeeId: number; role: string; contributionRatio: number }[]) =>
+      list.map((a) => `${a.employeeId}|${a.role}|${a.contributionRatio}`).sort().join(';')
+    assigneesChanged = normAssign(existingAssign) !== normAssign(assignees)
   }
 
   // 共保資訊整批覆寫（與建案一致；主保人須保留比例，合計須 < 100%）
@@ -351,7 +421,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   }
 
   const hasFieldChanges = Object.keys(updates).length > 0
-  if (!hasFieldChanges && !assignees && !coInsurersChanged) {
+  if (!hasFieldChanges && !assigneesChanged && !coInsurersChanged) {
     return NextResponse.json({ success: true, data: existing })
   }
 
@@ -367,7 +437,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         })),
       })
     }
-    if (assignees) {
+    if (assignees && assigneesChanged) {
       await tx.caseAssignment.deleteMany({ where: { caseId: id } })
       await tx.caseAssignment.createMany({
         data: assignees.map((a) => ({

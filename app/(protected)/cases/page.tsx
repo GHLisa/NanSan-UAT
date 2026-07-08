@@ -176,6 +176,9 @@ export default function CasesPage() {
     ? [{ value: '', label: '全部部門' }, ...meta.departments.map(d => ({ value: String(d.id), label: d.name }))]
     : meta.departments.filter(d => String(d.id) === defaults.deptId).map(d => ({ value: String(d.id), label: d.name }))
 
+  // 部門篩選被限制在單一部門（僅一個選項）時，清單毋需再顯示部門欄；多選項（如執行副總）才保留
+  const showDeptColumn = deptOptions.length > 1
+
   const assigneeOptions = isWide
     ? [{ value: '', label: '全部承辦人' }, ...meta.employees.map(e => ({ value: String(e.id), label: e.name }))]
     : [{ value: '', label: '全部' }, ...meta.employees.map(e => ({ value: String(e.id), label: e.name }))]
@@ -213,6 +216,10 @@ export default function CasesPage() {
       render: (v: string) => v || '—',
     },
     {
+      title: '險種', dataIndex: 'insuranceType', key: 'insuranceType', width: 120, ellipsis: true,
+      render: (v: string) => v || '—',
+    },
+    {
       title: '出險地點', dataIndex: 'incidentLocation', key: 'incidentLocation', width: 140, ellipsis: true,
       render: (v: string) => v || '—',
     },
@@ -220,8 +227,14 @@ export default function CasesPage() {
       title: '保代/保經', dataIndex: 'brokerCompanyName', key: 'broker', width: 120, ellipsis: true,
       render: (v: string | null) => v ?? '—',
     },
-    { title: '部門', dataIndex: 'departmentName', key: 'dept', width: 100, ellipsis: true },
-    { title: '承辦人', dataIndex: 'primaryHandlerName', key: 'handler', width: 80 },
+    ...(showDeptColumn ? [{ title: '部門', dataIndex: 'departmentName', key: 'dept', width: 100, ellipsis: true }] : []),
+    {
+      title: '承辦人', key: 'handler', width: 130, ellipsis: true,
+      render: (_: unknown, r: CaseItem) => {
+        const co = r.handlers.filter(h => h.role !== '主辦').map(h => h.name)
+        return [r.primaryHandlerName, ...co].join(' / ')
+      },
+    },
     {
       title: '委託日', dataIndex: 'commissionDate', key: 'commissionDate', width: 100,
       render: (v: string) => dayjs(v).format('YYYY/MM/DD'),
@@ -342,7 +355,7 @@ export default function CasesPage() {
           rowKey="id"
           size="small"
           loading={loading}
-          scroll={{ x: 1660 }}
+          scroll={{ x: showDeptColumn ? 1830 : 1730 }}
           sticky={{ offsetHeader }}
           rowClassName={(r: CaseItem) => r.hasRejectedReview ? 'row-rejected' : ''}
           pagination={{

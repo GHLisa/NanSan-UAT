@@ -10,7 +10,7 @@ import {
 import {
   EditOutlined, SendOutlined, StopOutlined, ArrowLeftOutlined,
   SaveOutlined, CloseOutlined, PlusOutlined, DeleteOutlined, CheckOutlined,
-  ClockCircleOutlined, RollbackOutlined, CheckCircleOutlined,
+  ClockCircleOutlined, RollbackOutlined, CheckCircleOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
@@ -156,6 +156,11 @@ export default function CaseDetailPage() {
   const [fixDateValue, setFixDateValue] = useState<dayjs.Dayjs | null>(null)
   const [fixingDate, setFixingDate] = useState(false)
 
+  // 已決案件金額資訊修正
+  const [fixAmtOpen, setFixAmtOpen] = useState(false)
+  const [fixingAmt, setFixingAmt] = useState(false)
+  const [fixAmtForm] = Form.useForm()
+
   const [reviewerRejectOpen, setReviewerRejectOpen] = useState(false)
   const [reviewerRejectForm] = Form.useForm()
 
@@ -249,6 +254,15 @@ export default function CaseDetailPage() {
 
   // 結案日期溯及修正權限：sysadmin／本部門主管／行政人員（有部門限本部門、無部門全公司），且案件為已決
   const canFixCloseDate = useMemo(() => {
+    if (!caseData || caseData.status !== '已決') return false
+    if (role === 'sysadmin') return true
+    if (role === 'dept_manager' && session?.departmentId === caseData.departmentId) return true
+    if (role === 'admin_staff' && (session?.departmentId == null || session.departmentId === caseData.departmentId)) return true
+    return false
+  }, [caseData, role, session])
+
+  // 已決案件金額資訊修正權限：sysadmin／本部門主管／行政人員（有部門限本部門、無部門全公司），且案件為已決
+  const canFixAmounts = useMemo(() => {
     if (!caseData || caseData.status !== '已決') return false
     if (role === 'sysadmin') return true
     if (role === 'dept_manager' && session?.departmentId === caseData.departmentId) return true
@@ -380,6 +394,8 @@ export default function CaseDetailPage() {
     if (editAssignments.some((a) => !a.employeeId)) { message.error('請選擇承辦人'); return }
     const ratioSum = editAssignments.reduce((s, a) => s + (a.contributionRatio || 0), 0)
     if (Math.abs(ratioSum - 1.0) > 0.01) { message.error('承辦比例合計必須等於 100%'); return }
+    // 承辦人須恰有一位主辦
+    if (editAssignments.filter((a) => a.role === '主辦').length !== 1) { message.error('承辦人須恰有一位主辦'); return }
 
     setSaving(true)
     const payload: Record<string, unknown> = {
@@ -436,7 +452,12 @@ export default function CaseDetailPage() {
     setEditAssignments((prev) => [...prev, { employeeId: null, role: '主辦', contributionRatio: 1.0 }])
   const removeAssignment = (idx: number) => setEditAssignments((prev) => prev.filter((_, i) => i !== idx))
   const updateAssignment = (idx: number, field: keyof Assignment, val: unknown) =>
-    setEditAssignments((prev) => prev.map((a, i) => (i === idx ? { ...a, [field]: val } : a)))
+    setEditAssignments((prev) => prev.map((a, i) => {
+      if (i === idx) return { ...a, [field]: val }
+      // 主辦唯一：某列設為主辦時，其餘自動降為協辦
+      if (field === 'role' && val === '主辦' && a.role === '主辦') return { ...a, role: '協辦' }
+      return a
+    }))
 
   // 共保操作
   const addCoInsurer = () =>
@@ -658,6 +679,41 @@ export default function CaseDetailPage() {
     }
   }
 
+  // 已決案件金額資訊修正：開啟 modal（預帶現值）與送出
+  function openFixAmounts() {
+    if (!caseData) return
+    fixAmtForm.setFieldsValue({
+      estimatedAmount: caseData.estimatedAmount ?? null,
+      deductible: caseData.deductible ?? null,
+      coverageLimit: caseData.coverageLimit ?? null,
+      estimatedFee: caseData.estimatedFee ?? null,
+      adjustmentAmount: caseData.adjustmentAmount ?? null,
+      salvageValue: caseData.salvageValue ?? null,
+      finalAmount: caseData.finalAmount ?? null,
+      actualFee: caseData.actualFee ?? null,
+      travelOtherExpense: caseData.travelOtherExpense ?? null,
+    })
+    setFixAmtOpen(true)
+  }
+  async function handleFixAmounts() {
+    if (!caseData) return
+    const values = await fixAmtForm.validateFields()
+    setFixingAmt(true)
+    const res = await api.patch(`/api/cases/${id}`, {
+      action: 'fixAmounts',
+      ...values,
+    })
+    setFixingAmt(false)
+    if (res.success) {
+      message.success('金額資訊已更新')
+      setFixAmtOpen(false)
+      dispatchUpdated()
+      loadCase()
+    } else {
+      message.error(res.error ?? '更新失敗')
+    }
+  }
+
   // ── 審核快捷（FR-64）通過 / 退回 ─────────────────────────────────────
   function reviewerAction(r: ReviewItem): 'approve' | 'mid_approve' | 'vp_approve' | null {
     if (role === 'vp' && r.approvalStatus === '待執行副總閱') return 'vp_approve'
@@ -831,6 +887,9 @@ export default function CaseDetailPage() {
                 {canFixCloseDate && (
                   <Button icon={<EditOutlined />} onClick={openFixDate}>修正結案日期</Button>
                 )}
+                {canFixAmounts && (
+                  <Button icon={<EditOutlined />} onClick={openFixAmounts}>修正金額資訊</Button>
+                )}
                 {fromReviews && actionableReview && (
                   <>
                     <Button type="primary" icon={<CheckOutlined />} style={{ background: '#52c41a', borderColor: '#52c41a' }} onClick={handleReviewerApprove}>通過</Button>
@@ -847,12 +906,12 @@ export default function CaseDetailPage() {
                     {!hasPendingReviews && isCloseReportFullyApproved && (
                       <Button icon={<CheckCircleOutlined />} style={{ background: '#52c41a', borderColor: '#52c41a', color: '#fff' }} onClick={openCloseModal}>結案</Button>
                     )}
-                    {hasPendingReviews ? (
-                      <Tooltip title={`以下文件審核中，請等審核完成後操作：${pendingDocTypes.join('、')}`}>
-                        <Tag color="orange" icon={<ClockCircleOutlined />} style={{ cursor: 'default', padding: '4px 8px' }}>審核中，暫停編輯</Tag>
+                    {/* [2026/07/08] - Lisa - 全面開放編輯：審核中亦可編輯（改動皆留修改記錄，並於送審記錄標示「送審後已修改」提醒審核者）*/}
+                    <Button icon={<EditOutlined />} onClick={openEdit}>編輯</Button>
+                    {hasPendingReviews && (
+                      <Tooltip title={`下列文件審核中，編輯後審核者將看到「送審後已修改」提醒：${pendingDocTypes.join('、')}`}>
+                        <Tag color="orange" icon={<ClockCircleOutlined />} style={{ cursor: 'default', padding: '4px 8px' }}>審核中</Tag>
                       </Tooltip>
-                    ) : (
-                      <Button icon={<EditOutlined />} onClick={openEdit}>編輯</Button>
                     )}
                   </>
                 )}
@@ -1329,11 +1388,31 @@ export default function CaseDetailPage() {
                 // 同文件已再次送審（存在更新一筆）者，視為已被取代，不再顯示放棄鈕（涵蓋未 backfill 的舊資料）
                 const isLatestForDoc = r.submittedAt === latestSubmittedByDoc.get(r.documentType)
                 const canAbandon = isRejected && r.recordStatus == null && isAssignee && isLatestForDoc
+                // [2026/07/08] - Lisa - 全面開放編輯配套：送審後案件欄位若被修改，於此筆審核中記錄標示，提醒審核者審核基準已變動
+                // [2026/07/09] - Lisa - 比較基準改為「當前關卡起始時間」，避免主管關卡的修改一路帶到副總關卡：
+                //   待複核→送件時 submittedAt；待加簽審核→主管複核完成 reviewedAt；待執行副總閱→前一關完成 midApprovedAt/reviewedAt
+                const stageStart = r.approvalStatus === '待執行副總閱'
+                  ? (r.midApprovedAt ?? r.reviewedAt ?? r.submittedAt)
+                  : r.midApprovalStatus === '待加簽審核'
+                    ? (r.reviewedAt ?? r.submittedAt)
+                    : r.submittedAt
+                const editedFieldsAfterSubmit = isPending(r)
+                  ? [...new Set(
+                      caseData.logs
+                        .filter((l) => l.logType === 'edit' && dayjs(l.changedAt).isAfter(dayjs(stageStart)))
+                        .map((l) => l.fieldName),
+                    )]
+                  : []
                 return (
                   <Card key={r.id} size="small" style={{ marginBottom: 8, background: r.recordStatus ? '#f5f5f5' : '#fafafa', opacity: r.recordStatus ? 0.7 : 1 }}>
                     <Row justify="space-between" align="middle">
                       <Space size={4} wrap>{getDocTypes(r).map((t) => <Tag key={t} style={{ fontSize: 12, margin: 0 }}>{t}</Tag>)}</Space>
                       <Space size={4}>
+                        {editedFieldsAfterSubmit.length > 0 && (
+                          <Tooltip title={`本關卡送出後已修改欄位：${editedFieldsAfterSubmit.join('、')}。核准前請確認審核基準是否仍正確。`}>
+                            <Tag color="volcano" icon={<ExclamationCircleOutlined />} style={{ fontSize: 11 }}>送審後已修改</Tag>
+                          </Tooltip>
+                        )}
                         {r.recordStatus && <Tag color="default" style={{ fontSize: 11 }}>{r.recordStatus}</Tag>}
                         <Tag color={REVIEW_STATUS_COLOR[displayStatus] ?? 'default'}>{displayStatus}</Tag>
                         {canAbandon && <Button size="small" danger onClick={() => handleAbandonReview(r)}>放棄</Button>}
@@ -1392,28 +1471,40 @@ export default function CaseDetailPage() {
           ) : (
             <Timeline
               style={{ marginTop: 8 }}
-              items={caseData.logs.map((log) => ({
-                children: (
-                  <div>
-                    <Space size={8}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>{dayjs(log.changedAt).format('YYYY/MM/DD HH:mm')}</Text>
-                      <Tag color="#1B4F8C" style={{ fontSize: 11 }}>{log.employeeName}</Tag>
-                    </Space>
-                    <div style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
-                      <Text strong style={{ fontSize: 12 }}>{log.fieldName}</Text>
-                      {log.fieldName === '承辦人' ? (
-                        <Text type="secondary" style={{ marginLeft: 6 }}>承辦人已變更</Text>
-                      ) : (
-                        <>
-                          <Text delete style={{ color: '#aaa', margin: '0 4px' }}>{formatLogValue(log.fieldName, log.oldValue)}</Text>
-                          <Text style={{ color: '#888' }}>→</Text>
-                          <Text style={{ color: '#1B4F8C', marginLeft: 4 }}>{formatLogValue(log.fieldName, log.newValue)}</Text>
-                        </>
-                      )}
+              // [2026/07/08] - Lisa - 同一批（同時間、同人員）的變更合併於一個時間/人員標籤下逐欄位列出
+              items={(() => {
+                const groups: { key: string; changedAt: string; employeeName: string; entries: typeof caseData.logs }[] = []
+                for (const log of caseData.logs) {
+                  const key = `${dayjs(log.changedAt).format('YYYY/MM/DD HH:mm')}|${log.employeeName}`
+                  const last = groups[groups.length - 1]
+                  if (last && last.key === key) last.entries.push(log)
+                  else groups.push({ key, changedAt: log.changedAt, employeeName: log.employeeName, entries: [log] })
+                }
+                return groups.map((g) => ({
+                  children: (
+                    <div>
+                      <Space size={8}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>{dayjs(g.changedAt).format('YYYY/MM/DD HH:mm')}</Text>
+                        <Tag color="#1B4F8C" style={{ fontSize: 11 }}>{g.employeeName}</Tag>
+                      </Space>
+                      {g.entries.map((log) => (
+                        <div key={log.id} style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
+                          <Text strong style={{ fontSize: 12 }}>{log.fieldName}</Text>
+                          {log.fieldName === '承辦人' ? (
+                            <Text type="secondary" style={{ marginLeft: 6 }}>承辦人已變更</Text>
+                          ) : (
+                            <>
+                              <Text delete style={{ color: '#aaa', margin: '0 4px' }}>{formatLogValue(log.fieldName, log.oldValue)}</Text>
+                              <Text style={{ color: '#888' }}>→</Text>
+                              <Text style={{ color: '#1B4F8C', marginLeft: 4 }}>{formatLogValue(log.fieldName, log.newValue)}</Text>
+                            </>
+                          )}
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                ),
-              }))}
+                  ),
+                }))
+              })()}
             />
           ),
         }]}
@@ -1536,6 +1627,37 @@ export default function CaseDetailPage() {
             <DatePicker value={fixDateValue} onChange={setFixDateValue} format="YYYY/MM/DD" allowClear={false} style={{ width: 200 }} />
           </div>
         </div>
+      </Modal>
+
+      {/* ── 已決案件金額資訊修正 Modal ── */}
+      <Modal
+        title={<Space><EditOutlined /><span>修正金額資訊</span></Space>}
+        open={fixAmtOpen}
+        onCancel={() => setFixAmtOpen(false)}
+        onOk={handleFixAmounts}
+        okText="確定修正"
+        cancelText="取消"
+        okButtonProps={{ loading: fixingAmt, style: { background: '#1B4F8C' } }}
+        width={560}
+        destroyOnClose
+      >
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          修正此已決案件的金額資訊。金額為年度統計、業績分攤的核算依據，修正將記入修改記錄。
+        </Text>
+        <Form form={fixAmtForm} layout="vertical" style={{ marginTop: 12 }}>
+          <Row gutter={[12, 0]}>
+            <Col span={12}><Form.Item name="estimatedAmount" label="預估金額"><InputNumber style={{ width: '100%' }} min={0} step={100000} {...numFmt} /></Form.Item></Col>
+            <Col span={12}><Form.Item name="deductible" label="自負額"><InputNumber style={{ width: '100%' }} min={0} step={10000} {...numFmt} /></Form.Item></Col>
+            <Col span={12}><Form.Item name="coverageLimit" label="保額(賠償限額)"><InputNumber style={{ width: '100%' }} min={0} step={100000} {...numFmt} /></Form.Item></Col>
+            <Col span={12}><Form.Item name="estimatedFee" label="預估公證費"><InputNumber style={{ width: '100%' }} min={0} step={10000} {...numFmt} /></Form.Item></Col>
+            <Col span={24}><Divider style={{ margin: '4px 0 12px' }} /></Col>
+            <Col span={12}><Form.Item name="adjustmentAmount" label="理算損失額"><InputNumber style={{ width: '100%' }} min={0} step={100000} {...numFmt} /></Form.Item></Col>
+            <Col span={12}><Form.Item name="salvageValue" label="殘餘物價值"><InputNumber style={{ width: '100%' }} min={0} step={10000} {...numFmt} /></Form.Item></Col>
+            <Col span={12}><Form.Item name="finalAmount" label="最終金額"><InputNumber style={{ width: '100%' }} min={0} step={100000} {...numFmt} /></Form.Item></Col>
+            <Col span={12}><Form.Item name="actualFee" label="實際公證費"><InputNumber style={{ width: '100%' }} min={0} step={10000} {...numFmt} /></Form.Item></Col>
+            <Col span={12}><Form.Item name="travelOtherExpense" label="差旅其他費" style={{ marginBottom: 0 }}><InputNumber style={{ width: '100%' }} min={0} step={100} placeholder="無出差請填 0" {...numFmt} /></Form.Item></Col>
+          </Row>
+        </Form>
       </Modal>
 
       {/* ── 送審 Modal（FR-12/36/47/85/86）── */}

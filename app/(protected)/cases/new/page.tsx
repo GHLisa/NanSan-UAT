@@ -146,7 +146,12 @@ export default function CaseNewPage() {
   }
 
   const handleAssignmentChange = (key: string, field: keyof AssignmentRow, value: unknown) => {
-    setAssignments((prev) => prev.map((a) => a.key === key ? { ...a, [field]: value } : a))
+    setAssignments((prev) => prev.map((a) => {
+      if (a.key === key) return { ...a, [field]: value }
+      // 主辦唯一：某列設為主辦時，其餘自動降為協辦
+      if (field === 'role' && value === '主辦' && a.role === '主辦') return { ...a, role: '協辦' }
+      return a
+    }))
   }
 
   const handleAddCoInsurer = () => {
@@ -167,9 +172,8 @@ export default function CaseNewPage() {
       message.error('承辦人貢獻比例合計必須為 100%')
       return
     }
-    const hasMain = assignments.some((a) => a.role === '主辦')
-    if (!hasMain) {
-      message.error('至少需要一位主辦人')
+    if (assignments.filter((a) => a.role === '主辦').length !== 1) {
+      message.error('承辦人須恰有一位主辦')
       return
     }
     // 共保資訊驗證
