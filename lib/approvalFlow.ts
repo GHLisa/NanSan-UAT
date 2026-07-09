@@ -121,17 +121,19 @@ const VP_RULES: Record<string, Record<string, VpRule>> = {
     '結案報告書': { alwaysVP: true },
     '公證費 DEBIT NOTE': { alwaysVP: true },
   },
+  // [2026/07/09] - Lisa - 火險台北：100 萬門檻統一調整為 1,000 萬 - Start
   火險_台北: {
-    '查勘初步報告書': { threshold: 1_000_000 },
-    '初步預估試算表': { threshold: 1_000_000 },
+    '查勘初步報告書': { threshold: 10_000_000 },
+    '初步預估試算表': { threshold: 10_000_000 },
     '書函': { alwaysVP: true },
-    '理算明細表': { threshold: 1_000_000 },
-    '理算書面報告書': { threshold: 1_000_000 },
-    '進度&中間報告書': { threshold: 1_000_000 },
-    '中間簽結報告書': { threshold: 1_000_000 }, // 火險：金額門檻（非 alwaysVP）
+    '理算明細表': { threshold: 10_000_000 },
+    '理算書面報告書': { threshold: 10_000_000 },
+    '進度&中間報告書': { threshold: 10_000_000 },
+    '中間簽結報告書': { threshold: 10_000_000 }, // 火險：金額門檻（非 alwaysVP）
     '結案報告書': { threshold: 10_000_000 }, // 火險台北：1,000 萬門檻
     '公證費 DEBIT NOTE': { alwaysVP: true },
   },
+  // [2026/07/09] - Lisa - 火險台北：100 萬門檻統一調整為 1,000 萬 - End
   火險_高雄: {
     '查勘初步報告書': { threshold: 1_000_000 },
     '初步預估試算表': { threshold: 1_000_000 },

@@ -25,3 +25,8 @@ export function canReview(role: string): boolean {
 export function canDispatch(role: string): boolean {
   return ['dept_manager', 'vp', 'admin_staff'].includes(role)
 }
+
+// [2026/07/09] - Lisa - 費率表編輯（新增/修改/刪除）開放行政人員（原僅 sysadmin）
+export function canManageFeeRates(role: string): boolean {
+  return ['sysadmin', 'admin_staff'].includes(role)
+}

@@ -9,6 +9,8 @@ import type { FormInstance } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { api } from '@/lib/api'
+import { useAuth } from '@/components/layout/AuthProvider'
+import { canManageFeeRates } from '@/lib/permissions'
 
 const { Title, Text } = Typography
 
@@ -588,6 +590,8 @@ function FireModal({ open, editing, onOk, onCancel }: { open: boolean; editing: 
 
 // ── Engineering Tab ────────────────────────────────────────────────────────
 function EngineeringTab() {
+  const { session } = useAuth()
+  const canManage = !!session && canManageFeeRates(session.role)
   const [rates, setRates] = useState<EngRate[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
@@ -730,13 +734,15 @@ function EngineeringTab() {
     <>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <EffectiveYearFilter year={year} onChange={setYear} />
-        <Button type="primary" icon={<PlusOutlined />} style={{ background: '#1B4F8C' }}
-          onClick={() => { setEditing(null); setModalOpen(true) }}>
-          新增保險公司
-        </Button>
+        {canManage && (
+          <Button type="primary" icon={<PlusOutlined />} style={{ background: '#1B4F8C' }}
+            onClick={() => { setEditing(null); setModalOpen(true) }}>
+            新增保險公司
+          </Button>
+        )}
       </div>
       <Card size="small">
-        <Table dataSource={tableData} columns={columns} rowKey="_key" loading={loading}
+        <Table dataSource={tableData} columns={canManage ? columns : columns.filter((c) => (c as { key?: string }).key !== 'action')} rowKey="_key" loading={loading}
           size="small" scroll={{ x: 1400 }} pagination={false} bordered
           onRow={r => (r._isSub ? { style: { background: '#fafaf8' } } : {})} />
       </Card>
@@ -755,6 +761,8 @@ function FireTab() {
   const [editing, setEditing] = useState<FireRate | null>(null)
   const [year, setYear] = useState<YearFilter>(() => new Date().getFullYear())
   const filteredRates = useMemo(() => applicableRatesForYear(rates, year), [rates, year])
+  const { session } = useAuth()
+  const canManage = !!session && canManageFeeRates(session.role)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -832,10 +840,12 @@ function FireTab() {
       <div style={{ marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <EffectiveYearFilter year={year} onChange={setYear} />
-          <Button type="primary" icon={<PlusOutlined />} style={{ background: '#1B4F8C', flexShrink: 0, marginLeft: 16 }}
-            onClick={() => { setEditing(null); setModalOpen(true) }}>
-            新增保險公司
-          </Button>
+          {canManage && (
+            <Button type="primary" icon={<PlusOutlined />} style={{ background: '#1B4F8C', flexShrink: 0, marginLeft: 16 }}
+              onClick={() => { setEditing(null); setModalOpen(true) }}>
+              新增保險公司
+            </Button>
+          )}
         </div>
         <Text type="secondary" style={{ fontSize: 11 }}>
           ＊大多數保險公司採 4 段費率（≤500萬 / 500~2000萬 / 2000萬~1億 / 1億~5億）；「500~1000萬」與「1000~2000萬」顯示相同費率為正常現象。
@@ -843,7 +853,7 @@ function FireTab() {
         </Text>
       </div>
       <Card size="small">
-        <Table dataSource={filteredRates} columns={columns} rowKey="id" loading={loading}
+        <Table dataSource={filteredRates} columns={canManage ? columns : columns.filter((c) => (c as { key?: string }).key !== 'action')} rowKey="id" loading={loading}
           size="small" scroll={{ x: 1500 }} pagination={false} bordered />
       </Card>
       <FireModal open={modalOpen} editing={editing}

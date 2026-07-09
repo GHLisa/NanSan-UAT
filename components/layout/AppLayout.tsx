@@ -12,6 +12,7 @@ import {
   SwapOutlined, PercentageOutlined, LineChartOutlined, AccountBookOutlined,
   FundOutlined, ProfileOutlined, MenuFoldOutlined, MenuUnfoldOutlined,
   AppstoreOutlined, FileSearchOutlined, TrophyOutlined, PrinterOutlined,
+  TeamOutlined, DatabaseOutlined, NumberOutlined, MailOutlined, LoginOutlined,
 } from '@ant-design/icons'
 import { useAuth } from './AuthProvider'
 import { getMenuPermissions } from '@/lib/permissions'
@@ -33,11 +34,11 @@ const ALL_MENU_ITEMS = [
   {
     key: 'admin', icon: <SettingOutlined />, label: '系統管理',
     children: [
-      { key: 'admin-users', label: '使用者帳號', path: '/admin/users' },
-      { key: 'admin-master', label: '基礎資料', path: '/admin/master-data' },
-      { key: 'admin-case-number', label: '公證編號修正', path: '/admin/case-number' },
-      { key: 'admin-maillog', label: '發信紀錄', path: '/admin/mail-logs' },
-      { key: 'admin-loginlog', label: '登入紀錄', path: '/admin/login-logs' },
+      { key: 'admin-users', icon: <TeamOutlined />, label: '使用者帳號', path: '/admin/users' },
+      { key: 'admin-master', icon: <DatabaseOutlined />, label: '基礎資料', path: '/admin/master-data' },
+      { key: 'admin-case-number', icon: <NumberOutlined />, label: '公證編號修正', path: '/admin/case-number' },
+      { key: 'admin-maillog', icon: <MailOutlined />, label: '發信紀錄', path: '/admin/mail-logs' },
+      { key: 'admin-loginlog', icon: <LoginOutlined />, label: '登入紀錄', path: '/admin/login-logs' },
     ],
   },
   { key: 'settlements', icon: <FileSearchOutlined />, label: '案件查詢', path: '/settlements' },
@@ -89,7 +90,7 @@ function buildMenuItems(permissions: string[], dispatchCount: number, myCaseCoun
             // 使行政人員僅顯示「基礎資料」而非全部管理子項
             return (parent.children ?? [])
               .filter((c) => permissions.includes(c.key))
-              .map((c) => ({ key: c.key, label: c.label }))
+              .map((c) => ({ key: c.key, icon: c.icon, label: c.label }))
           })()
         : []
 
