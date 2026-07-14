@@ -72,34 +72,38 @@ export async function GET(req: NextRequest) {
     orderBy: { closeDate: 'asc' },
   })
 
-  function groupByPrimary(list: typeof cases, withCaseRows: boolean): EmpGroup[] {
+  // [2026/07/14] - Lisa - 純公證費/差旅其他費/小計依承辦比例分配；每位經辦人（主辦＋協辦）各列其份額，同一案分列各人，件數依參與人計
+  function groupByHandler(list: typeof cases, withCaseRows: boolean): EmpGroup[] {
     const map = new Map<number, EmpGroup>()
     for (const c of list) {
-      const primary = c.assignments.find(a => a.role === '主辦') ?? c.assignments[0]
-      if (!primary) continue
-      const travelFee = c.travelOtherExpense ?? 0
-      const actualFee = c.actualFee ?? 0
-      const subtotalFee = actualFee + travelFee
-      if (!map.has(primary.employeeId)) {
-        map.set(primary.employeeId, {
-          empId: primary.employeeId, empName: primary.employee.name,
-          cases: [], totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
-        })
+      const travelFeeFull = c.travelOtherExpense ?? 0
+      const actualFeeFull = c.actualFee ?? 0
+      const remarks = c.assignments.length > 1
+        ? c.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
+        : ''
+      for (const a of c.assignments) {
+        const ratio = a.contributionRatio ?? 0
+        const actualFee = Math.round(actualFeeFull * ratio)
+        const travelFee = a.role === '主辦' ? travelFeeFull : 0
+        const subtotalFee = actualFee + travelFee
+        if (!map.has(a.employeeId)) {
+          map.set(a.employeeId, {
+            empId: a.employeeId, empName: a.employee.name,
+            cases: [], totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
+          })
+        }
+        const g = map.get(a.employeeId)!
+        if (withCaseRows) {
+          g.cases.push({
+            id: c.id, caseNumber: c.caseNumber, insuredName: c.insuredName,
+            closeDate: c.closeDate!.toISOString(), actualFee, travelFee, subtotalFee, remarks,
+          })
+        }
+        g.totals.caseCount++
+        g.totals.actualFee += actualFee
+        g.totals.travelFee += travelFee
+        g.totals.subtotalFee += subtotalFee
       }
-      const g = map.get(primary.employeeId)!
-      if (withCaseRows) {
-        const remarks = c.assignments.length > 1
-          ? c.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
-          : ''
-        g.cases.push({
-          id: c.id, caseNumber: c.caseNumber, insuredName: c.insuredName,
-          closeDate: c.closeDate!.toISOString(), actualFee, travelFee, subtotalFee, remarks,
-        })
-      }
-      g.totals.caseCount++
-      g.totals.actualFee += actualFee
-      g.totals.travelFee += travelFee
-      g.totals.subtotalFee += subtotalFee
     }
     return Array.from(map.values())
   }
@@ -107,9 +111,9 @@ export async function GET(req: NextRequest) {
   const wb = new ExcelJS.Workbook()
 
   if (type === 'monthly') {
-    buildDetailSheet(wb, `${year}年${month}月 已決案明細`, groupByPrimary(cases, true))
+    buildDetailSheet(wb, `${year}年${month}月 已決案明細`, groupByHandler(cases, true))
   } else {
-    buildQuarterSheet(wb, `${year}年${quarter}已決案統計`, groupByPrimary(cases, false))
+    buildQuarterSheet(wb, `${year}年${quarter}已決案統計`, groupByHandler(cases, false))
 
     // YTD（Q1 ~ 當季）
     const qMonths = QUARTER_MONTHS[quarter] ?? [1, 2, 3]
@@ -122,7 +126,7 @@ export async function GET(req: NextRequest) {
         assignments: { select: { employeeId: true, role: true, contributionRatio: true, employee: { select: { name: true } } } },
       },
     })
-    buildQuarterSheet(wb, `Q1~${quarter}累計`, groupByPrimary(ytdCases, false))
+    buildQuarterSheet(wb, `Q1~${quarter}累計`, groupByHandler(ytdCases, false))
   }
 
   const buffer = await wb.xlsx.writeBuffer()
@@ -189,6 +193,12 @@ function buildDetailSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpGr
   total.font = { bold: true }
   for (let col = 1; col <= 9; col++) total.getCell(col).fill = TOTAL_FILL
 
+  // [2026/07/14] - Lisa - 表格下方加註
+  const note = ws.addRow(['註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；同一案分列於各經辦人，件數依參與人計。'])
+  ws.mergeCells(note.number, 1, note.number, 9)
+  note.getCell(1).font = { size: 9, italic: true, color: { argb: 'FF888888' } }
+  note.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }
+
   ws.views = [{ state: 'frozen', ySplit: 1 }]
 }
 
@@ -225,6 +235,12 @@ function buildQuarterSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpG
   styleBody(total, 6, [4, 5, 6])
   total.font = { bold: true }
   for (let col = 1; col <= 6; col++) total.getCell(col).fill = TOTAL_FILL
+
+  // [2026/07/14] - Lisa - 表格下方加註
+  const note = ws.addRow(['註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；件數依參與人計。'])
+  ws.mergeCells(note.number, 1, note.number, 6)
+  note.getCell(1).font = { size: 9, italic: true, color: { argb: 'FF888888' } }
+  note.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }
 
   ws.views = [{ state: 'frozen', ySplit: 1 }]
 }

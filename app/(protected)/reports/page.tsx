@@ -175,9 +175,12 @@ export default function ReportsPage() {
   }
 
   const yearSelect = (
-    <Select value={year} onChange={setYear} style={{ width: 110 }}>
-      {years.map((y) => <Option key={y} value={String(y)}>{y} 年</Option>)}
-    </Select>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <Text type="secondary" style={{ fontSize: 13 }}>委託日年度</Text>
+      <Select value={year} onChange={setYear} style={{ width: 110 }}>
+        {years.map((y) => <Option key={y} value={String(y)}>{y} 年</Option>)}
+      </Select>
+    </span>
   )
 
   const deptSelect = isWideRole && (
@@ -217,19 +220,23 @@ export default function ReportsPage() {
                   pagination={false}
                   summary={perfSummary}
                 />
+                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+                  註：未決件數、已決件數僅計主辦；未決、已決公證費依承辦比例分攤。
+                </Text>
               </Card>
             </Col>
             <Col xs={24} lg={10}>
               <Card title="員工案件數比較" size="small" bordered={false} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={perfData} layout="vertical" margin={{ left: 20 }}>
+                {/* [2026/07/14] - Lisa - 固定每條 bar 粗細，圖表高度隨人數動態成長（卡片變高、不捲動） */}
+                <ResponsiveContainer width="100%" height={Math.max(280, perfData.length * 36 + 60)}>
+                  <BarChart data={perfData} layout="vertical" margin={{ left: 20 }} barGap={2}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis type="number" allowDecimals={false} />
                     <YAxis type="category" dataKey="name" width={70} tick={{ fontSize: 12 }} />
                     <Tooltip />
                     <Legend />
-                    <Bar dataKey="openCount" name="未決" fill={SECONDARY_COLOR} />
-                    <Bar dataKey="closedCount" name="已決" fill={PRIMARY_COLOR} />
+                    <Bar dataKey="openCount" name="未決" fill={SECONDARY_COLOR} barSize={10} />
+                    <Bar dataKey="closedCount" name="已決" fill={PRIMARY_COLOR} barSize={10} />
                   </BarChart>
                 </ResponsiveContainer>
               </Card>

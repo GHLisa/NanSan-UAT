@@ -40,7 +40,10 @@ export async function GET(req: NextRequest) {
   // ── 依角色決定可見員工清單（員工績效用）─────────────────────────────
   let scopedEmpIds: Set<number>
   if (isWideRole) {
-    scopedEmpIds = new Set(employees.map(e => e.id))
+    // [2026/07/14] - Lisa - 員工績效：全域角色有選部門則依「員工所屬部門」篩選，未選則全公司
+    scopedEmpIds = reqDeptId
+      ? new Set(employeeRoles.filter(r => r.departmentId === reqDeptId).map(r => r.employeeId))
+      : new Set(employees.map(e => e.id))
   } else if (role === 'handler') {
     scopedEmpIds = new Set([empId])
   } else if (role === 'team_lead') {
@@ -68,11 +71,12 @@ export async function GET(req: NextRequest) {
       status: true,
       actualFee: true,
       estimatedFee: true,
-      assignments: { select: { employeeId: true } },
+      assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
     },
   })
 
   // ── 員工績效 ───────────────────────────────────────────────────────
+  // [2026/07/14] - Lisa - 件數只計主辦；公證費（未決 estimatedFee／已決 actualFee）依承辦比例分攤
   const perfMap = new Map<number, {
     employeeId: number; name: string
     openCount: number; closedCount: number
@@ -91,12 +95,14 @@ export async function GET(req: NextRequest) {
         }
         perfMap.set(a.employeeId, row)
       }
+      const isPrimary = a.role === '主辦'
+      const ratio = a.contributionRatio ?? 0
       if (c.status === '未決') {
-        row.openCount += 1
-        row.openFee += c.estimatedFee ?? 0
+        if (isPrimary) row.openCount += 1
+        row.openFee += Math.round((c.estimatedFee ?? 0) * ratio)
       } else if (c.status === '已決') {
-        row.closedCount += 1
-        row.closedFee += c.actualFee ?? 0
+        if (isPrimary) row.closedCount += 1
+        row.closedFee += Math.round((c.actualFee ?? 0) * ratio)
       }
     }
   }
@@ -178,6 +184,11 @@ export async function GET(req: NextRequest) {
     sum1.getCell(col).fill = SUM_FILL
     sum1.getCell(col).border = THIN_BORDER
   }
+  // [2026/07/14] - Lisa - 員工績效表下方加註
+  const note1 = ws1.addRow(['註：未決件數、已決件數僅計主辦；未決、已決公證費依承辦比例分攤。'])
+  ws1.mergeCells(note1.number, 1, note1.number, 5)
+  note1.getCell(1).font = { size: 9, italic: true, color: { argb: 'FF888888' } }
+  note1.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }
   ws1.views = [{ state: 'frozen', ySplit: 1 }]
 
   // 工作表 2：接案件數（部門 × 12 月份）

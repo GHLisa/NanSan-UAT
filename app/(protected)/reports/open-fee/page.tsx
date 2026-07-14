@@ -73,10 +73,10 @@ export default function OpenFeeReportPage() {
   // ── 兩層 header 欄位定義 ────────────────────────────────────────────────
   const columns = useMemo(() => [
     {
-      title: '年度',
+      title: '公證編號年度',
       dataIndex: 'year',
       key: 'year',
-      width: 80,
+      width: 120,
       fixed: 'left' as const,
     },
     ...employees.map(emp => ({
@@ -226,16 +226,21 @@ export default function OpenFeeReportPage() {
         <Card title={cardTitle} size="small">
           {filterDeptId ? (
             rows.length > 0 ? (
-              <Table
-                dataSource={rows as Record<string, unknown>[]}
-                columns={columns}
-                rowKey="_year"
-                size="small"
-                bordered
-                pagination={false}
-                scroll={{ x: 'max-content' }}
-                summary={() => summaryRows}
-              />
+              <>
+                <Table
+                  dataSource={rows as Record<string, unknown>[]}
+                  columns={columns}
+                  rowKey="_year"
+                  size="small"
+                  bordered
+                  pagination={false}
+                  scroll={{ x: 'max-content' }}
+                  summary={() => summaryRows}
+                />
+                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+                  註：未決件數僅計主辦；預估公證費依承辦比例分攤。
+                </Text>
+              </>
             ) : (
               <Text type="secondary">該部門目前無未決案件。</Text>
             )

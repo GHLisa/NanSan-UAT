@@ -556,6 +556,19 @@ export default function CaseDetailPage() {
       return
     }
     // [2026/06/18] - Lisa - Issue #2 理算書面報告書送審前須填理算損失額 - end
+    // [2026/07/14] - Lisa - 送審節點3「理算表」（理算明細表）前，理算相關金額欄位必填（可為 0，不得為空值）- Start
+    // 理算損失淨額＝理算損失額－殘餘物價值（系統自動計算），故兩來源欄位皆填即不為空
+    if (docType === '理算明細表') {
+      const missing: string[] = []
+      if (caseData.adjustmentAmount == null) missing.push('理算損失額')
+      if (caseData.salvageValue == null) missing.push('殘餘物價值')
+      if (caseData.finalAmount == null) missing.push('最終金額')
+      if (missing.length > 0) {
+        message.error(`送審「理算明細表」前，請先於金額資訊填寫：${missing.join('、')}（可為 0，不得為空值；理算損失淨額由系統自動計算）`)
+        return
+      }
+    }
+    // [2026/07/14] - Lisa - 送審節點3「理算表」必填檢查 - end
 
     const isInterim = INTERIM_DOC_TYPES.includes(docType)
     const interimType = isInterim ? (values.interimType as string | undefined) : undefined
@@ -787,6 +800,8 @@ export default function CaseDetailPage() {
   const stageItems = CASE_STAGES.map((s, i) => {
     const isFinished = i < currentStageIndex
     const isCurrent = i === currentStageIndex
+    // [2026/07/14] - Lisa - 節點9「結案」：案件已決即點亮，並於下方顯示結案日期
+    const isFinalClosed = s === '結案' && caseData.status === '已決'
     const docTypes = STAGE_DOC_TYPES[s]
     const stageRevs = docTypes ? reviews.filter((r) => docTypes.includes(r.documentType)) : []
     const stageApproved = stageRevs.some(
@@ -801,7 +816,13 @@ export default function CaseDetailPage() {
       : null
 
     let icon
-    if (stagePending) {
+    if (isFinalClosed) {
+      icon = (
+        <div style={{ width: 24, height: 24, borderRadius: '50%', background: '#52c41a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <CheckOutlined style={{ color: '#fff', fontSize: 11 }} />
+        </div>
+      )
+    } else if (stagePending) {
       icon = (
         <div style={{ width: 24, height: 24, borderRadius: '50%', background: '#fa8c16', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <ClockCircleOutlined style={{ color: '#fff', fontSize: 11 }} />
@@ -831,7 +852,14 @@ export default function CaseDetailPage() {
 
     const stagePendingRevs = stageRevs.filter(isPending)
     let description
-    if (stagePendingRevs.length > 0) {
+    if (isFinalClosed) {
+      description = caseData.closeDate ? (
+        <div style={{ marginTop: 4 }}>
+          <Text type="secondary" style={{ fontSize: 11 }}>結案日期</Text>
+          <div style={{ fontSize: 12, color: '#52c41a', fontWeight: 600 }}>{dayjs(caseData.closeDate).format('YYYY/MM/DD')}</div>
+        </div>
+      ) : undefined
+    } else if (stagePendingRevs.length > 0) {
       description = (
         <div style={{ marginTop: 4, maxWidth: 120 }}>
           {stagePendingRevs.map((r) => (
@@ -848,7 +876,7 @@ export default function CaseDetailPage() {
 
     return {
       title: s,
-      status: (isFinished ? 'finish' : isCurrent ? 'process' : 'wait') as 'finish' | 'process' | 'wait',
+      status: (isFinalClosed || isFinished ? 'finish' : isCurrent ? 'process' : 'wait') as 'finish' | 'process' | 'wait',
       icon,
       description,
     }

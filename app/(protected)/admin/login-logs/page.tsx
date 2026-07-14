@@ -1,12 +1,13 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { Table, Card, Row, Col, Typography, Tag, Space, Input, Select, Button, Tooltip } from 'antd'
+import { Table, Card, Row, Col, Typography, Tag, Space, Input, Select, Button, Tooltip, DatePicker } from 'antd'
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import dayjs from 'dayjs'
+import dayjs, { Dayjs } from 'dayjs'
 import { api } from '@/lib/api'
 
 const { Title, Text } = Typography
+const { RangePicker } = DatePicker
 
 const STATUS_LABEL: Record<string, string> = { success: '成功', fail: '失敗', locked: '鎖定中' }
 const STATUS_COLOR: Record<string, string> = { success: 'green', fail: 'red', locked: 'orange' }
@@ -28,16 +29,23 @@ export default function LoginLogsPage() {
   const [loading, setLoading] = useState(false)
   const [q, setQ] = useState('')
   const [status, setStatus] = useState<string>('')
+  // [2026/07/14] - Lisa - 日期區間查詢，預設今天，避免載入過多資料
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>([dayjs(), dayjs()])
 
   const load = useCallback(async () => {
     setLoading(true)
     const params = new URLSearchParams()
     if (q.trim()) params.set('q', q.trim())
     if (status) params.set('status', status)
+    // 以瀏覽器本地時區界定當日起訖，轉 ISO 傳後端（避免 UTC 位移造成日期偏移）
+    if (dateRange?.[0] && dateRange?.[1]) {
+      params.set('from', dateRange[0].startOf('day').toISOString())
+      params.set('to', dateRange[1].endOf('day').toISOString())
+    }
     const res = await api.get<LoginLogItem[]>(`/api/admin/login-logs${params.toString() ? `?${params}` : ''}`)
     if (res.success && res.data) setRows(res.data)
     setLoading(false)
-  }, [q, status])
+  }, [q, status, dateRange])
 
   useEffect(() => { load() }, [load])
 
@@ -77,7 +85,7 @@ export default function LoginLogsPage() {
 
       <Card size="small" style={{ marginBottom: 16 }}>
         <Row gutter={[12, 12]} align="middle">
-          <Col xs={24} sm={12} md={10}>
+          <Col xs={24} sm={12} md={8}>
             <Input
               allowClear prefix={<SearchOutlined />}
               placeholder="搜尋帳號 / 姓名 / IP"
@@ -86,7 +94,17 @@ export default function LoginLogsPage() {
               onPressEnter={load}
             />
           </Col>
-          <Col xs={16} sm={8} md={6}>
+          <Col xs={24} sm={12} md={8}>
+            <RangePicker
+              style={{ width: '100%' }}
+              value={dateRange}
+              onChange={(v) => setDateRange(v as [Dayjs, Dayjs] | null)}
+              format="YYYY/MM/DD"
+              allowClear
+              placeholder={['起始日期', '結束日期']}
+            />
+          </Col>
+          <Col xs={16} sm={8} md={4}>
             <Select
               style={{ width: '100%' }}
               value={status}

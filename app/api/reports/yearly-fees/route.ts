@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import dayjs from 'dayjs'
+import { caseReportYear } from '@/lib/caseYear'
 
 // [2026/07/02] - Lisa - 開放行政人員查看：各年度已決&未決公證費（全公司範圍）
 const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin', 'admin_staff']
@@ -56,11 +56,12 @@ export async function GET(req: NextRequest) {
     where: scopeWhere,
     select: {
       id: true,
+      caseNumber: true,
       commissionDate: true,
       status: true,
       actualFee: true,
       estimatedFee: true,
-      assignments: { select: { employeeId: true } },
+      assignments: { select: { employeeId: true, role: true } },
     },
   })
 
@@ -77,12 +78,12 @@ export async function GET(req: NextRequest) {
       .sort((a, b) => a.id - b.id)
   }
 
-  // ── 收集年份（依受任日） ───────────────────────────────────────────────
-  const years = Array.from(new Set(cases.map(c => dayjs(c.commissionDate).year()))).sort((a, b) => b - a)
+  // ── 收集年份（以公證編號年度為準，無法解析時回退委託日期年度）───────────
+  const years = Array.from(new Set(cases.map(c => caseReportYear(c.caseNumber, c.commissionDate)))).sort((a, b) => b - a)
 
   // ── 建立 pivot rows ────────────────────────────────────────────────────
   const rows = years.map(year => {
-    const yearCases = cases.filter(c => dayjs(c.commissionDate).year() === year)
+    const yearCases = cases.filter(c => caseReportYear(c.caseNumber, c.commissionDate) === year)
     const closed = yearCases.filter(c => c.status === '已決')
     const open   = yearCases.filter(c => c.status === '未決')
 
@@ -97,7 +98,8 @@ export async function GET(req: NextRequest) {
     }
 
     for (const emp of deptEmployees) {
-      row[`e${emp.id}`] = yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id)).length
+      // [2026/07/14] - Lisa - 接案件數只計主辦，協辦不列入計算
+      row[`e${emp.id}`] = yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id && a.role === '主辦')).length
     }
 
     return row

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import dayjs from 'dayjs'
+import { caseReportYear } from '@/lib/caseYear'
 
 // [2026/07/02] - Lisa - 開放行政人員查看：各員工未決件數&預估公證費（全公司範圍）
 const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin', 'admin_staff']
@@ -52,9 +52,10 @@ export async function GET(req: NextRequest) {
     where: scopeWhere,
     select: {
       id: true,
+      caseNumber: true,
       commissionDate: true,
       estimatedFee: true,
-      assignments: { select: { employeeId: true } },
+      assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
     },
   })
 
@@ -70,12 +71,12 @@ export async function GET(req: NextRequest) {
       .sort((a, b) => a.id - b.id)
   }
 
-  // ── 收集年份（依受任日，降序）────────────────────────────────────────
-  const years = Array.from(new Set(openCases.map(c => dayjs(c.commissionDate).year()))).sort((a, b) => b - a)
+  // ── 收集年份（以公證編號年度為準，無法解析時回退委託日期年度，降序）──────
+  const years = Array.from(new Set(openCases.map(c => caseReportYear(c.caseNumber, c.commissionDate)))).sort((a, b) => b - a)
 
   // ── 建立 pivot rows ────────────────────────────────────────────────────
   const rows = years.map(year => {
-    const yearCases = openCases.filter(c => dayjs(c.commissionDate).year() === year)
+    const yearCases = openCases.filter(c => caseReportYear(c.caseNumber, c.commissionDate) === year)
     const row: Record<string, number | string> = {
       year: `${year} 年`,
       _year: year,
@@ -83,11 +84,16 @@ export async function GET(req: NextRequest) {
       rowFee: 0,
     }
     for (const emp of deptEmployees) {
-      const empCases = yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id))
-      row[`cnt_${emp.id}`] = empCases.length
-      row[`fee_${emp.id}`] = empCases.reduce((s, c) => s + (c.estimatedFee ?? 0), 0)
-      row.rowCnt = (row.rowCnt as number) + empCases.length
-      row.rowFee = (row.rowFee as number) + empCases.reduce((s, c) => s + (c.estimatedFee ?? 0), 0)
+      // [2026/07/14] - Lisa - 未決件數只計主辦；預估公證費依承辦比例分攤（主辦＋協辦各按其比例）
+      const cnt = yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id && a.role === '主辦')).length
+      const fee = yearCases.reduce((s, c) => {
+        const a = c.assignments.find(x => x.employeeId === emp.id)
+        return s + (a ? Math.round((c.estimatedFee ?? 0) * a.contributionRatio) : 0)
+      }, 0)
+      row[`cnt_${emp.id}`] = cnt
+      row[`fee_${emp.id}`] = fee
+      row.rowCnt = (row.rowCnt as number) + cnt
+      row.rowFee = (row.rowFee as number) + fee
     }
     return row
   })

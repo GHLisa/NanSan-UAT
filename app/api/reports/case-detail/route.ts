@@ -82,42 +82,46 @@ export async function GET(req: NextRequest) {
 
   const empMap = new Map<number, EmpGroup>()
 
+  // [2026/07/14] - Lisa - 純公證費/差旅其他費/小計依承辦比例分配；每位經辦人（主辦＋協辦）各列其份額，同一案分列各人，件數依參與人計
   for (const c of cases) {
-    const primary = c.assignments.find(a => a.role === '主辦') ?? c.assignments[0]
-    if (!primary) continue
-
-    const travelFee = c.travelOtherExpense ?? 0
-    const actualFee = c.actualFee ?? 0
-    const subtotalFee = actualFee + travelFee
+    const travelFeeFull = c.travelOtherExpense ?? 0
+    const actualFeeFull = c.actualFee ?? 0
 
     // 備註：多位承辦人時顯示分工比例
     const remarks = c.assignments.length > 1
       ? c.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
       : ''
 
-    if (!empMap.has(primary.employeeId)) {
-      empMap.set(primary.employeeId, {
-        empId: primary.employeeId,
-        empName: primary.employee.name,
-        cases: [],
-        totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
+    for (const a of c.assignments) {
+      const ratio = a.contributionRatio ?? 0
+      const actualFee = Math.round(actualFeeFull * ratio)
+      const travelFee = a.role === '主辦' ? travelFeeFull : 0
+      const subtotalFee = actualFee + travelFee
+
+      if (!empMap.has(a.employeeId)) {
+        empMap.set(a.employeeId, {
+          empId: a.employeeId,
+          empName: a.employee.name,
+          cases: [],
+          totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
+        })
+      }
+      const group = empMap.get(a.employeeId)!
+      group.cases.push({
+        id: c.id,
+        caseNumber: c.caseNumber,
+        insuredName: c.insuredName,
+        closeDate: c.closeDate!.toISOString(),
+        actualFee,
+        travelFee,
+        subtotalFee,
+        remarks,
       })
+      group.totals.caseCount++
+      group.totals.actualFee += actualFee
+      group.totals.travelFee += travelFee
+      group.totals.subtotalFee += subtotalFee
     }
-    const group = empMap.get(primary.employeeId)!
-    group.cases.push({
-      id: c.id,
-      caseNumber: c.caseNumber,
-      insuredName: c.insuredName,
-      closeDate: c.closeDate!.toISOString(),
-      actualFee,
-      travelFee,
-      subtotalFee,
-      remarks,
-    })
-    group.totals.caseCount++
-    group.totals.actualFee += actualFee
-    group.totals.travelFee += travelFee
-    group.totals.subtotalFee += subtotalFee
   }
 
   const groups = Array.from(empMap.values())
@@ -159,18 +163,21 @@ export async function GET(req: NextRequest) {
 
     const ytdMap = new Map<number, EmpGroup>()
     for (const c of ytdCases) {
-      const primary = c.assignments.find(a => a.role === '主辦') ?? c.assignments[0]
-      if (!primary) continue
-      const travelFee = c.travelOtherExpense ?? 0
-      const actualFee = c.actualFee ?? 0
-      if (!ytdMap.has(primary.employeeId)) {
-        ytdMap.set(primary.employeeId, { empId: primary.employeeId, empName: primary.employee.name, cases: [], totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 } })
+      const travelFeeFull = c.travelOtherExpense ?? 0
+      const actualFeeFull = c.actualFee ?? 0
+      for (const a of c.assignments) {
+        const ratio = a.contributionRatio ?? 0
+        const actualFee = Math.round(actualFeeFull * ratio)
+        const travelFee = a.role === '主辦' ? travelFeeFull : 0
+        if (!ytdMap.has(a.employeeId)) {
+          ytdMap.set(a.employeeId, { empId: a.employeeId, empName: a.employee.name, cases: [], totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 } })
+        }
+        const g = ytdMap.get(a.employeeId)!
+        g.totals.caseCount++
+        g.totals.actualFee += actualFee
+        g.totals.travelFee += travelFee
+        g.totals.subtotalFee += actualFee + travelFee
       }
-      const g = ytdMap.get(primary.employeeId)!
-      g.totals.caseCount++
-      g.totals.actualFee += actualFee
-      g.totals.travelFee += travelFee
-      g.totals.subtotalFee += actualFee + travelFee
     }
     ytdGroups = Array.from(ytdMap.values())
   }

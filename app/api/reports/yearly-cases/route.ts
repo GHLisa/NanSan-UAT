@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import dayjs from 'dayjs'
+import { caseReportYear } from '@/lib/caseYear'
 
 // [2026/07/02] - Lisa - 開放行政人員查看：各年度已決&未決案件數（全公司範圍）
 const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin', 'admin_staff']
@@ -38,10 +38,11 @@ export async function GET(req: NextRequest) {
     select: {
       id: true,
       departmentId: true,
+      caseNumber: true,
       commissionDate: true,
       status: true,
       assignments: {
-        select: { employeeId: true },
+        select: { employeeId: true, role: true },
       },
     },
   })
@@ -72,15 +73,16 @@ export async function GET(req: NextRequest) {
     // 該部門的案件
     const deptCases = cases.filter(c => c.departmentId === deptId)
 
-    // 收集年份
-    const years = Array.from(new Set(deptCases.map(c => dayjs(c.commissionDate).year()))).sort((a, b) => b - a)
+    // 收集年份（以公證編號年度為準，無法解析時回退委託日期年度）
+    const years = Array.from(new Set(deptCases.map(c => caseReportYear(c.caseNumber, c.commissionDate)))).sort((a, b) => b - a)
 
     const rows = years.map(year => {
-      const yearCases = deptCases.filter(c => dayjs(c.commissionDate).year() === year)
+      const yearCases = deptCases.filter(c => caseReportYear(c.caseNumber, c.commissionDate) === year)
       const row: Record<string, number | string> = { year: `${year} 年`, _year: year }
       let total = 0
       for (const emp of deptEmployees) {
-        const count = yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id)).length
+        // [2026/07/14] - Lisa - 件數僅歸主辦，協辦不列入計算
+        const count = yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id && a.role === '主辦')).length
         row[`e${emp.id}`] = count
         total += count
       }
@@ -92,8 +94,8 @@ export async function GET(req: NextRequest) {
   }
 
   // ── TABLE 2: 部門 × 員工（累計）───────────────────────────────────────
-  // 找出有案件的員工
-  const activeCaseEmpIds = new Set(cases.flatMap(c => c.assignments.map(a => a.employeeId)))
+  // 找出有主辦案件的員工（協辦不列入計算）
+  const activeCaseEmpIds = new Set(cases.flatMap(c => c.assignments.filter(a => a.role === '主辦').map(a => a.employeeId)))
   const activeEmployees = employees
     .filter(e => activeCaseEmpIds.has(e.id))
     .sort((a, b) => a.id - b.id)
@@ -104,7 +106,7 @@ export async function GET(req: NextRequest) {
     let total = 0
     for (const emp of activeEmployees) {
       const count = cases
-        .filter(c => deptCaseIds.has(c.id) && c.assignments.some(a => a.employeeId === emp.id))
+        .filter(c => deptCaseIds.has(c.id) && c.assignments.some(a => a.employeeId === emp.id && a.role === '主辦'))
         .length
       row[`e${emp.id}`] = count
       total += count

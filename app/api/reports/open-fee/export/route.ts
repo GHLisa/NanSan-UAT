@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { caseReportYear } from '@/lib/caseYear'
 import ExcelJS from 'exceljs'
 import dayjs from 'dayjs'
 
@@ -46,8 +47,8 @@ export async function GET(req: NextRequest) {
   const openCases = await prisma.case.findMany({
     where: { departmentId: deptId, status: '未決' },
     select: {
-      id: true, commissionDate: true, estimatedFee: true,
-      assignments: { select: { employeeId: true } },
+      id: true, caseNumber: true, commissionDate: true, estimatedFee: true,
+      assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
     },
   })
 
@@ -57,17 +58,21 @@ export async function GET(req: NextRequest) {
     .map(id => ({ id, name: empMap.get(id)! }))
     .sort((a, b) => a.id - b.id)
 
-  const years = Array.from(new Set(openCases.map(c => dayjs(c.commissionDate).year()))).sort((a, b) => b - a)
+  // 年度以公證編號為準（無法解析時回退委託日期年度）
+  const years = Array.from(new Set(openCases.map(c => caseReportYear(c.caseNumber, c.commissionDate)))).sort((a, b) => b - a)
 
   // 每年每員工：{ cnt, fee }
   const rows = years.map(year => {
-    const yearCases = openCases.filter(c => dayjs(c.commissionDate).year() === year)
+    const yearCases = openCases.filter(c => caseReportYear(c.caseNumber, c.commissionDate) === year)
     const per = new Map<number, { cnt: number; fee: number }>()
     let rowCnt = 0, rowFee = 0
     for (const emp of deptEmployees) {
-      const empCases = yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id))
-      const cnt = empCases.length
-      const fee = empCases.reduce((s, c) => s + (c.estimatedFee ?? 0), 0)
+      // [2026/07/14] - Lisa - 未決件數只計主辦；預估公證費依承辦比例分攤（主辦＋協辦各按其比例）
+      const cnt = yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id && a.role === '主辦')).length
+      const fee = yearCases.reduce((s, c) => {
+        const a = c.assignments.find(x => x.employeeId === emp.id)
+        return s + (a ? Math.round((c.estimatedFee ?? 0) * a.contributionRatio) : 0)
+      }, 0)
       per.set(emp.id, { cnt, fee })
       rowCnt += cnt
       rowFee += fee
@@ -82,7 +87,7 @@ export async function GET(req: NextRequest) {
   const ws = wb.addWorksheet('各員工未決統計')
   const colCount = 1 + deptEmployees.length * 2 + 2 // 年度 + 員工×2 + 合計×2
 
-  ws.getColumn(1).width = 10
+  ws.getColumn(1).width = 14
   deptEmployees.forEach((_, i) => {
     ws.getColumn(2 + i * 2).width = 10      // 未決件數
     ws.getColumn(2 + i * 2 + 1).width = 16  // 預估公證費
@@ -100,7 +105,7 @@ export async function GET(req: NextRequest) {
 
   // 第 2~3 列：兩層表頭
   ws.mergeCells(2, 1, 3, 1)
-  ws.getCell(2, 1).value = '年度'
+  ws.getCell(2, 1).value = '公證編號年度'
   deptEmployees.forEach((emp, i) => {
     const c1 = 2 + i * 2
     ws.mergeCells(2, c1, 2, c1 + 1)
@@ -173,6 +178,14 @@ export async function GET(req: NextRequest) {
   styleDataRow(fr)
   fr.font = { bold: true, color: { argb: 'FF1B4F8C' } }
   for (let col = 1; col <= colCount; col++) fr.getCell(col).fill = FEE60_FILL
+
+  // [2026/07/14] - Lisa - 表格下方加註
+  const noteR = fee60R + 1
+  ws.mergeCells(noteR, 1, noteR, colCount)
+  const noteCell = ws.getCell(noteR, 1)
+  noteCell.value = '註：未決件數僅計主辦；預估公證費依承辦比例分攤。'
+  noteCell.font = { size: 9, italic: true, color: { argb: 'FF888888' } }
+  noteCell.alignment = { vertical: 'middle', horizontal: 'left' }
 
   ws.views = [{ state: 'frozen', xSplit: 1, ySplit: 3 }]
 

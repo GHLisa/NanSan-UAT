@@ -86,7 +86,7 @@ export default function YearlyCasesPage() {
   // ── Table 1 columns: 年度 + 員工... + 年度小計 ──────────────────────────
   function buildTab1Columns(employees: Employee[]) {
     return [
-      { title: '年度', dataIndex: 'year', key: 'year', width: 90, fixed: 'left' as const },
+      { title: '公證編號年度', dataIndex: 'year', key: 'year', width: 120, fixed: 'left' as const },
       ...employees.map(emp => ({
         title: emp.name,
         dataIndex: `e${emp.id}`,
@@ -185,7 +185,12 @@ export default function YearlyCasesPage() {
         borderBottom: '1px solid #f0f0f0', marginBottom: 16,
       }}>
         <Row justify="space-between" align="middle" style={{ marginBottom: 12 }}>
-          <Col><Title level={4} style={{ margin: 0 }}>各年度已決&amp;未決案件數</Title></Col>
+          <Col>
+            <Title level={4} style={{ margin: 0 }}>
+              各年度已決&amp;未決案件數
+              <Text type="secondary" style={{ fontSize: 13, fontWeight: 'normal', marginLeft: 8 }}>（僅計主辦）</Text>
+            </Title>
+          </Col>
           <Col>
             <Button
               icon={<FileExcelOutlined />}

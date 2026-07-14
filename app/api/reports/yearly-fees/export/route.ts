@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { caseReportYear } from '@/lib/caseYear'
 import ExcelJS from 'exceljs'
 import dayjs from 'dayjs'
 
@@ -47,9 +48,9 @@ export async function GET(req: NextRequest) {
   const cases = await prisma.case.findMany({
     where: scopeWhere,
     select: {
-      id: true, commissionDate: true, status: true,
+      id: true, caseNumber: true, commissionDate: true, status: true,
       actualFee: true, estimatedFee: true,
-      assignments: { select: { employeeId: true } },
+      assignments: { select: { employeeId: true, role: true } },
     },
   })
 
@@ -59,15 +60,17 @@ export async function GET(req: NextRequest) {
     .map(id => ({ id, name: empMap.get(id)! }))
     .sort((a, b) => a.id - b.id)
 
-  const years = Array.from(new Set(cases.map(c => dayjs(c.commissionDate).year()))).sort((a, b) => b - a)
+  // 年度以公證編號為準（無法解析時回退委託日期年度）
+  const years = Array.from(new Set(cases.map(c => caseReportYear(c.caseNumber, c.commissionDate)))).sort((a, b) => b - a)
 
   const rows = years.map(year => {
-    const yearCases = cases.filter(c => dayjs(c.commissionDate).year() === year)
+    const yearCases = cases.filter(c => caseReportYear(c.caseNumber, c.commissionDate) === year)
     const closed = yearCases.filter(c => c.status === '已決')
     const open = yearCases.filter(c => c.status === '未決')
     const empCounts = new Map<number, number>()
     for (const emp of deptEmployees) {
-      empCounts.set(emp.id, yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id)).length)
+      // [2026/07/14] - Lisa - 接案件數只計主辦，協辦不列入計算
+      empCounts.set(emp.id, yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id && a.role === '主辦')).length)
     }
     return {
       year: `${year} 年`,
@@ -89,7 +92,7 @@ export async function GET(req: NextRequest) {
   const colCount = FIXED + deptEmployees.length
 
   // 欄寬
-  const fixedWidths = [10, 9, 10, 10, 16, 18]
+  const fixedWidths = [14, 9, 10, 10, 16, 18]
   fixedWidths.forEach((w, i) => { ws.getColumn(i + 1).width = w })
   deptEmployees.forEach((_, i) => { ws.getColumn(FIXED + 1 + i).width = 10 })
 
@@ -102,14 +105,14 @@ export async function GET(req: NextRequest) {
   ws.getRow(1).height = 26
 
   // 第 2~3 列：表頭（固定欄跨兩列，員工欄歸於「接案件數」群組）
-  const fixedHeaders = ['年度', '接案量', '已決件數', '未決件數', '已決公證費', '未決公證費（預估）']
+  const fixedHeaders = ['公證編號年度', '接案量', '已決件數', '未決件數', '已決公證費', '未決公證費（預估）']
   fixedHeaders.forEach((h, i) => {
     ws.mergeCells(2, i + 1, 3, i + 1)
     ws.getCell(2, i + 1).value = h
   })
   if (deptEmployees.length) {
     ws.mergeCells(2, FIXED + 1, 2, colCount)
-    ws.getCell(2, FIXED + 1).value = '接案件數（不限主辦／協辦）'
+    ws.getCell(2, FIXED + 1).value = '接案件數（僅主辦）'
     deptEmployees.forEach((emp, i) => { ws.getCell(3, FIXED + 1 + i).value = emp.name })
   }
   for (let r = 2; r <= 3; r++) {

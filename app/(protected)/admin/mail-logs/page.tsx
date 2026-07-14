@@ -2,12 +2,13 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { Table, Card, Row, Col, Typography, Tag, Space, Input, Select, Button, Tooltip, Modal, Descriptions, Spin, Empty } from 'antd'
+import { Table, Card, Row, Col, Typography, Tag, Space, Input, Select, Button, Tooltip, Modal, Descriptions, Spin, Empty, DatePicker } from 'antd'
 import { ReloadOutlined, SearchOutlined, FileSearchOutlined } from '@ant-design/icons'
-import dayjs from 'dayjs'
+import dayjs, { Dayjs } from 'dayjs'
 import { api } from '@/lib/api'
 
 const { Title, Text } = Typography
+const { RangePicker } = DatePicker
 
 const CATEGORY_LABEL: Record<string, string> = {
   new_assignment: '新派案',
@@ -49,6 +50,8 @@ export default function MailLogsPage() {
   const [loading, setLoading] = useState(false)
   const [q, setQ] = useState('')
   const [status, setStatus] = useState<string>('')
+  // [2026/07/14] - Lisa - 發信日期區間查詢，預設今天，避免載入過多資料
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>([dayjs(), dayjs()])
 
   // 明細 Modal
   const [detailOpen, setDetailOpen] = useState(false)
@@ -60,10 +63,15 @@ export default function MailLogsPage() {
     const params = new URLSearchParams()
     if (q.trim()) params.set('q', q.trim())
     if (status) params.set('status', status)
+    // 以瀏覽器本地時區界定當日起訖，轉 ISO 傳後端（避免 UTC 位移造成日期偏移）
+    if (dateRange?.[0] && dateRange?.[1]) {
+      params.set('from', dateRange[0].startOf('day').toISOString())
+      params.set('to', dateRange[1].endOf('day').toISOString())
+    }
     const res = await api.get<MailLogItem[]>(`/api/admin/mail-logs${params.toString() ? `?${params}` : ''}`)
     if (res.success && res.data) setRows(res.data)
     setLoading(false)
-  }, [q, status])
+  }, [q, status, dateRange])
 
   useEffect(() => { load() }, [load])
 
@@ -127,7 +135,7 @@ export default function MailLogsPage() {
 
       <Card size="small" style={{ marginBottom: 16 }}>
         <Row gutter={[12, 12]} align="middle">
-          <Col xs={24} sm={12} md={10}>
+          <Col xs={24} sm={12} md={8}>
             <Input
               allowClear prefix={<SearchOutlined />}
               placeholder="搜尋主旨 / 收件人 / 案號"
@@ -136,7 +144,17 @@ export default function MailLogsPage() {
               onPressEnter={load}
             />
           </Col>
-          <Col xs={16} sm={8} md={6}>
+          <Col xs={24} sm={12} md={8}>
+            <RangePicker
+              style={{ width: '100%' }}
+              value={dateRange}
+              onChange={(v) => setDateRange(v as [Dayjs, Dayjs] | null)}
+              format="YYYY/MM/DD"
+              allowClear
+              placeholder={['起始日期', '結束日期']}
+            />
+          </Col>
+          <Col xs={16} sm={8} md={4}>
             <Select
               style={{ width: '100%' }}
               value={status}

@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
 
 // 發信紀錄查詢（MailLog）— 僅系統管理員可查
-// 支援篩選：q（主旨／收件人／案號關鍵字）、status（sent/skipped/failed）、category
+// 支援篩選：q（主旨／收件人／案號關鍵字）、status（sent/skipped/failed）、category、from/to（發信時間區間，ISO 字串）
 // 預設回傳最新 500 筆，依時間新到舊排序
 export async function GET(req: NextRequest) {
   const session = await getSession()
@@ -15,10 +15,19 @@ export async function GET(req: NextRequest) {
   const q = (searchParams.get('q') ?? '').trim()
   const status = searchParams.get('status') ?? ''
   const category = searchParams.get('category') ?? ''
+  const from = searchParams.get('from') ?? ''
+  const to = searchParams.get('to') ?? ''
 
   const where: Prisma.MailLogWhereInput = {}
   if (status) where.status = status
   if (category) where.category = category
+  // [2026/07/14] - Lisa - 發信日期區間查詢（前端已依本地時區換算為 ISO 起訖）
+  if (from || to) {
+    const createdAt: Prisma.DateTimeFilter = {}
+    if (from) createdAt.gte = new Date(from)
+    if (to) createdAt.lte = new Date(to)
+    where.createdAt = createdAt
+  }
   if (q) {
     where.OR = [
       { subject: { contains: q, mode: 'insensitive' } },

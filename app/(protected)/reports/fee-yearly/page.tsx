@@ -86,7 +86,7 @@ export default function FeeYearlyReportPage() {
   }, [data])
 
   const fixedCols = [
-    { title: '年度',     dataIndex: 'year',      key: 'year',      width: 80,  fixed: 'left' as const },
+    { title: '公證編號年度', dataIndex: 'year',      key: 'year',      width: 120, fixed: 'left' as const },
     { title: '接案量',   dataIndex: 'total',     key: 'total',     width: 70,  align: 'center' as const, render: (v: number) => fmtN(v) },
     { title: '已決件數', dataIndex: 'closedCnt', key: 'closedCnt', width: 76,  align: 'center' as const, render: (v: number) => fmtN(v) },
     { title: '未決件數', dataIndex: 'openCnt',   key: 'openCnt',   width: 76,  align: 'center' as const, render: (v: number) => fmtN(v) },
@@ -106,7 +106,7 @@ export default function FeeYearlyReportPage() {
   const columns = [
     ...fixedCols,
     ...((empCols.length > 0 && role !== 'handler') ? [{
-      title: '接案件數（不限主辦／協辦）',
+      title: '接案件數（僅主辦）',
       align: 'center' as const,
       children: empCols,
     }] : []),

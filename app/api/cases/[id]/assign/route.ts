@@ -18,6 +18,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ success: false, error: '至少需要一位承辦人' }, { status: 400 })
   }
 
+  // [2026/07/14] - Lisa - 承辦人須恰有一位主辦（與新增/編輯案件一致，防止只有協辦或多位主辦）
+  if (assignees.filter((a) => a.role === '主辦').length !== 1) {
+    return NextResponse.json({ success: false, error: '承辦人須恰有一位主辦' }, { status: 400 })
+  }
+
   const totalRatio = assignees.reduce((s, a) => s + a.contributionRatio, 0)
   if (Math.abs(totalRatio - 1.0) > 0.01) {
     return NextResponse.json({ success: false, error: '承辦比例合計必須等於 100%' }, { status: 400 })

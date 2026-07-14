@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
 
 // 登入紀錄查詢（LoginLog）— 僅系統管理員可查
-// 支援篩選：q（帳號／姓名／IP 關鍵字）、status（success/fail/locked）
+// 支援篩選：q（帳號／姓名／IP 關鍵字）、status（success/fail/locked）、from/to（時間區間，ISO 字串）
 // 預設回傳最新 500 筆，依時間新到舊排序
 export async function GET(req: NextRequest) {
   const session = await getSession()
@@ -14,9 +14,18 @@ export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl
   const q = (searchParams.get('q') ?? '').trim()
   const status = searchParams.get('status') ?? ''
+  const from = searchParams.get('from') ?? ''
+  const to = searchParams.get('to') ?? ''
 
   const where: Prisma.LoginLogWhereInput = {}
   if (status) where.status = status
+  // [2026/07/14] - Lisa - 日期區間查詢（前端已依本地時區換算為 ISO 起訖）
+  if (from || to) {
+    const createdAt: Prisma.DateTimeFilter = {}
+    if (from) createdAt.gte = new Date(from)
+    if (to) createdAt.lte = new Date(to)
+    where.createdAt = createdAt
+  }
   if (q) {
     where.OR = [
       { username: { contains: q, mode: 'insensitive' } },

@@ -107,6 +107,9 @@ export default function CasesPage() {
   const [loading, setLoading] = useState(false)
   const [meta, setMeta] = useState<MetaData>({ departments: [], employees: [] })
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
+  // [2026/07/09] - Lisa - 案件列表分頁/篩選狀態以 sessionStorage 保存，返回列表可重現篩選後狀態
+  const [restored, setRestored] = useState(false)
+  const listStateKey = session ? `nansan_cases_list:${session.sub}:${session.role}:${session.departmentId ?? ''}` : ''
 
   // [2026/06/18] - Lisa - 行政人員無部門＝全公司，視為 wide（可選任一部門/承辦人篩選）
   const isWide = !!session && (['vp', 'sysadmin'].includes(session.role) || (session.role === 'admin_staff' && !session.departmentId))
@@ -128,6 +131,33 @@ export default function CasesPage() {
     api.get<MetaData>('/api/meta').then(res => { if (res.success && res.data) setMeta(res.data) })
   }, [])
 
+  // [2026/07/09] - Lisa - 掛載時還原 sessionStorage 保存的分頁/篩選狀態（僅還原一次）
+  useEffect(() => {
+    if (!listStateKey) return
+    try {
+      const saved = sessionStorage.getItem(listStateKey)
+      if (saved) {
+        const parsed = JSON.parse(saved) as { filters?: typeof filters; dateRange?: [string | null, string | null] | null }
+        if (parsed.filters) setFilters(parsed.filters)
+        if (parsed.dateRange && parsed.dateRange[0]) {
+          setDateRange([dayjs(parsed.dateRange[0]), dayjs(parsed.dateRange[1] ?? parsed.dateRange[0])])
+        }
+      }
+    } catch { /* 忽略毀損的快取 */ }
+    setRestored(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listStateKey])
+
+  // [2026/07/09] - Lisa - 狀態變動即寫回 sessionStorage（還原完成後才寫，避免以預設值覆蓋既有快取）
+  useEffect(() => {
+    if (!restored || !listStateKey) return
+    const payload = {
+      filters,
+      dateRange: dateRange ? [dateRange[0]?.format('YYYY-MM-DD') ?? null, dateRange[1]?.format('YYYY-MM-DD') ?? null] : null,
+    }
+    sessionStorage.setItem(listStateKey, JSON.stringify(payload))
+  }, [filters, dateRange, restored, listStateKey])
+
   const loadCases = useCallback(async () => {
     setLoading(true)
     const params = new URLSearchParams({ status: '未決' })
@@ -147,7 +177,7 @@ export default function CasesPage() {
     setLoading(false)
   }, [filters])
 
-  useEffect(() => { loadCases() }, [loadCases])
+  useEffect(() => { if (restored) loadCases() }, [loadCases, restored])
 
   function resetFilters() {
     setFilters({ q: '', stage: '', deptId: defaults.deptId, assigneeId: defaults.assigneeId, incidentDateFrom: '', incidentDateTo: '', page: 1, pageSize: 15 })

@@ -336,7 +336,10 @@ export default function CaseDetailReportPage() {
         items={tabItems}
         renderTabBar={(props, DefaultTabBar) => (
           <div style={{ position: 'sticky', top: 64, zIndex: 50, background: '#F5F7FA', paddingTop: 16 }}>
-            <Title level={4} style={{ margin: '0 0 8px' }}>已決案明細表</Title>
+            <Title level={4} style={{ margin: '0 0 4px' }}>已決案明細表</Title>
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+              註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；同一案分列於各經辦人，件數依參與人計。
+            </Text>
             <DefaultTabBar {...props} style={{ marginBottom: 0 }} />
           </div>
         )}
