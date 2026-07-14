@@ -285,6 +285,8 @@ export default function ReportsPage() {
         <Col><Title level={4} style={{ margin: 0 }}>年度案件統計</Title></Col>
         <Col>
           <Button
+            color="green"
+            variant="solid"
             icon={<FileExcelOutlined />}
             onClick={handleExport}
             loading={exporting}

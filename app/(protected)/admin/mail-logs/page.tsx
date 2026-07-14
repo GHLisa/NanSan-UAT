@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { Table, Card, Row, Col, Typography, Tag, Space, Input, Select, Button, Tooltip, Modal, Descriptions, Spin, Empty, DatePicker } from 'antd'
-import { ReloadOutlined, SearchOutlined, FileSearchOutlined } from '@ant-design/icons'
+import { Table, Card, Row, Col, Typography, Tag, Space, Input, Select, Button, Tooltip, Modal, Descriptions, Spin, Empty, DatePicker, message } from 'antd'
+import { ReloadOutlined, SearchOutlined, FileSearchOutlined, SendOutlined } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import { api } from '@/lib/api'
 
@@ -19,6 +19,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   daily_group_digest: '每日組長彙整',
   daily_reviewer_digest: '每日待審彙整',
   weekly_dept_report: '每週部門報表',
+  event_digest: '案件待辦彙整',
   test: '測試',
   other: '其他',
 }
@@ -84,6 +85,34 @@ export default function MailLogsPage() {
     setDetailLoading(false)
   }, [])
 
+  // [2026/07/15] - Lisa - 人工補寄：依原收件人與內文重寄，並產生新的發信紀錄
+  const [resendingId, setResendingId] = useState<number | null>(null)
+  const handleResend = useCallback((id: number, recipients: string) => {
+    Modal.confirm({
+      title: '確認重寄這封信？',
+      content: (
+        <div style={{ fontSize: 13 }}>
+          <p style={{ margin: '4px 0' }}>將依原收件人與內文重新寄送，並於發信紀錄新增一筆寄送結果。</p>
+          <p style={{ margin: '4px 0', color: '#888', wordBreak: 'break-all' }}>收件人：{recipients || '—'}</p>
+        </div>
+      ),
+      okText: '重寄',
+      cancelText: '取消',
+      onOk: async () => {
+        setResendingId(id)
+        const res = await api.post<{ sent: number; skipped: number }>(`/api/admin/mail-logs/${id}/resend`, {})
+        setResendingId(null)
+        if (res.success) {
+          message.success('已重新寄送')
+          setDetailOpen(false)
+          load()
+        } else {
+          message.error(res.error || '重寄失敗，請稍後再試')
+        }
+      },
+    })
+  }, [load])
+
   const columns = [
     {
       title: '時間', dataIndex: 'createdAt', width: 150,
@@ -120,11 +149,22 @@ export default function MailLogsPage() {
       render: (v: string | null) => v ? <Tooltip title={v}><Text type="danger" style={{ fontSize: 12 }}>{v}</Text></Tooltip> : '—',
     },
     {
-      title: '操作', width: 90, fixed: 'right' as const, align: 'center' as const,
+      title: '操作', width: 150, fixed: 'right' as const, align: 'left' as const,
       render: (_: unknown, r: MailLogItem) => (
-        <Button size="small" type="link" icon={<FileSearchOutlined />} onClick={() => openDetail(r.id)}>
-          詳細
-        </Button>
+        <Space size={0}>
+          <Button size="small" type="link" icon={<FileSearchOutlined />} onClick={() => openDetail(r.id)}>
+            詳細
+          </Button>
+          <Button
+            size="small"
+            type="link"
+            icon={<SendOutlined />}
+            loading={resendingId === r.id}
+            onClick={() => handleResend(r.id, r.recipients)}
+          >
+            重寄
+          </Button>
+        </Space>
       ),
     },
   ]
@@ -192,7 +232,21 @@ export default function MailLogsPage() {
         title="發信紀錄明細"
         open={detailOpen}
         onCancel={() => setDetailOpen(false)}
-        footer={<Button onClick={() => setDetailOpen(false)}>關閉</Button>}
+        footer={
+          <Space>
+            {detail && (
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                loading={resendingId === detail.id}
+                onClick={() => handleResend(detail.id, detail.recipients)}
+              >
+                重寄
+              </Button>
+            )}
+            <Button onClick={() => setDetailOpen(false)}>關閉</Button>
+          </Space>
+        }
         width={760}
       >
         {detailLoading ? (

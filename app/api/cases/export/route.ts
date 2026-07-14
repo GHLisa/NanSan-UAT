@@ -79,13 +79,14 @@ export async function GET(req: NextRequest) {
       ...(incidentDateTo ? { lte: new Date(incidentDateTo) } : {}),
     }
   }
+  // [2026/07/14] - Lisa - 年度改依委託日 commissionDate（與列表 API 一致，原為結案日 closeDate）
   if (filterYear) {
     const year = parseInt(filterYear)
     const qMonth: Record<string, [number, number]> = {
       Q1: [1, 3], Q2: [4, 6], Q3: [7, 9], Q4: [10, 12],
     }
     const [m1, m2] = filterQuarter ? qMonth[filterQuarter] ?? [1, 12] : [1, 12]
-    where.closeDate = {
+    where.commissionDate = {
       gte: new Date(`${year}-${String(m1).padStart(2, '0')}-01`),
       lte: new Date(`${year}-${String(m2).padStart(2, '0')}-${m2 === 3 || m2 === 6 || m2 === 9 ? 30 : m2 === 12 ? 31 : 30}`),
     }

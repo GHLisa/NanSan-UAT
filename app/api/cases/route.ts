@@ -99,14 +99,16 @@ export async function GET(req: NextRequest) {
       ...(incidentDateTo ? { lte: new Date(incidentDateTo) } : {}),
     }
   }
-  // 年份/季度篩選（依結案日）
+  // 年份/季度篩選（依委託日）
+  // [2026/07/14] - Lisa - 年度改依委託日 commissionDate（原為結案日 closeDate）；
+  // 因結案日僅已決案件有值，改用委託日後預設當年度仍能涵蓋未決/銷案案件
   if (filterYear) {
     const year = parseInt(filterYear)
     const qMonth: Record<string, [number, number]> = {
       Q1: [1, 3], Q2: [4, 6], Q3: [7, 9], Q4: [10, 12],
     }
     const [m1, m2] = filterQuarter ? qMonth[filterQuarter] ?? [1, 12] : [1, 12]
-    where.closeDate = {
+    where.commissionDate = {
       gte: new Date(`${year}-${String(m1).padStart(2, '0')}-01`),
       lte: new Date(`${year}-${String(m2).padStart(2, '0')}-${m2 === 3 || m2 === 6 || m2 === 9 ? 30 : m2 === 12 ? 31 : 30}`),
     }
@@ -121,7 +123,17 @@ export async function GET(req: NextRequest) {
     ]
   }
 
-  const [total, cases] = await Promise.all([
+  // [2026/07/14] - Lisa - 案件查詢統計卡需「全量」件數與費用合計，不受分頁上限影響；
+  // withSummary=1 時另跑一次聚合，回傳整個 where 範圍的 公證費/差旅其他費 總額（件數沿用 total）
+  const wantSummary = searchParams.get('withSummary') === '1'
+  const summaryPromise = wantSummary
+    ? prisma.case.aggregate({
+        where,
+        _sum: { actualFee: true, travelOtherExpense: true },
+      })
+    : Promise.resolve(null)
+
+  const [total, cases, summaryAgg] = await Promise.all([
     prisma.case.count({ where }),
     prisma.case.findMany({
       where,
@@ -147,6 +159,7 @@ export async function GET(req: NextRequest) {
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
+    summaryPromise,
   ])
 
   const today = dayjs()
@@ -216,7 +229,15 @@ export async function GET(req: NextRequest) {
     }
   })
 
-  return NextResponse.json({ success: true, data, total, page, pageSize })
+  const summary = summaryAgg
+    ? {
+        count: total,
+        totalFee: summaryAgg._sum.actualFee ?? 0,
+        totalTravel: summaryAgg._sum.travelOtherExpense ?? 0,
+      }
+    : undefined
+
+  return NextResponse.json({ success: true, data, total, page, pageSize, summary })
 }
 
 const CaseSchema = z.object({

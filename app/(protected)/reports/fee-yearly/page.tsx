@@ -128,6 +128,8 @@ export default function FeeYearlyReportPage() {
           <Col><Title level={4} style={{ margin: 0 }}>各年度已決&amp;未決公證費</Title></Col>
           <Col>
             <Button
+              color="green"
+              variant="solid"
               icon={<FileExcelOutlined />}
               onClick={handleExport}
               loading={exporting}

@@ -13,6 +13,7 @@ import {
   FundOutlined, ProfileOutlined, MenuFoldOutlined, MenuUnfoldOutlined,
   AppstoreOutlined, FileSearchOutlined, TrophyOutlined, PrinterOutlined,
   TeamOutlined, DatabaseOutlined, NumberOutlined, MailOutlined, LoginOutlined,
+  ControlOutlined,
 } from '@ant-design/icons'
 import { useAuth } from './AuthProvider'
 import { getMenuPermissions } from '@/lib/permissions'
@@ -39,6 +40,7 @@ const ALL_MENU_ITEMS = [
       { key: 'admin-case-number', icon: <NumberOutlined />, label: '公證編號修正', path: '/admin/case-number' },
       { key: 'admin-maillog', icon: <MailOutlined />, label: '發信紀錄', path: '/admin/mail-logs' },
       { key: 'admin-loginlog', icon: <LoginOutlined />, label: '登入紀錄', path: '/admin/login-logs' },
+      { key: 'admin-settings', icon: <ControlOutlined />, label: '系統參數設定', path: '/admin/settings' },
     ],
   },
   { key: 'settlements', icon: <FileSearchOutlined />, label: '案件查詢', path: '/settlements' },

@@ -1,24 +1,27 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Table, Card, Row, Col, Typography, Tag, Select, Button, Statistic, Input, DatePicker, message,
 } from 'antd'
 import { FileExcelOutlined } from '@ant-design/icons'
-import { api } from '@/lib/api'
+import { api, type ApiResponse } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 
 const { Title } = Typography
 
-const YEAR_OPTIONS = [
-  { value: '', label: '全部年份' },
-  { value: '2024', label: '2024 年' },
-  { value: '2025', label: '2025 年' },
-  { value: '2026', label: '2026 年' },
-]
+const PAGE_SIZE = 15
+
+// [2026/07/14] - Lisa - 年度移除「全部」、預設當年度；依委託日年份篩選
+// 下拉僅列「最近三年」：當年度-2、當年度-1、當年度
+const CURRENT_YEAR = new Date().getFullYear()
+const YEAR_OPTIONS = Array.from({ length: 3 }, (_, i) => {
+  const y = CURRENT_YEAR - 2 + i
+  return { value: String(y), label: `${y} 年` }
+})
 const PERIOD_OPTIONS = [
   { value: '', label: '全年' },
   { value: 'Q1', label: 'Q1（1~3月）' },
@@ -70,7 +73,7 @@ export default function CaseQueryPage() {
   const [searchInput, setSearchInput] = useState('')
   const [filterStatus, setFilterStatus] = useState<string>('all')
   const [filterDept, setFilterDept] = useState('')
-  const [filterYear, setFilterYear] = useState('')
+  const [filterYear, setFilterYear] = useState(String(CURRENT_YEAR))
   const [filterPeriod, setFilterPeriod] = useState('')
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
   const [incidentDateFrom, setIncidentDateFrom] = useState('')
@@ -80,6 +83,8 @@ export default function CaseQueryPage() {
   const [insuranceCompanies, setInsuranceCompanies] = useState<{ id: number; name: string }[]>([])
   const [contactOptions, setContactOptions] = useState<string[]>([])
   const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [summary, setSummary] = useState({ count: 0, totalFee: 0, totalTravel: 0 })
   const [exporting, setExporting] = useState(false)
 
   // Sticky filter bar height
@@ -112,7 +117,14 @@ export default function CaseQueryPage() {
 
   const loadCases = useCallback(async () => {
     setLoading(true)
-    const params = new URLSearchParams({ status: filterStatus, pageSize: '200' })
+    // [2026/07/14] - Lisa - 改伺服器端分頁：只取當頁 15 筆；withSummary=1 讓後端回傳整個查詢範圍的
+    // 全量件數與費用合計（不受分頁筆數影響），統計卡改用此摘要，避免舊版只加前 200 筆造成低估
+    const params = new URLSearchParams({
+      status: filterStatus,
+      page: String(page),
+      pageSize: String(PAGE_SIZE),
+      withSummary: '1',
+    })
     if (search) params.set('q', search)
     if (filterDept) params.set('deptId', filterDept)
     if (incidentDateFrom) params.set('incidentDateFrom', incidentDateFrom)
@@ -121,14 +133,22 @@ export default function CaseQueryPage() {
     if (filterYear && filterPeriod) params.set('quarter', filterPeriod)
     if (filterIcId) params.set('insuranceCompanyId', filterIcId)
     if (filterContacts.length) params.set('contacts', filterContacts.join(','))
-    const res = await api.get<CaseItem[]>(`/api/cases?${params.toString()}`)
-    if (res.success && res.data) setCases(res.data)
+    const res = await api.get<CaseItem[]>(`/api/cases?${params.toString()}`) as ApiResponse<CaseItem[]> & {
+      total?: number
+      summary?: { count: number; totalFee: number; totalTravel: number }
+    }
+    if (res.success && res.data) {
+      setCases(res.data)
+      setTotal(res.total ?? res.data.length)
+      if (res.summary) setSummary(res.summary)
+    }
     setLoading(false)
-  }, [search, filterStatus, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo, filterIcId, filterContacts])
+  }, [search, filterStatus, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo, filterIcId, filterContacts, page])
 
   useEffect(() => { loadCases() }, [loadCases])
 
   function handleDateChange(dates: [Dayjs | null, Dayjs | null] | null) {
+    setPage(1)
     if (!dates || !dates[0]) {
       setDateRange(null)
       setIncidentDateFrom('')
@@ -147,7 +167,7 @@ export default function CaseQueryPage() {
     setSearchInput('')
     setFilterStatus('all')
     setFilterDept('')
-    setFilterYear('')
+    setFilterYear(String(CURRENT_YEAR))
     setFilterPeriod('')
     setDateRange(null)
     setIncidentDateFrom('')
@@ -188,13 +208,6 @@ export default function CaseQueryPage() {
       setExporting(false)
     }
   }
-
-  // 統計
-  const summary = useMemo(() => ({
-    count: cases.length,
-    totalFee: cases.reduce((s, c) => s + (c.actualFee ?? 0), 0),
-    totalTravel: cases.reduce((s, c) => s + (c.travelOtherExpenseTotal ?? 0), 0),
-  }), [cases])
 
   const columns = [
     {
@@ -257,6 +270,8 @@ export default function CaseQueryPage() {
           <Col><Title level={4} style={{ margin: 0 }}>案件查詢</Title></Col>
           <Col>
             <Button
+              color="green"
+              variant="solid"
               icon={<FileExcelOutlined />}
               onClick={handleExport}
               loading={exporting}
@@ -276,7 +291,7 @@ export default function CaseQueryPage() {
                 placeholder="公證編號 / 被保險人 / 保險公司 / 保單號碼"
                 value={searchInput}
                 onSearch={v => { setSearch(v); setPage(1) }}
-                onChange={e => { setSearchInput(e.target.value); if (!e.target.value) setSearch('') }}
+                onChange={e => { setSearchInput(e.target.value); if (!e.target.value) { setSearch(''); setPage(1) } }}
                 allowClear
               />
             </Col>
@@ -337,13 +352,19 @@ export default function CaseQueryPage() {
                 style={{ width: 232 }}
               />
             </Col>
+          </Row>
+          {/* [2026/07/14] - Lisa - 委託日年度＋季別獨立為第二排，與上排查詢條件分開 */}
+          <Row gutter={[8, 8]} align="bottom" style={{ marginTop: 8 }}>
             <Col>
-              <Select
-                value={filterYear}
-                onChange={v => { setFilterYear(v); setFilterPeriod(''); setPage(1) }}
-                options={YEAR_OPTIONS}
-                style={{ width: 110 }}
-              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ color: '#555', whiteSpace: 'nowrap' }}>委託日年度：</span>
+                <Select
+                  value={filterYear}
+                  onChange={v => { setFilterYear(v); setFilterPeriod(''); setPage(1) }}
+                  options={YEAR_OPTIONS}
+                  style={{ width: 110 }}
+                />
+              </div>
             </Col>
             <Col>
               <Select
@@ -355,7 +376,7 @@ export default function CaseQueryPage() {
               />
             </Col>
             <Col>
-              <Button onClick={handleReset}>重置</Button>
+              <Button color="primary" variant="solid" onClick={handleReset}>重置</Button>
             </Col>
           </Row>
         </Card>
@@ -407,8 +428,9 @@ export default function CaseQueryPage() {
         scroll={{ x: 1300 }}
         sticky={{ offsetHeader }}
         pagination={{
-          current: page, pageSize: 15,
-          total: cases.length,
+          current: page, pageSize: PAGE_SIZE,
+          total,
+          showSizeChanger: false,
           onChange: p => setPage(p),
           showTotal: t => `共 ${t} 筆`,
         }}

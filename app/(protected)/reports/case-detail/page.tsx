@@ -278,6 +278,8 @@ export default function CaseDetailReportPage() {
               <Select value={filterMonth} onChange={setFilterMonth} options={MONTH_OPTIONS} style={{ width: 80 }} />
               {deptSelect}
               <Button
+                color="green"
+                variant="solid"
                 icon={<FileExcelOutlined />}
                 onClick={handleExportMonth}
                 loading={exportingM}
@@ -306,6 +308,8 @@ export default function CaseDetailReportPage() {
               <Select value={filterQ} onChange={setFilterQ} options={QUARTER_OPTIONS} style={{ width: 140 }} />
               {deptSelect}
               <Button
+                color="green"
+                variant="solid"
                 icon={<FileExcelOutlined />}
                 onClick={handleExportQuarter}
                 loading={exportingQ}

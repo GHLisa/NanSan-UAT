@@ -193,6 +193,8 @@ export default function YearlyCasesPage() {
           </Col>
           <Col>
             <Button
+              color="green"
+              variant="solid"
               icon={<FileExcelOutlined />}
               onClick={handleExport}
               loading={exporting}

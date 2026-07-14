@@ -504,3 +504,110 @@ export async function runWeeklyDeptReport(now: Dayjs = taipeiNow()): Promise<Wee
 
   return { deptMailsSent }
 }
+
+// ── (3) 即時事件批次彙整（台北平日 08:00 / 16:00）→ 依收件人各一封 ─────────
+// 由 /api/cron/event-digest 觸發：把 mail_event_queue 中待寄事件依收件人彙整成單封信，
+// 寄成功後標記 sentAt；失敗則留待下一時段重試（sendMail 本身另有退避重試）。
+export interface EventDigestResult {
+  mailsSent: number
+  eventsFlushed: number
+}
+
+interface QueuedEvent {
+  id: number
+  eventType: string
+  caseId: number | null
+  caseNumber: string
+  insuredName: string | null
+  documentType: string | null
+  remarks: string | null
+}
+
+export function buildEventDigestHtml(events: QueuedEvent[]): string {
+  const th = (t: string) =>
+    `<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #1B4F8C;font-size:13px;color:#1B4F8C;white-space:nowrap">${t}</th>`
+  const td = (t: string) =>
+    `<td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:13px;vertical-align:top">${t}</td>`
+  const caseCell = (e: QueuedEvent) => (e.caseId ? caseLink(e.caseId, e.caseNumber) : e.caseNumber)
+
+  const section = (title: string, color: string, headCols: string, rowsHtml: string) =>
+    `<h3 style="color:${color};margin:16px 0 4px;font-size:15px">${title}</h3>` +
+    `<table style="border-collapse:collapse;width:100%;margin:4px 0 12px"><thead><tr>${headCols}</tr></thead><tbody>${rowsHtml}</tbody></table>`
+
+  const pick = (type: string | string[]) => {
+    const types = Array.isArray(type) ? type : [type]
+    return events.filter(e => types.includes(e.eventType))
+  }
+
+  let body = ''
+
+  const assignNew = pick('new_assignment')
+  if (assignNew.length) {
+    const rows = assignNew.map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}</tr>`).join('')
+    body += section(`🆕 新派案　${assignNew.length} 件`, '#1B4F8C', `${th('案號')}${th('被保險人')}`, rows)
+  }
+
+  const assignChg = pick('assignment_changed')
+  if (assignChg.length) {
+    const rows = assignChg.map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}</tr>`).join('')
+    body += section(`🔁 承辦人異動　${assignChg.length} 件`, '#1B4F8C', `${th('案號')}${th('被保險人')}`, rows)
+  }
+
+  const toReview = pick(['review_submitted', 'review_cascade'])
+  if (toReview.length) {
+    const rows = toReview.map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}${td(e.documentType ?? '—')}</tr>`).join('')
+    body += section(`📄 待您審核的文件　${toReview.length} 件`, '#2E7D32', `${th('案號')}${th('被保險人')}${th('文件類型')}`, rows)
+  }
+
+  const rejected = pick('review_rejected')
+  if (rejected.length) {
+    const rows = rejected
+      .map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}${td(e.documentType ?? '—')}${td(e.remarks ?? '—')}</tr>`)
+      .join('')
+    body += section(`↩️ 文件退回　${rejected.length} 件`, '#E53E3E', `${th('案號')}${th('被保險人')}${th('文件類型')}${th('退回原因')}`, rows)
+  }
+
+  return shell(
+    '案件待辦彙整',
+    '以下為上一時段以來與您相關的案件通知，請至系統處理。',
+    body,
+  )
+}
+
+export async function runEventDigest(): Promise<EventDigestResult> {
+  const pending = await prisma.mailEventQueue.findMany({
+    where: { sentAt: null },
+    orderBy: { createdAt: 'asc' },
+  })
+  if (pending.length === 0) return { mailsSent: 0, eventsFlushed: 0 }
+
+  // 依收件人分組
+  const byRecipient = new Map<string, QueuedEvent[]>()
+  for (const e of pending) {
+    const arr = byRecipient.get(e.recipient) ?? []
+    arr.push(e)
+    byRecipient.set(e.recipient, arr)
+  }
+
+  let mailsSent = 0
+  let eventsFlushed = 0
+  for (const [recipient, events] of Array.from(byRecipient.entries())) {
+    const html = buildEventDigestHtml(events)
+    const ok = await safeSend(
+      [recipient],
+      `【案件待辦彙整】您有 ${events.length} 則新通知`,
+      html,
+      'event_digest',
+    )
+    if (ok) {
+      // 僅標記本封確實寄出的事件；失敗者留待下一時段
+      await prisma.mailEventQueue.updateMany({
+        where: { id: { in: events.map(e => e.id) } },
+        data: { sentAt: new Date() },
+      })
+      mailsSent++
+      eventsFlushed += events.length
+    }
+  }
+  return { mailsSent, eventsFlushed }
+}

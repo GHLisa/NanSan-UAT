@@ -18,6 +18,7 @@
 import nodemailer, { type Transporter } from 'nodemailer'
 import { decodeSecret } from './encryption'
 import { prisma } from './prisma'
+import { isEmailEnabled } from './settings'
 
 interface SendArgs {
   to: string[]
@@ -68,6 +69,14 @@ function getTransporter(): Transporter | null {
       port,
       secure,
       auth: user ? { user, pass } : undefined,
+      // [2026/07/15] - Lisa - 每日彙整會在同一秒連發數十封信，觸發 HiNet「452 Too many recipients
+      // received from the sender」速率節流。開啟連線池並限制寄送速率，把突發洪峰壓平在門檻之下；
+      // 搭配 sendMail 內的暫時性錯誤退避重試，確保偶發被節流的信會補送成功。
+      pool: true,
+      maxConnections: 1,   // 單一連線序列化寄送，避免併發爆量
+      maxMessages: 100,    // 單一連線寄滿 100 封後重建，釋放伺服器端 session 計數
+      rateDelta: 1000,     // 速率視窗：每 1 秒
+      rateLimit: 5,        // 每個視窗最多 5 封（保守值，可依 HiNet 實際門檻調整）
     })
   }
   return transporter
@@ -75,6 +84,43 @@ function getTransporter(): Transporter | null {
 
 function normalizeRecipients(to: string[]): string[] {
   return Array.from(new Set((to ?? []).map(e => (e ?? '').trim()).filter(e => e.includes('@'))))
+}
+
+// ── 暫時性錯誤退避重試 ───────────────────────────────────────────────────
+const MAX_ATTEMPTS = 3               // 首次 + 最多 2 次重試
+const BACKOFF_MS = [0, 3000, 6000]   // 各次嘗試前的等待（第 1 次不等）
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+// 解析 SMTP 錯誤碼：優先取 nodemailer 的 responseCode，否則從錯誤訊息擷取 3 碼
+function smtpCode(e: unknown): number | null {
+  const anyE = e as { responseCode?: number; message?: string }
+  if (typeof anyE?.responseCode === 'number') return anyE.responseCode
+  const m = String(anyE?.message ?? e ?? '').match(/\b([45]\d\d)\b/)
+  return m ? parseInt(m[1], 10) : null
+}
+
+// 錯誤分類：暫時性（可重試）/ 永久性（不重試）
+//   - SMTP 4xx（421/450/451/452 等，含 HiNet 速率節流）→ 暫時性
+//   - 連線層錯誤（逾時 / 連線中斷 / DNS 解析）           → 暫時性
+//   - SMTP 5xx（信箱不存在、內容被拒等）                → 永久性
+function classifyError(e: unknown): { transient: boolean; label: string } {
+  const code = smtpCode(e)
+  const netCode = (e as { code?: string })?.code
+  const netTransient = ['ETIMEDOUT', 'ECONNRESET', 'ESOCKET', 'ECONNECTION', 'ECONNREFUSED', 'EDNS', 'EAI_AGAIN', 'EGREETING']
+  const msg = String((e as { message?: string })?.message ?? '')
+
+  if (code !== null && code >= 400 && code < 500) {
+    const isRate = code === 452 || /too many|rate|frequen|throttl/i.test(msg)
+    return { transient: true, label: isRate ? `暫時性·速率限制(${code})` : `暫時性(${code})` }
+  }
+  if (typeof netCode === 'string' && netTransient.includes(netCode)) {
+    return { transient: true, label: `暫時性·連線(${netCode})` }
+  }
+  if (code !== null && code >= 500) return { transient: false, label: `永久性(${code})` }
+  return { transient: false, label: '永久性' }
 }
 
 // 發信稽核：每次寄送嘗試寫入一筆 MailLog；best-effort，寫入失敗只記 log 不拋例外
@@ -121,6 +167,13 @@ export async function sendMail({
   const subject = withSubjectPrefix(rawSubject)
   const logBase = { category, subject, caseId, caseNumber, bodyHtml: html }
 
+  // [2026/07/15] - Lisa - 系統參數「是否啟動寄信功能」總開關：非 Y 時全系統停止寄信，僅記錄略過
+  if (!(await isEmailEnabled())) {
+    console.info('[email] 寄信功能已關閉（系統參數設定），略過寄送：', subject)
+    await recordMailLog({ ...logBase, recipients: allRecipients, status: 'skipped', sentCount: 0, skippedCount: allRecipients.length, error: '寄信功能已關閉（系統參數設定）' })
+    return { ok: true, sent: 0, skipped: allRecipients.length }
+  }
+
   // PS 規則：主要通知對象（to）沒有 email → 不發送（僅有 cc 也不寄）
   if (recipients.length === 0) {
     console.warn('[email] 無有效收件人，略過寄送：', subject)
@@ -136,13 +189,33 @@ export async function sendMail({
     return { ok: true, sent: 0, skipped: 0 }
   }
 
-  try {
-    await tx.sendMail({ from: fromAddress(), to: recipients, cc: ccRecipients.length ? ccRecipients : undefined, subject, html, text })
-    await recordMailLog({ ...logBase, recipients: allRecipients, status: 'sent', sentCount: allRecipients.length, skippedCount: 0 })
-    return { ok: true, sent: allRecipients.length, skipped: 0 }
-  } catch (e) {
-    console.error('[email] 寄送例外', e)
-    await recordMailLog({ ...logBase, recipients: allRecipients, status: 'failed', sentCount: 0, skippedCount: 0, error: String(e) })
-    return { ok: false, sent: 0, skipped: 0, error: String(e) }
+  // 逐次嘗試：暫時性錯誤（如 HiNet 452 速率節流、連線逾時）退避後重試；永久性錯誤立即停止
+  let lastErr: unknown = null
+  let lastClass: { transient: boolean; label: string } | null = null
+  let attempts = 0
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    attempts = attempt
+    if (attempt > 1) await sleep(BACKOFF_MS[attempt - 1] ?? 6000)
+    try {
+      await tx.sendMail({ from: fromAddress(), to: recipients, cc: ccRecipients.length ? ccRecipients : undefined, subject, html, text })
+      // 若曾重試才成功，於備註記錄，供發信紀錄稽核
+      const note = attempt > 1
+        ? `第 ${attempt} 次嘗試寄送成功（前 ${attempt - 1} 次遇${lastClass?.label ?? '暫時性錯誤'}）`
+        : null
+      await recordMailLog({ ...logBase, recipients: allRecipients, status: 'sent', sentCount: allRecipients.length, skippedCount: 0, error: note })
+      return { ok: true, sent: allRecipients.length, skipped: 0 }
+    } catch (e) {
+      lastErr = e
+      lastClass = classifyError(e)
+      console.error(`[email] 寄送失敗（第 ${attempt}/${MAX_ATTEMPTS} 次・${lastClass.label}）：`, subject, e)
+      if (!lastClass.transient) break   // 永久性錯誤不重試
+    }
   }
+
+  // 全部嘗試皆失敗：錯誤訊息前綴分類標籤，讓發信紀錄一眼分辨暫時性/永久性
+  const suffix = lastClass?.transient ? `（共嘗試 ${attempts} 次仍失敗）` : ''
+  const errMsg = `[${lastClass?.label ?? '永久性'}] ${String(lastErr)}${suffix}`
+  await recordMailLog({ ...logBase, recipients: allRecipients, status: 'failed', sentCount: 0, skippedCount: 0, error: errMsg })
+  return { ok: false, sent: 0, skipped: 0, error: errMsg }
 }

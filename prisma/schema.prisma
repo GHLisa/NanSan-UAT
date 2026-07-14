@@ -477,3 +477,34 @@ model CaseNumberSeq {
 
   @@map("case_number_seq")
 }
+
+// [2026/07/15] - Lisa - 即時信改批次：原「即時通知」事件先入此佇列，由 /api/cron/event-digest
+// 於台北平日 08:00 / 16:00 依收件人彙整成單封信寄出並標記 sentAt，避免信件轟炸。
+model MailEventQueue {
+  id           Int       @id @default(autoincrement())
+  eventType    String    // new_assignment / assignment_changed / review_submitted / review_cascade / review_rejected
+  caseId       Int?
+  caseNumber   String
+  insuredName  String?
+  documentType String?
+  remarks      String?   // 文件退回原因
+  recipient    String    // 收件人「姓名 <email>」，一事件對多收件人各一列
+  createdAt    DateTime  @default(now())
+  sentAt       DateTime? // null = 待寄；已彙整寄出後填入時間
+
+  @@index([sentAt])
+  @@map("mail_event_queue")
+}
+
+// [2026/07/15] - Lisa - 系統參數設定（key-value）：僅系統管理員可維護。
+// 首筆參數 email_enabled（是否啟動寄信功能，Y/N，預設 Y）供 lib/email.ts 判斷寄信總開關。
+model SystemSetting {
+  key         String   @id                 // 參數代碼，如 email_enabled
+  value       String                       // 參數值，如 Y / N
+  label       String                       // 顯示名稱，如「是否啟動寄信功能」
+  description String?                      // 說明（選填）
+  updatedAt   DateTime @updatedAt
+  updatedById Int?                         // 最後修改者（去正規化，不設 FK）
+
+  @@map("system_settings")
+}

@@ -13,7 +13,7 @@ export function getMenuPermissions(role: string): string[] {
     // [2026/07/02] - Lisa - 新增公證編號修正 admin-case-number
     // [2026/07/03] - Lisa - 出具報告作業 report-issue
     // [2026/07/07] - Lisa - sysadmin 開放側邊選單所有功能（含查詢統計群組與業績設定）
-    sysadmin: [...base, 'dispatch', 'reviews', 'report-issue', 'fee-target', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report', 'admin', 'admin-users', 'admin-master', 'admin-case-number', 'admin-maillog', 'admin-loginlog'],
+    sysadmin: [...base, 'dispatch', 'reviews', 'report-issue', 'fee-target', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report', 'admin', 'admin-users', 'admin-master', 'admin-case-number', 'admin-maillog', 'admin-loginlog', 'admin-settings'],
   }
   return perRole[role] ?? base
 }
