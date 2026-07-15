@@ -569,9 +569,68 @@ export function buildEventDigestHtml(events: QueuedEvent[]): string {
 
   return shell(
     '案件待辦彙整',
-    '以下為上一時段以來與您相關的案件通知，請至系統處理。',
+    '以下為上一時段以來與您相關的案件通知，請至系統處理。' +
+      '<span style="color:#888">此為當時狀態，請以系統現況為準。</span>',
     body,
   )
+}
+
+// 從收件人字串「姓名 <email>」或純 email 取出 email（小寫化供比對）
+function extractEmail(recipient: string): string | null {
+  const m = recipient.match(/<([^>]+)>/)
+  const raw = m ? m[1] : recipient
+  const e = raw.trim().toLowerCase()
+  return e.includes('@') ? e : null
+}
+
+// 送審類事件（review_submitted / review_cascade）寄送前回查目前關卡：
+// 若該收件人已非此案該文件「當前待辦關卡」的審核人（已審畢／退回／被重送取代），
+// 視為失效事件，回傳其 id 集合。失效事件不納入信中，但仍會一併標記 sentAt，避免佇列殘留反覆回查。
+async function findStaleReviewEventIds(
+  pending: { id: number; eventType: string; caseId: number | null; documentType: string | null; recipient: string }[],
+): Promise<Set<number>> {
+  const reviewEvents = pending.filter(
+    e => (e.eventType === 'review_submitted' || e.eventType === 'review_cascade') && e.caseId != null,
+  )
+  if (reviewEvents.length === 0) return new Set()
+
+  const caseIds = Array.from(new Set(reviewEvents.map(e => e.caseId as number)))
+  const reviews = await prisma.caseReview.findMany({
+    where: { caseId: { in: caseIds }, recordStatus: null },
+    select: {
+      caseId: true,
+      documentType: true,
+      reviewStatus: true,
+      midApprovalStatus: true,
+      approvalStatus: true,
+      reviewer: { select: { email: true } },
+      midApprover: { select: { email: true } },
+      approver: { select: { email: true } },
+    },
+  })
+
+  // 「案件+文件類型 → 目前待辦關卡負責人 email 集合」
+  const currentPending = new Map<string, Set<string>>()
+  const add = (caseId: number, documentType: string, email: string | null | undefined) => {
+    if (!email) return
+    const key = `${caseId}::${documentType}`
+    const set = currentPending.get(key) ?? new Set<string>()
+    set.add(email.toLowerCase())
+    currentPending.set(key, set)
+  }
+  for (const r of reviews) {
+    if (r.reviewStatus === '待複核') add(r.caseId, r.documentType, r.reviewer?.email)
+    if (r.midApprovalStatus === '待加簽審核') add(r.caseId, r.documentType, r.midApprover?.email)
+    if (r.approvalStatus === '待執行副總閱') add(r.caseId, r.documentType, r.approver?.email)
+  }
+
+  const stale = new Set<number>()
+  for (const e of reviewEvents) {
+    const email = extractEmail(e.recipient)
+    const set = currentPending.get(`${e.caseId}::${e.documentType ?? ''}`)
+    if (!email || !set || !set.has(email)) stale.add(e.id)
+  }
+  return stale
 }
 
 export async function runEventDigest(): Promise<EventDigestResult> {
@@ -581,9 +640,13 @@ export async function runEventDigest(): Promise<EventDigestResult> {
   })
   if (pending.length === 0) return { mailsSent: 0, eventsFlushed: 0 }
 
-  // 依收件人分組
+  // 送審類事件寄送前回查目前關卡，失效者不納入信中
+  const staleIds = await findStaleReviewEventIds(pending)
+
+  // 依收件人分組（略過失效事件）
   const byRecipient = new Map<string, QueuedEvent[]>()
   for (const e of pending) {
+    if (staleIds.has(e.id)) continue
     const arr = byRecipient.get(e.recipient) ?? []
     arr.push(e)
     byRecipient.set(e.recipient, arr)
@@ -591,6 +654,7 @@ export async function runEventDigest(): Promise<EventDigestResult> {
 
   let mailsSent = 0
   let eventsFlushed = 0
+  const flushedIds: number[] = []
   for (const [recipient, events] of Array.from(byRecipient.entries())) {
     const html = buildEventDigestHtml(events)
     const ok = await safeSend(
@@ -600,14 +664,20 @@ export async function runEventDigest(): Promise<EventDigestResult> {
       'event_digest',
     )
     if (ok) {
-      // 僅標記本封確實寄出的事件；失敗者留待下一時段
-      await prisma.mailEventQueue.updateMany({
-        where: { id: { in: events.map(e => e.id) } },
-        data: { sentAt: new Date() },
-      })
+      // 僅收集本封確實寄出的事件；失敗者留待下一時段
+      flushedIds.push(...events.map(e => e.id))
       mailsSent++
       eventsFlushed += events.length
     }
+  }
+
+  // 標記：已寄出事件 + 失效事件（失效者一律標記，避免佇列殘留反覆回查）
+  const toMark = Array.from(new Set([...flushedIds, ...staleIds]))
+  if (toMark.length) {
+    await prisma.mailEventQueue.updateMany({
+      where: { id: { in: toMark } },
+      data: { sentAt: new Date() },
+    })
   }
   return { mailsSent, eventsFlushed }
 }
