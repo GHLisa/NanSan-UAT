@@ -61,6 +61,7 @@ interface ReviewItem {
   midApprovalStatus: string | null; midApprovalRemarks: string | null; midApprovedAt: string | null
   interimTypes: string[]; interimAmount: number | null; feeReversed: boolean
   recordStatus: string | null // [2026/06/18] - Lisa - 方案1/2 終結狀態（已重送/已放棄）
+  mergedBilling: boolean // [2026/07/15] - Lisa - 合併送審旗標（結案報告書隨附 DEBIT NOTE）
 }
 interface CaseDetail {
   id: number; caseNumber: string; status: string; currentStage: string
@@ -142,6 +143,9 @@ export default function CaseDetailPage() {
   const [reviewModalOpen, setReviewModalOpen] = useState(false)
   const [selectedDocType, setSelectedDocType] = useState<string | null>(null)
   const [reviewForm] = Form.useForm()
+  // [2026/07/15] - Lisa - 合併送審：即時偵測送審 Modal 是否勾選「公證費 DEBIT NOTE」
+  const checkedDocsWatch: string[] = Form.useWatch('checkedDocuments', reviewForm) ?? []
+  const dnChecked = checkedDocsWatch.includes('公證費 DEBIT NOTE')
 
   const [cancelModalOpen, setCancelModalOpen] = useState(false)
   const [cancelForm] = Form.useForm()
@@ -550,6 +554,14 @@ export default function CaseDetailPage() {
       message.error('送審前須至金額資訊填寫差旅其他費（無出差請填 0）')
       return
     }
+    // [2026/07/15] - Lisa - 合併送審/獨立DEBIT NOTE：節點8必填「實際公證費」（差旅其他費沿用上方 TRAVEL_REQUIRED_DOCS 檢查）- Start
+    const dnCheckedNow = ((values.checkedDocuments as string[]) ?? []).includes('公證費 DEBIT NOTE')
+    const needsBilling = (docType === '結案報告書' && dnCheckedNow) || docType === '公證費 DEBIT NOTE'
+    if (needsBilling && caseData.actualFee == null) {
+      message.error('送審前須至金額資訊填寫「實際公證費」（可為 0）')
+      return
+    }
+    // [2026/07/15] - Lisa - 合併送審必填「實際公證費」- End
     // [2026/06/18] - Lisa - Issue #2 理算書面報告書送審前須填理算損失額 - Start
     if (docType === '理算書面報告書' && caseData.adjustmentAmount == null) {
       message.error('送審「理算書面報告書」前，請先於金額資訊填寫「理算損失額」')
@@ -803,7 +815,13 @@ export default function CaseDetailPage() {
     // [2026/07/14] - Lisa - 節點9「結案」：案件已決即點亮，並於下方顯示結案日期
     const isFinalClosed = s === '結案' && caseData.status === '已決'
     const docTypes = STAGE_DOC_TYPES[s]
-    const stageRevs = docTypes ? reviews.filter((r) => docTypes.includes(r.documentType)) : []
+    const baseRevs = docTypes ? reviews.filter((r) => docTypes.includes(r.documentType)) : []
+    // [2026/07/15] - Lisa - 合併送審：節點8「請款單填寫」另納入「結案報告書 && mergedBilling」的 active review，
+    // 使節點7、8共用同一筆記錄（退件/核准/pending>approved 自動一致；重送取消勾選後舊 review 因 recordStatus 非 null 不再點亮）
+    const stageRevs =
+      s === '請款單填寫'
+        ? [...baseRevs, ...reviews.filter((r) => r.documentType === '結案報告書' && r.mergedBilling && r.recordStatus === null)]
+        : baseRevs
     const stageApproved = stageRevs.some(
       (r) => r.approvalStatus === '已核准' || (r.reviewStatus === '已核准' && !r.approverId && !r.requiresVP),
     )
@@ -860,16 +878,32 @@ export default function CaseDetailPage() {
         </div>
       ) : undefined
     } else if (stagePendingRevs.length > 0) {
+      // [2026/07/16] - Lisa - 合併申請（結案報告書隨附DEBIT NOTE，mergedBilling=true）：節點8「請款單填寫」與節點7共用同一送審記錄，
+      // 不重覆顯示相同文件清單，僅於節點8註明「合併申請」；獨立DEBIT NOTE 仍照常顯示
+      const mergedPending = s === '請款單填寫'
+        ? stagePendingRevs.filter((r) => r.documentType === '結案報告書' && r.mergedBilling)
+        : []
+      const normalPending = stagePendingRevs.filter((r) => !mergedPending.includes(r))
+      // [2026/07/16] - Lisa - 送審文件/附件標籤改與節點名稱同中心置中：每個標籤各自一行、清除 Tag 預設右外距
       description = (
-        <div style={{ marginTop: 4, maxWidth: 120 }}>
-          {stagePendingRevs.map((r) => (
+        <div style={{ marginTop: 4, textAlign: 'center' }}>
+          {normalPending.map((r) => (
             <div key={r.id} style={{ marginBottom: 4 }}>
-              <Tag color="orange" style={{ fontSize: 10, marginBottom: 2, whiteSpace: 'normal' }}>{r.documentType}</Tag>
+              <div style={{ marginBottom: 2 }}>
+                <Tag color="orange" style={{ fontSize: 10, margin: 0, whiteSpace: 'normal' }}>{r.documentType}</Tag>
+              </div>
               {r.checkedDocuments?.filter((d) => d !== r.documentType).map((d) => (
-                <Tag key={d} style={{ fontSize: 10, marginBottom: 2, whiteSpace: 'normal' }}>{d}</Tag>
+                <div key={d} style={{ marginBottom: 2 }}>
+                  <Tag style={{ fontSize: 10, margin: 0, whiteSpace: 'normal' }}>{d}</Tag>
+                </div>
               ))}
             </div>
           ))}
+          {mergedPending.length > 0 && (
+            <Tooltip title="本節點隨「正式結案報告」之結案報告書一併送審（合併請款單 DEBIT NOTE）">
+              <Tag color="cyan" style={{ fontSize: 10, margin: 0, whiteSpace: 'normal', cursor: 'default' }}>合併申請</Tag>
+            </Tooltip>
+          )}
         </div>
       )
     }
@@ -1736,24 +1770,54 @@ export default function CaseDetailPage() {
 
           {selectedDocType && (() => {
             const flow = getApprovalFlow(deptCode, selectedDocType, caseData.estimatedAmount, caseData.isSpecialCase)
+            // [2026/07/15] - Lisa - 合併送審：結案報告書隨附勾選「公證費 DEBIT NOTE」→ 預覽取較嚴格(含VP)路由，注意事項合併呈現 - Start
+            const merged = selectedDocType === '結案報告書' && dnChecked
+            const baseNeedsVP = flow.alwaysVP || flow.amountVP
+            const dnFlow = merged ? getApprovalFlow(deptCode, '公證費 DEBIT NOTE', caseData.estimatedAmount, caseData.isSpecialCase) : null
+            const steps = merged && dnFlow ? dnFlow.steps : flow.steps
+            // [2026/07/16] - Lisa - 合併送審時，節點7（結案報告書）與節點8（DEBIT NOTE）注意事項分段呈現，便於辨別 7、8 各自的說明
+            const noteGroups = merged && dnFlow
+              ? [
+                  { label: '結案報告書（節點7 正式結案報告）', items: flow.notes },
+                  { label: '公證費 DEBIT NOTE（節點8 請款單填寫）', items: dnFlow.notes },
+                ].filter((g) => g.items.length > 0)
+              : flow.notes.length > 0
+                ? [{ label: '', items: flow.notes }]
+                : []
+            // [2026/07/15] - Lisa - 合併送審 - End
             return (
               <>
-                <Divider titlePlacement="start" orientationMargin={0} style={{ fontSize: 12, color: '#1B4F8C', margin: '4px 0 10px' }}>審核流程</Divider>
+                {merged && (
+                  <Card size="small" style={{ background: '#e6f4ff', border: '1px solid #91caff', marginBottom: 12 }}>
+                    <Text style={{ fontSize: 13, color: '#0958d9' }}>
+                      將同時完成節點8「請款單填寫」：系統會一併檢查請款單必填欄位（實際公證費、差旅其他費），並點亮節點7、8。
+                      {!baseNeedsVP && <><br />因 2 份資料（結案報告書＋公證費 DEBIT NOTE）審核流程不同，合併送審後將一併送執行副總（VP）審閱。</>}
+                    </Text>
+                  </Card>
+                )}
+                <Divider titlePlacement="start" orientationMargin={0} style={{ fontSize: 12, color: '#1B4F8C', margin: '4px 0 10px' }}>審核流程{merged ? '（合併送審 請款單DEBIT NOTE）' : ''}</Divider>
                 <Steps
                   size="small" style={{ marginBottom: 12 }}
-                  items={flow.steps.map((s, i) => ({
+                  items={steps.map((s, i) => ({
                     title: <span style={{ fontSize: 12 }}>{s.title}</span>,
                     description: <span style={{ fontSize: 11, color: '#888' }}>{s.desc}</span>,
-                    status: (i === flow.steps.length - 1 && s.key === 'vp' ? 'finish' : 'process') as 'finish' | 'process',
+                    status: (i === steps.length - 1 && s.key === 'vp' ? 'finish' : 'process') as 'finish' | 'process',
                   }))}
                 />
-                {flow.notes.length > 0 && (
+                {noteGroups.length > 0 && (
                   <>
                     <Divider titlePlacement="start" orientationMargin={0} style={{ fontSize: 12, color: '#d46b08', margin: '4px 0 8px' }}>注意事項</Divider>
                     <Card size="small" style={{ background: '#fffbe6', border: '1px solid #ffe58f', marginBottom: 12 }}>
-                      <ul style={{ margin: 0, paddingLeft: 18 }}>
-                        {flow.notes.map((n, i) => <li key={i} style={{ fontSize: 12, color: '#614700', marginBottom: 3 }}>{n}</li>)}
-                      </ul>
+                      {noteGroups.map((g, gi) => (
+                        <div key={gi} style={{ marginBottom: gi < noteGroups.length - 1 ? 10 : 0 }}>
+                          {g.label && (
+                            <div style={{ fontSize: 12, fontWeight: 600, color: '#8c6d1f', marginBottom: 4 }}>{g.label}</div>
+                          )}
+                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                            {g.items.map((n, i) => <li key={i} style={{ fontSize: 12, color: '#614700', marginBottom: 3 }}>{n}</li>)}
+                          </ul>
+                        </div>
+                      ))}
                     </Card>
                   </>
                 )}

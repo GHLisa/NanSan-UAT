@@ -288,6 +288,10 @@ model CaseReview {
   interimAmount Int?
   feeReversed   Boolean @default(false)
 
+  // [2026/07/15] - Lisa - 合併送審：結案報告書隨附勾選「公證費 DEBIT NOTE」時為 true，同時點亮節點7、8並強制送VP；
+  // 僅於送審/重送當下依 checkedDocuments 重算，其餘連鎖行為皆為副產品。既有資料視同 false。
+  mergedBilling Boolean @default(false)
+
   // [2026/06/18] - Lisa - 方案1/2 送審生命週期終結：null=進行中 / 已重送 / 已放棄
   recordStatus   String?
   supersededById Int?
@@ -488,6 +492,7 @@ model MailEventQueue {
   insuredName  String?
   documentType String?
   remarks      String?   // 文件退回原因
+  mergedBilling Boolean  @default(false) // [2026/07/15] - Lisa - 合併送審旗標，供彙整信標示「合併送審 請款單DEBIT NOTE」
   recipient    String    // 收件人「姓名 <email>」，一事件對多收件人各一列
   createdAt    DateTime  @default(now())
   sentAt       DateTime? // null = 待寄；已彙整寄出後填入時間

@@ -22,6 +22,9 @@ const DEPT_CODE_MAP: Record<string, string> = {
 const KHH_ENG_DEPT_CODES = ['KL', 'KHH-ENG']
 
 const INTERIM_FEE_TYPE = '追加預估公證費'
+// [2026/07/15] - Lisa - 合併送審相關文件類型常數
+const CLOSING_REPORT_DOC = '結案報告書'
+const DEBIT_NOTE_DOC = '公證費 DEBIT NOTE'
 
 export async function GET(req: NextRequest) {
   const session = await getSession()
@@ -79,6 +82,7 @@ export async function GET(req: NextRequest) {
       interimTypes: r.interimTypes,
       interimAmount: r.interimAmount,
       feeReversed: r.feeReversed,
+      mergedBilling: r.mergedBilling, // [2026/07/15] - Lisa - 合併送審旗標（審核清單 (併DN) 標註用）
     })),
   })
 }
@@ -122,6 +126,7 @@ export async function POST(req: NextRequest) {
       estimatedAmount: true,
       estimatedFee: true,
       actualFee: true, // [2026/06/18] - Lisa - Issue #8 追加公證費改加至實際公證費 - Start/end
+      travelOtherExpense: true, // [2026/07/15] - Lisa - 合併送審/獨立DEBIT NOTE 節點8必填檢查用
       adjustmentAmount: true, // [2026/06/18] - Lisa - Issue #2 理算書面報告書送審前置檢查需用 - Start/end
       isSpecialCase: true,
       department: { select: { code: true } },
@@ -143,6 +148,26 @@ export async function POST(req: NextRequest) {
   if (caseData.status !== '未決') {
     return NextResponse.json({ success: false, error: '案件非未決狀態，無法送審' }, { status: 409 })
   }
+
+  // [2026/07/15] - Lisa - 合併送審：送「結案報告書」隨附勾選「公證費 DEBIT NOTE」→ 合併，同時點亮節點7、8並強制送VP - Start
+  // mergedBilling 僅於此（送審/重送當下）依 checkedDocuments 計算；取消勾選即回歸原路由，屬副產品不另寫。
+  const checkedDocs = body.checkedDocuments ?? []
+  const mergedBilling = body.documentType === CLOSING_REPORT_DOC && checkedDocs.includes(DEBIT_NOTE_DOC)
+
+  // 節點8（請款單）必填檢查：合併送審 或 獨立送 DEBIT NOTE 時，實際公證費、差旅其他費不可為空（0 視為已填、null 視為空白）
+  const needsBillingFields = mergedBilling || body.documentType === DEBIT_NOTE_DOC
+  if (needsBillingFields) {
+    const missing: string[] = []
+    if (caseData.actualFee == null) missing.push('實際公證費')
+    if (caseData.travelOtherExpense == null) missing.push('差旅其他費')
+    if (missing.length > 0) {
+      return NextResponse.json(
+        { success: false, error: `送審前請先於金額資訊填寫：${missing.join('、')}（可為 0，不得為空值）` },
+        { status: 409 }
+      )
+    }
+  }
+  // [2026/07/15] - Lisa - 合併送審 - End
 
   // [2026/06/18] - Lisa - Issue #2 理算書面報告書送審前須填理算損失額（adjustmentAmount）- Start
   // 空白判定為 null（未填）；數值 0 視為已填
@@ -174,6 +199,32 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // [2026/07/15] - Lisa - 合併送審防護：獨立送「公證費 DEBIT NOTE」時，若本案有合併送審(結案報告書+DN)且仍審核中，
+  // 禁止單獨送件（跨 documentType，上面 dup 只比同類擋不到）；合併案已核准/撤銷(非審核中)則放行 - Start
+  if (body.documentType === DEBIT_NOTE_DOC) {
+    const mergedActive = await prisma.caseReview.findFirst({
+      where: {
+        caseId: body.caseId,
+        documentType: CLOSING_REPORT_DOC,
+        mergedBilling: true,
+        recordStatus: null,
+        OR: [
+          { reviewStatus: '待複核' },
+          { midApprovalStatus: '待加簽審核' },
+          { approvalStatus: '待執行副總閱' },
+        ],
+      },
+      select: { id: true },
+    })
+    if (mergedActive) {
+      return NextResponse.json(
+        { success: false, error: '本案「公證費 DEBIT NOTE」已隨結案報告書合併送審中，無法單獨送件；請待合併案核准或撤銷後再送。' },
+        { status: 409 }
+      )
+    }
+  }
+  // [2026/07/15] - Lisa - 合併送審防護 - End
+
   // ── (c) FR-47/90 伺服端計算審核路由 ─────────────────────────────────
   const categoryCode = DEPT_CODE_MAP[caseData.department.code ?? ''] ?? caseData.department.code
   const flow = getApprovalFlow(
@@ -182,7 +233,8 @@ export async function POST(req: NextRequest) {
     caseData.estimatedAmount != null ? Number(caseData.estimatedAmount) : null,
     caseData.isSpecialCase
   )
-  const requiresVP = flow.alwaysVP || flow.amountVP
+  // [2026/07/15] - Lisa - 合併送審強制送VP（DEBIT NOTE 各分類皆 alwaysVP，合併即取較嚴格路由）
+  const requiresVP = flow.alwaysVP || flow.amountVP || mergedBilling
   const requiresMidApproval = flow.needsMidApproval
 
   // reviewer = 該案部門 dept_manager
@@ -228,6 +280,7 @@ export async function POST(req: NextRequest) {
         submittedBy: empId,
         submissionNotes: body.submissionNotes ?? null,
         checkedDocuments: body.checkedDocuments ? JSON.stringify(body.checkedDocuments) : null,
+        mergedBilling, // [2026/07/15] - Lisa - 合併送審旗標
         reviewerId,
         reviewStatus: '待複核',
         requiresVP,
@@ -310,7 +363,7 @@ export async function POST(req: NextRequest) {
   })
 
   // 立即通知（2）文件送審 → 當前審核人（該部門主管）；寄信失敗不影響送審結果
-  await mailReviewSubmitted(body.caseId, caseData.caseNumber, body.documentType, reviewerId)
+  await mailReviewSubmitted(body.caseId, caseData.caseNumber, body.documentType, reviewerId, mergedBilling)
 
   return NextResponse.json({ success: true, data: { id: result.id } }, { status: 201 })
 }

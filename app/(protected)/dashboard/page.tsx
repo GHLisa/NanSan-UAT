@@ -67,13 +67,15 @@ interface DashboardData {
 }
 
 function AchieveRate({ value, label }: { value: number | null; label: string }) {
-  const color = value == null ? '#bfbfbf' : value >= 100 ? '#52c41a' : value >= 70 ? '#faad14' : '#ff4d4f'
+  // [2026/07/16] - Lisa - 未設定該項目標時（value 為 null）改顯示「未設定目標」，避免誤會成無資料
+  const isSet = value != null
+  const color = !isSet ? '#bfbfbf' : value >= 100 ? '#52c41a' : value >= 70 ? '#faad14' : '#ff4d4f'
   return (
     <Statistic
       title={<span style={{ fontSize: 11 }}>{label}</span>}
-      value={value != null ? value : '—'}
-      suffix={value != null ? '%' : ''}
-      valueStyle={{ fontSize: 22, color }}
+      value={isSet ? value : '未設定目標'}
+      suffix={isSet ? '%' : ''}
+      valueStyle={{ fontSize: isSet ? 22 : 13, color }}
     />
   )
 }

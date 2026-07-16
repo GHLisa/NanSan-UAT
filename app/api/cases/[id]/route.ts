@@ -99,6 +99,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
         midApprovalRemarks: r.midApprovalRemarks, midApprovedAt: r.midApprovedAt?.toISOString() ?? null,
         interimTypes: parseJsonArray(r.interimTypes), interimAmount: r.interimAmount, feeReversed: r.feeReversed,
         recordStatus: r.recordStatus, // [2026/06/18] - Lisa - 方案1/2 終結狀態（已重送/已放棄）
+        mergedBilling: r.mergedBilling, // [2026/07/15] - Lisa - 合併送審旗標（節點8亮燈聚合用）
       })),
       settlement: c.settlement ? {
         id: c.settlement.id, caseId: c.settlement.caseId,

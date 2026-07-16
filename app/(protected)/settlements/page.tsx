@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Table, Card, Row, Col, Typography, Tag, Select, Button, Statistic, Input, DatePicker, message,
@@ -16,12 +16,8 @@ const { Title } = Typography
 const PAGE_SIZE = 15
 
 // [2026/07/14] - Lisa - 年度移除「全部」、預設當年度；依委託日年份篩選
-// 下拉僅列「最近三年」：當年度-2、當年度-1、當年度
+// [2026/07/16] - Lisa - 下拉不再固定近三年，改依系統實際委託年度動態帶入（見 /api/meta caseYears）
 const CURRENT_YEAR = new Date().getFullYear()
-const YEAR_OPTIONS = Array.from({ length: 3 }, (_, i) => {
-  const y = CURRENT_YEAR - 2 + i
-  return { value: String(y), label: `${y} 年` }
-})
 const PERIOD_OPTIONS = [
   { value: '', label: '全年' },
   { value: 'Q1', label: 'Q1（1~3月）' },
@@ -68,6 +64,8 @@ export default function CaseQueryPage() {
 
   const [cases, setCases] = useState<CaseItem[]>([])
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([])
+  // [2026/07/16] - Lisa - 年度下拉改依實際資料（系統中所有案件的委託年度）動態產生
+  const [caseYears, setCaseYears] = useState<number[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
@@ -87,6 +85,12 @@ export default function CaseQueryPage() {
   const [summary, setSummary] = useState({ count: 0, totalFee: 0, totalTravel: 0 })
   const [exporting, setExporting] = useState(false)
 
+  // 年度下拉：依系統實際委託年度（由新到舊）；資料未載入前先以當年度墊檔，維持「無全部、預設當年度」設計
+  const yearOptions = useMemo(() => {
+    const years = caseYears.length ? caseYears : [CURRENT_YEAR]
+    return years.map(y => ({ value: String(y), label: `${y} 年` }))
+  }, [caseYears])
+
   // Sticky filter bar height
   useEffect(() => {
     const el = filterBarRef.current
@@ -99,10 +103,11 @@ export default function CaseQueryPage() {
   }, [])
 
   useEffect(() => {
-    api.get<{ departments: { id: number; name: string }[]; insuranceCompanies: { id: number; name: string }[] }>('/api/meta').then(res => {
+    api.get<{ departments: { id: number; name: string }[]; insuranceCompanies: { id: number; name: string }[]; caseYears: number[] }>('/api/meta').then(res => {
       if (res.success && res.data) {
         setDepartments(res.data.departments)
         setInsuranceCompanies(res.data.insuranceCompanies)
+        setCaseYears(res.data.caseYears ?? [])
       }
     })
   }, [])
@@ -361,7 +366,7 @@ export default function CaseQueryPage() {
                 <Select
                   value={filterYear}
                   onChange={v => { setFilterYear(v); setFilterPeriod(''); setPage(1) }}
-                  options={YEAR_OPTIONS}
+                  options={yearOptions}
                   style={{ width: 110 }}
                 />
               </div>

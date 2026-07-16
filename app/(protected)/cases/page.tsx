@@ -55,6 +55,7 @@ interface CaseItem {
   // [2026/06/18] - Lisa - Issue #9 退件涵蓋全關卡，附關卡別 gate
   rejectedReviews: { documentType: string; gate: string; reviewRemarks: string | null }[]
   hasPendingReview: boolean
+  hasMergedBilling: boolean // [2026/07/15] - Lisa - 合併送審旗標（結案報告書隨附 DEBIT NOTE）
 }
 
 interface MetaData {
@@ -273,7 +274,21 @@ export default function CasesPage() {
       title: '出險日期', dataIndex: 'incidentDate', key: 'incidentDate', width: 100,
       render: (v: string) => dayjs(v).format('YYYY/MM/DD'),
     },
-    { title: '目前階段', dataIndex: 'currentStage', key: 'stage', width: 110, ellipsis: true },
+    {
+      title: '目前階段', dataIndex: 'currentStage', key: 'stage', width: 180, ellipsis: true,
+      // [2026/07/16] - Lisa - 合併送審：「併DN」改標於「目前階段」欄，與文件審核清單一致
+      render: (v: string, r: CaseItem) => (
+        <span style={{ whiteSpace: 'nowrap' }}>
+          {/* [2026/07/16] - Lisa - 階段名稱過長時以 Tooltip 顯示全文（欄位截斷「…」補救） */}
+          <Tooltip title={v}>{v}</Tooltip>
+          {r.hasMergedBilling && (
+            <Tooltip title="結案報告書已合併「公證費 DEBIT NOTE」一併送審（節點7、8）">
+              <Tag color="blue" style={{ fontSize: 10, marginLeft: 4, cursor: 'default' }}>併DN</Tag>
+            </Tooltip>
+          )}
+        </span>
+      ),
+    },
     {
       title: '預估金額', dataIndex: 'estimatedAmount', key: 'estimatedAmount', width: 120, align: 'right' as const,
       render: (v: number | null) => (
@@ -301,6 +316,7 @@ export default function CasesPage() {
           {r.hasPendingReview && (
             <Tag color="blue" icon={<ClockCircleOutlined />} style={{ cursor: 'default' }}>審核中</Tag>
           )}
+          {/* [2026/07/16] - Lisa - 合併送審：「併DN」已移至「目前階段」欄呈現 */}
         </Space>
       ),
     },

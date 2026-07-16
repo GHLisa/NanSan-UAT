@@ -10,7 +10,7 @@ import dayjs from 'dayjs'
 const { Title, Text } = Typography
 
 // ── Constants ─────────────────────────────────────────────────────────────
-const YEAR_OPTIONS  = [2024, 2025, 2026].map(y => ({ value: y, label: `${y} 年` }))
+// [2026/07/16] - Lisa - 年度下拉改依實際資料（所有已決案件的結案年度）動態產生，見 /api/meta closeYears
 const MONTH_OPTIONS = Array.from({ length: 12 }, (_, i) => ({ value: i + 1, label: `${i + 1} 月` }))
 const QUARTER_OPTIONS = [
   { value: 'Q1', label: 'Q1（1~3月）' },
@@ -189,11 +189,22 @@ export default function CaseDetailReportPage() {
   const [exportingQ, setExportingQ] = useState(false)
 
   const [depts, setDepts] = useState<{ id: number; name: string }[]>([])
+  // [2026/07/16] - Lisa - 已決案結案年度（動態），不再固定近三年
+  const [closeYears, setCloseYears] = useState<number[]>([])
   useEffect(() => {
-    api.get<{ departments: { id: number; name: string }[] }>('/api/meta').then(res => {
-      if (res.success && res.data) setDepts(res.data.departments)
+    api.get<{ departments: { id: number; name: string }[]; closeYears: number[] }>('/api/meta').then(res => {
+      if (res.success && res.data) {
+        setDepts(res.data.departments)
+        setCloseYears(res.data.closeYears ?? [])
+      }
     })
   }, [])
+
+  // 年度下拉：依系統實際已決案結案年度（由新到舊）；未載入前先以當年度墊檔
+  const yearOptions = useMemo(() => {
+    const years = closeYears.length ? closeYears : [dayjs().year()]
+    return years.map(y => ({ value: y, label: `${y} 年` }))
+  }, [closeYears])
 
   const loadMonth = useCallback(async () => {
     setLoadingM(true)
@@ -274,7 +285,7 @@ export default function CaseDetailReportPage() {
         <>
           <Card size="small" style={{ marginBottom: 16 }}>
             <Space wrap>
-              <Select value={filterYear} onChange={setFilterYear} options={YEAR_OPTIONS} style={{ width: 100 }} />
+              <Select value={filterYear} onChange={setFilterYear} options={yearOptions} style={{ width: 100 }} />
               <Select value={filterMonth} onChange={setFilterMonth} options={MONTH_OPTIONS} style={{ width: 80 }} />
               {deptSelect}
               <Button
@@ -304,7 +315,7 @@ export default function CaseDetailReportPage() {
         <>
           <Card size="small" style={{ marginBottom: 16 }}>
             <Space wrap>
-              <Select value={filterYear} onChange={setFilterYear} options={YEAR_OPTIONS} style={{ width: 100 }} />
+              <Select value={filterYear} onChange={setFilterYear} options={yearOptions} style={{ width: 100 }} />
               <Select value={filterQ} onChange={setFilterQ} options={QUARTER_OPTIONS} style={{ width: 140 }} />
               {deptSelect}
               <Button

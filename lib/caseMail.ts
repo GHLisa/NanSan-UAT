@@ -58,6 +58,7 @@ async function enqueueFor(
     insuredName?: string | null
     documentType?: string | null
     remarks?: string | null
+    mergedBilling?: boolean // [2026/07/15] - Lisa - 合併送審旗標
   },
 ): Promise<void> {
   if (recipients.length === 0) return
@@ -84,9 +85,10 @@ export async function mailReviewSubmitted(
   caseNumber: string,
   documentType: string,
   reviewerId: number,
+  mergedBilling = false, // [2026/07/15] - Lisa - 合併送審旗標，供彙整信標示「合併送審 請款單DEBIT NOTE」
 ): Promise<void> {
   await enqueueFor(await emailsByIds([reviewerId]), {
-    eventType: 'review_submitted', caseId, caseNumber, documentType, insuredName: await caseInsuredName(caseId),
+    eventType: 'review_submitted', caseId, caseNumber, documentType, mergedBilling, insuredName: await caseInsuredName(caseId),
   })
 }
 
@@ -96,9 +98,10 @@ export async function mailReviewCascade(
   caseNumber: string,
   documentType: string,
   to: string[],
+  mergedBilling = false, // [2026/07/15] - Lisa - 合併送審旗標
 ): Promise<void> {
   await enqueueFor(to, {
-    eventType: 'review_cascade', caseId, caseNumber, documentType, insuredName: await caseInsuredName(caseId),
+    eventType: 'review_cascade', caseId, caseNumber, documentType, mergedBilling, insuredName: await caseInsuredName(caseId),
   })
 }
 

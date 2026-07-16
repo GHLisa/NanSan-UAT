@@ -151,6 +151,7 @@ export async function GET(req: NextRequest) {
             approvalStatus: true, approvalRemarks: true,
             documentType: true, submittedAt: true,
             recordStatus: true, // [2026/06/18] - Lisa - 方案1/2 終結狀態（已重送/已放棄）
+            mergedBilling: true, // [2026/07/15] - Lisa - 合併送審旗標（清單 (併DN) 標註用）
           },
         },
         // [2026/06/18] - Lisa - Issue #9/#10 - end
@@ -192,6 +193,8 @@ export async function GET(req: NextRequest) {
       .filter((x): x is { documentType: string; gate: string; remark: string | null } => x !== null)
     const hasPending = latestReviews.some(r => r.reviewStatus === '待複核' || r.approvalStatus === '待執行副總閱')
     // [2026/06/18] - Lisa - Issue #9/#10 - end
+    // [2026/07/15] - Lisa - 合併送審：本案是否有 active 的「結案報告書 && mergedBilling」review（清單 (併DN) 標註）
+    const hasMergedBilling = c.reviews.some(r => r.documentType === '結案報告書' && r.mergedBilling && r.recordStatus === null)
 
     return {
       id: c.id,
@@ -226,6 +229,7 @@ export async function GET(req: NextRequest) {
       // [2026/06/18] - Lisa - Issue #9 帶出關卡別 gate 與該關卡退回意見 remark
       rejectedReviews: rejectedReviews.map(r => ({ documentType: r.documentType, gate: r.gate, reviewRemarks: r.remark })),
       hasPendingReview: hasPending,
+      hasMergedBilling, // [2026/07/15] - Lisa - 合併送審 (併DN) 標註
     }
   })
 

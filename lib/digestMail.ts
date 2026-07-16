@@ -357,6 +357,7 @@ async function runReviewerDigest(): Promise<number> {
       reviewStatus: true,
       midApprovalStatus: true,
       approvalStatus: true,
+      mergedBilling: true, // [2026/07/15] - Lisa - 合併送審旗標
       reviewer: { select: { id: true, name: true, email: true } },
       midApprover: { select: { id: true, name: true, email: true } },
       approver: { select: { id: true, name: true, email: true } },
@@ -371,6 +372,7 @@ async function runReviewerDigest(): Promise<number> {
     documentType: string
     gate: string
     submittedAt: Date
+    mergedBilling: boolean // [2026/07/15] - Lisa - 合併送審旗標
   }
   // 依「當前負責審核人」分組
   const byReviewer = new Map<number, { name: string; email: string | null; docs: PendingDoc[] }>()
@@ -397,6 +399,7 @@ async function runReviewerDigest(): Promise<number> {
       documentType: r.documentType,
       gate,
       submittedAt: r.submittedAt,
+      mergedBilling: r.mergedBilling,
     })
     byReviewer.set(person.id, bucket)
   }
@@ -411,7 +414,7 @@ async function runReviewerDigest(): Promise<number> {
     const body = docs
       .map(
         d =>
-          `<tr>${td(caseLink(d.caseId, d.caseNumber))}${td(d.insuredName)}${td(d.documentType)}` +
+          `<tr>${td(caseLink(d.caseId, d.caseNumber))}${td(d.insuredName)}${td(d.documentType + (d.mergedBilling ? '（合併送審 請款單DEBIT NOTE）' : ''))}` +
           `${td(d.gate)}${td(d.submittedAt.toISOString().slice(0, 10))}</tr>`,
       )
       .join('')
@@ -521,6 +524,7 @@ interface QueuedEvent {
   insuredName: string | null
   documentType: string | null
   remarks: string | null
+  mergedBilling: boolean // [2026/07/15] - Lisa - 合併送審旗標
 }
 
 export function buildEventDigestHtml(events: QueuedEvent[]): string {
@@ -555,7 +559,8 @@ export function buildEventDigestHtml(events: QueuedEvent[]): string {
 
   const toReview = pick(['review_submitted', 'review_cascade'])
   if (toReview.length) {
-    const rows = toReview.map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}${td(e.documentType ?? '—')}</tr>`).join('')
+    // [2026/07/15] - Lisa - 合併送審：文件類型後加註「（合併送審 請款單DEBIT NOTE）」讓審核人一眼看出
+    const rows = toReview.map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}${td((e.documentType ?? '—') + (e.mergedBilling ? '（合併送審 請款單DEBIT NOTE）' : ''))}</tr>`).join('')
     body += section(`📄 待您審核的文件　${toReview.length} 件`, '#2E7D32', `${th('案號')}${th('被保險人')}${th('文件類型')}`, rows)
   }
 

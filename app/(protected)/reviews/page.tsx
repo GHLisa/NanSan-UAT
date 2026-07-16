@@ -106,6 +106,7 @@ interface ReviewItem {
   midApproverId: number | null
   midApproverName: string | null
   midApprovalStatus: string | null
+  mergedBilling: boolean // [2026/07/15] - Lisa - 合併送審旗標（結案報告書隨附 DEBIT NOTE）
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────
@@ -250,7 +251,12 @@ export default function ReviewsPage() {
       ),
     },
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName', width: 140 },
-    { title: '文件類型', dataIndex: 'documentType', key: 'documentType', width: 150 },
+    {
+      title: '文件類型', key: 'documentType', width: 150,
+      // [2026/07/15] - Lisa - 合併送審：加註「(併DN)」讓審核人一眼看出結案報告書已合併請款單DEBIT NOTE
+      render: (_: unknown, r: ReviewItem) =>
+        <span>{r.documentType}{r.mergedBilling && <Tag color="blue" style={{ fontSize: 10, marginLeft: 4 }}>併DN</Tag>}</span>,
+    },
     {
       title: '待審文件', key: 'checkedDocuments', width: 180,
       render: (_: unknown, r: ReviewItem) =>

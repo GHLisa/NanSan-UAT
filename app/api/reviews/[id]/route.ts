@@ -236,7 +236,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     await mailReviewRejected(review.case.id, review.case.caseNumber, review.documentType, body.remarks)
   } else if (body.action === 'approve' && updateData.midApprovalStatus === '待加簽審核') {
     // (2) 主管複核通過、進入加簽審核關卡 → 通知加簽審核
-    await mailReviewCascade(review.case.id, review.case.caseNumber, review.documentType, await emailsByIds([review.midApproverId]))
+    await mailReviewCascade(review.case.id, review.case.caseNumber, review.documentType, await emailsByIds([review.midApproverId]), review.mergedBilling)
     // [2026/06/24] - Lisa - 待審核通知：加簽審核人（跨部門，指定收件人觸達）
     if (review.midApproverId) {
       await prisma.notification.create({
@@ -248,7 +248,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     updateData.approvalStatus === '待執行副總閱'
   ) {
     // (2) 進入執行副總關卡 → 通知執行副總
-    await mailReviewCascade(review.case.id, review.case.caseNumber, review.documentType, await vpEmails())
+    await mailReviewCascade(review.case.id, review.case.caseNumber, review.documentType, await vpEmails(), review.mergedBilling)
     // [2026/06/24] - Lisa - 待審核通知：執行副總（VP 範圍＝全公司，角色廣播觸達全部 VP）
     await prisma.notification.create({
       data: reviewPendingNotification(review.case.id, review.case.caseNumber, review.documentType, { roles: 'vp' }, true),

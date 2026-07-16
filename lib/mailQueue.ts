@@ -12,6 +12,7 @@ export interface MailEventInput {
   insuredName?: string | null
   documentType?: string | null
   remarks?: string | null    // 文件退回原因
+  mergedBilling?: boolean     // [2026/07/15] - Lisa - 合併送審旗標，供彙整信標示「合併送審 請款單DEBIT NOTE」
   recipient: string          // 收件人「姓名 <email>」
 }
 
@@ -25,6 +26,7 @@ export async function enqueueMailEvent(rows: MailEventInput[]): Promise<void> {
       insuredName: r.insuredName ?? null,
       documentType: r.documentType ?? null,
       remarks: r.remarks ?? null,
+      mergedBilling: r.mergedBilling ?? false,
       recipient: r.recipient,
     })),
   })
