@@ -13,6 +13,7 @@ import {
   ClockCircleOutlined, RollbackOutlined, CheckCircleOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import { api } from '@/lib/api'
+import { splitFeeByRatio } from '@/lib/feeSplit'
 import { useAuth } from '@/components/layout/AuthProvider'
 import {
   CASE_STAGES, DOCUMENT_TYPES, STAGE_DOC_TYPES, INTERIM_DOC_TYPES, getApprovalFlow,
@@ -653,11 +654,13 @@ export default function CaseDetailPage() {
     const baseFee = Number(values.baseFee) || 0
     const travelExpense = Number(values.travelExpense) || 0
     const totalFee = baseFee // 實際公證費＝純公證費；差旅其他費另計
-    const splits = assignments.map((a) => ({
+    // 純公證費依承辦比例分攤：非主辦無條件捨去、主辦吸收剩餘，確保加總＝純公證費
+    const feeAmounts = splitFeeByRatio(totalFee, assignments, a => a.contributionRatio ?? 0, a => a.role === '主辦')
+    const splits = assignments.map((a, i) => ({
       employeeId: a.employeeId as number,
       assignmentId: a.id ?? null,
       ratio: a.contributionRatio,
-      amount: Math.round(totalFee * (a.contributionRatio ?? 0)),
+      amount: feeAmounts[i],
     }))
     const res = await api.post('/api/settlements', {
       caseId: caseData.id,
@@ -992,7 +995,7 @@ export default function CaseDetailPage() {
                 <Row gutter={[12, 0]}>
                   <Col span={12}>
                     <Form.Item name="insuranceCompanyId" label="保險公司" rules={[{ required: true, message: '必填' }]}>
-                      <Select showSearch optionFilterProp="label" options={meta?.insuranceCompanies.map((i) => ({ value: i.id, label: i.name }))} onChange={(v) => { calcUserInteracted.current = true; setLiveIcId(v) }} />
+                      <Select showSearch optionFilterProp="label" options={meta?.insuranceCompanies.filter((i) => i.name !== '被保險人自保').map((i) => ({ value: i.id, label: i.name }))} onChange={(v) => { calcUserInteracted.current = true; setLiveIcId(v) }} />
                     </Form.Item>
                   </Col>
                   <Col span={12}>
@@ -1058,7 +1061,7 @@ export default function CaseDetailPage() {
                     >
                       {editCoInsurers.map((ci, idx) => (
                         <div key={ci._key} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-                          <Select allowClear showSearch placeholder="共保公司（選填）" value={ci.companyId ?? null} onChange={(v) => updateCoInsurer(idx, 'companyId', v ?? null)} options={meta?.insuranceCompanies.map((i) => ({ value: i.id, label: i.name }))} optionFilterProp="label" style={{ flex: '1 1 150px' }} />
+                          <Select allowClear showSearch placeholder="共保公司（選填）" value={ci.companyId ?? null} onChange={(v) => updateCoInsurer(idx, 'companyId', v ?? null)} options={meta?.insuranceCompanies.slice().sort((a, b) => (a.name === '被保險人自保' ? -1 : b.name === '被保險人自保' ? 1 : 0)).map((i) => ({ value: i.id, label: i.name }))} optionFilterProp="label" style={{ flex: '1 1 150px' }} />
                           <Input placeholder="共保保單號碼（必填）" value={ci.policyNumber} onChange={(e) => updateCoInsurer(idx, 'policyNumber', e.target.value)} status={ci.policyNumber === '' ? 'error' : ''} style={{ flex: '1 1 150px' }} />
                           <InputNumber min={0.01} max={99.99} precision={2} step={5} addonAfter="%" placeholder="比例" value={ci.ratio} onChange={(v) => updateCoInsurer(idx, 'ratio', v ?? null)} status={!ci.ratio ? 'error' : ''} style={{ flex: '0 0 120px' }} />
                           <Button type="text" danger icon={<DeleteOutlined />} onClick={() => removeCoInsurer(idx)} />
@@ -1641,18 +1644,22 @@ export default function CaseDetailPage() {
           <div style={{ marginBottom: 12 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>承辦分潤（依承辦比例分攤純公證費）</Text>
             <div style={{ marginTop: 4 }}>
-              {assignments.map((a) => (
-                <Row key={a.id ?? a.employeeId} justify="space-between" style={{ fontSize: 13, padding: '2px 0' }}>
-                  <Col>
-                    {a.employeeName ?? '—'}
-                    <Tag style={{ marginLeft: 6, fontSize: 11 }}>{a.role}</Tag>
-                    <Text type="secondary" style={{ fontSize: 12 }}>{Math.round((a.contributionRatio ?? 0) * 100)}%</Text>
-                  </Col>
-                  <Col style={{ fontWeight: 600, color: '#1B4F8C' }}>
-                    ${Math.round((Number(closeBaseFee) || 0) * (a.contributionRatio ?? 0)).toLocaleString()}
-                  </Col>
-                </Row>
-              ))}
+              {(() => {
+                // 與存檔一致：非主辦無條件捨去、主辦吸收剩餘
+                const amts = splitFeeByRatio(Number(closeBaseFee) || 0, assignments, a => a.contributionRatio ?? 0, a => a.role === '主辦')
+                return assignments.map((a, i) => (
+                  <Row key={a.id ?? a.employeeId} justify="space-between" style={{ fontSize: 13, padding: '2px 0' }}>
+                    <Col>
+                      {a.employeeName ?? '—'}
+                      <Tag style={{ marginLeft: 6, fontSize: 11 }}>{a.role}</Tag>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{Math.round((a.contributionRatio ?? 0) * 100)}%</Text>
+                    </Col>
+                    <Col style={{ fontWeight: 600, color: '#1B4F8C' }}>
+                      ${(amts[i] ?? 0).toLocaleString()}
+                    </Col>
+                  </Row>
+                ))
+              })()}
             </div>
           </div>
 

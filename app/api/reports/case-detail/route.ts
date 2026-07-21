@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
+import { splitFeeByRatio } from '@/lib/feeSplit'
 import { prisma } from '@/lib/prisma'
 import dayjs from 'dayjs'
 
@@ -92,9 +93,10 @@ export async function GET(req: NextRequest) {
       ? c.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
       : ''
 
-    for (const a of c.assignments) {
-      const ratio = a.contributionRatio ?? 0
-      const actualFee = Math.round(actualFeeFull * ratio)
+    // 純公證費依承辦比例分攤（非主辦捨去、主辦吸收剩餘）
+    const feeAmts = splitFeeByRatio(actualFeeFull, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
+    c.assignments.forEach((a, ai) => {
+      const actualFee = feeAmts[ai]
       const travelFee = a.role === '主辦' ? travelFeeFull : 0
       const subtotalFee = actualFee + travelFee
 
@@ -121,7 +123,7 @@ export async function GET(req: NextRequest) {
       group.totals.actualFee += actualFee
       group.totals.travelFee += travelFee
       group.totals.subtotalFee += subtotalFee
-    }
+    })
   }
 
   const groups = Array.from(empMap.values())
@@ -165,9 +167,9 @@ export async function GET(req: NextRequest) {
     for (const c of ytdCases) {
       const travelFeeFull = c.travelOtherExpense ?? 0
       const actualFeeFull = c.actualFee ?? 0
-      for (const a of c.assignments) {
-        const ratio = a.contributionRatio ?? 0
-        const actualFee = Math.round(actualFeeFull * ratio)
+      const ytdFeeAmts = splitFeeByRatio(actualFeeFull, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
+      c.assignments.forEach((a, ai) => {
+        const actualFee = ytdFeeAmts[ai]
         const travelFee = a.role === '主辦' ? travelFeeFull : 0
         if (!ytdMap.has(a.employeeId)) {
           ytdMap.set(a.employeeId, { empId: a.employeeId, empName: a.employee.name, cases: [], totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 } })
@@ -177,7 +179,7 @@ export async function GET(req: NextRequest) {
         g.totals.actualFee += actualFee
         g.totals.travelFee += travelFee
         g.totals.subtotalFee += actualFee + travelFee
-      }
+      })
     }
     ytdGroups = Array.from(ytdMap.values())
   }

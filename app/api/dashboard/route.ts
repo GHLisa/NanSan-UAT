@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { splitFeeByRatio } from '@/lib/feeSplit'
 import { buildCaseScopeWhere, getCaseScopeLabel, getScopeEmployeeIds } from '@/lib/caseScope'
 import { buildReviewWhere, defaultReviewTab } from '@/lib/reviewScope'
 import type { Prisma } from '@prisma/client'
@@ -155,7 +156,7 @@ export async function GET() {
       select: {
         id: true,
         actualFee: true,
-        assignments: { select: { employeeId: true, contributionRatio: true } },
+        assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
       },
     }),
     // 待辦清單
@@ -237,12 +238,14 @@ export async function GET() {
   let actualFeePure = 0
   let actualClosedCount = 0
   for (const c of yearClosedCases) {
-    const scopeAssigns = c.assignments.filter(a => scopeEmpIdSet.has(a.employeeId))
-    if (scopeAssigns.length === 0) continue
+    const inScope = c.assignments.some(a => scopeEmpIdSet.has(a.employeeId))
+    if (!inScope) continue
     actualClosedCount += 1
     if (c.actualFee) {
-      actualFeePure += scopeAssigns.reduce(
-        (s, a) => s + Math.round(c.actualFee! * (a.contributionRatio ?? 1)),
+      // 依承辦比例分攤（非主辦捨去、主辦吸收剩餘），僅加總 scope 內承辦人份額
+      const amts = splitFeeByRatio(c.actualFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
+      actualFeePure += c.assignments.reduce(
+        (s, a, i) => (scopeEmpIdSet.has(a.employeeId) ? s + amts[i] : s),
         0,
       )
     }

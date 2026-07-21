@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { splitFeeByRatio } from '@/lib/feeSplit'
 import { z } from 'zod'
 import { parseBody } from '@/lib/apiError'
 
@@ -105,6 +106,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, error: '此案件已有結算記錄' }, { status: 400 })
   }
 
+  // 純公證費分潤以 DB 承辦人為準重算：非主辦無條件捨去、主辦吸收剩餘，確保加總＝totalFee
+  const caseAssigns = await prisma.caseAssignment.findMany({
+    where: { caseId: body.caseId },
+    select: { id: true, employeeId: true, role: true, contributionRatio: true },
+  })
+  const splitAmounts = splitFeeByRatio(
+    body.totalFee,
+    caseAssigns,
+    (a) => a.contributionRatio ?? 0,
+    (a) => a.role === '主辦',
+  )
+  const splitData = caseAssigns.map((a, i) => ({
+    employeeId: a.employeeId,
+    assignmentId: a.id,
+    ratio: a.contributionRatio ?? 0,
+    amount: splitAmounts[i],
+  }))
+
   const settlement = await prisma.settlement.create({
     data: {
       caseId: body.caseId,
@@ -113,14 +132,7 @@ export async function POST(req: NextRequest) {
       travelExpense: body.travelExpense,
       totalFee: body.totalFee,
       remarks: body.remarks,
-      splits: body.splits ? {
-        create: body.splits.map((sp) => ({
-          employeeId: sp.employeeId,
-          assignmentId: sp.assignmentId,
-          ratio: sp.ratio,
-          amount: sp.amount,
-        })),
-      } : undefined,
+      splits: splitData.length ? { create: splitData } : undefined,
     },
   })
 

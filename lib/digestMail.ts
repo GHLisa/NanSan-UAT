@@ -11,6 +11,8 @@
 //   各部門未決案件中黃 / 紅燈清單 → 該部門主管，副本執行副總。
 //
 // 燈號定義沿用 lib/sla.ts（與儀表板一致：黃 D+14、紅 D+30 / D+90）。
+// 停泊案件（parkingStatus：申訴中／訴訟中／待請求時效）視為「合法暫停」，
+//   一律自上述燈號督導清單排除，改於各信末獨立「停泊案件」區依狀態計數與列表。
 // PS 規則「無 email 不發送」由 lib/email.ts sendMail 統一保證。
 // 所有寄送皆以 safeSend 包裝：失敗只記 log、不拋例外，確保排程不中斷。
 
@@ -122,6 +124,7 @@ interface OpenCase {
   status: string
   departmentId: number
   departmentName: string
+  parkingStatus: string | null  // 停泊狀態（申訴中／訴訟中／待請求時效）；非空 = 合法暫停中
   assignees: Assignee[]
   pendingGate: string | null   // 送審中尚未完成簽核之關卡（null = 非送審中）
 }
@@ -155,6 +158,7 @@ async function loadOpenCases(): Promise<OpenCase[]> {
       commissionDate: true,
       preliminaryReportDate: true,
       status: true,
+      parkingStatus: true,
       departmentId: true,
       department: { select: { name: true } },
       assignments: {
@@ -174,6 +178,7 @@ async function loadOpenCases(): Promise<OpenCase[]> {
     commissionDate: c.commissionDate,
     preliminaryReportDate: c.preliminaryReportDate,
     status: c.status,
+    parkingStatus: c.parkingStatus,
     departmentId: c.departmentId,
     departmentName: c.department.name,
     assignees: c.assignments.map(a => ({
@@ -197,6 +202,77 @@ function toRow(c: OpenCase, now: Dayjs, note: string): CaseRow {
     light: getSlaStatus(c.commissionDate, c.preliminaryReportDate, c.status, now),
     note,
   }
+}
+
+// ── 停泊案件分區（合法暫停：申訴中／訴訟中／待請求時效）─────────────────────
+// 停泊案件一律自燈號督導清單（黃／紅燈、未決全件）排除，僅於本區呈現，
+// 依三種狀態分別計數與列表，避免暫停中案件被當成逾期重複督導。
+const PARKING_ORDER = ['申訴中', '訴訟中', '待請求時效']
+
+function parkingSectionHtml(
+  cases: OpenCase[],
+  now: Dayjs,
+  noteOf: (c: OpenCase) => string,
+  noteHeader = '備註',
+): string {
+  const parked = cases.filter(c => !!c.parkingStatus)
+  const statuses = Array.from(new Set(parked.map(c => c.parkingStatus as string))).sort((a, b) => {
+    const ia = PARKING_ORDER.indexOf(a)
+    const ib = PARKING_ORDER.indexOf(b)
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+  })
+  const summary = statuses.length
+    ? statuses.map(s => `${s} ${parked.filter(c => c.parkingStatus === s).length} 件`).join('　｜　')
+    : '（無）'
+  let html =
+    `<h3 style="color:#6B46C1;margin:16px 0 4px;font-size:15px">⏸️ 停泊案件（暫停計逾期）　${parked.length} 件</h3>` +
+    `<p style="margin:0 0 8px;color:#666;font-size:13px">${summary}</p>`
+  for (const s of statuses) {
+    const rows = parked.filter(c => c.parkingStatus === s).map(c => toRow(c, now, noteOf(c)))
+    html +=
+      `<h4 style="color:#6B46C1;margin:10px 0 2px;font-size:14px">${s}　${rows.length} 件</h4>` +
+      caseTable(rows, noteHeader)
+  }
+  return html
+}
+
+// 建立單一主承辦人的「每日案件提醒」信件內容（正式排程與 sample 預覽共用）
+function renderHandlerDigest(
+  handlerName: string,
+  cases: OpenCase[],
+  now: Dayjs,
+): { subject: string; html: string } {
+  const activeCases = cases.filter(c => !c.parkingStatus)          // 燈號督導清單：排除停泊
+  const parkedCount = cases.length - activeCases.length
+  const newYellow = activeCases
+    .filter(c => isNewlyYellowToday(c.commissionDate, c.preliminaryReportDate, c.status, now))
+    .map(c => toRow(c, now, ''))
+  const allOpen = activeCases.map(c => toRow(c, now, c.pendingGate ?? ''))
+  const body =
+    `<h3 style="color:#D69E2E;margin:16px 0 4px;font-size:15px">① 今日新進入黃燈（D+14）案件　${newYellow.length} 件</h3>` +
+    caseTable(newYellow) +
+    `<h3 style="color:#1B4F8C;margin:16px 0 4px;font-size:15px">② 您仍未決的案件（不含停泊）　${allOpen.length} 件</h3>` +
+    caseTable(allOpen, '狀態備註') +
+    parkingSectionHtml(cases, now, c => c.pendingGate ?? '', '狀態備註')
+  const html = shell(
+    `每日案件提醒　${handlerName}`,
+    `以下為您目前承辦（主辦）的待辦案件彙整，請及時處理逾期案件。停泊案件另列於後，暫不計入逾期。`,
+    body,
+  )
+  const subject = `【每日案件提醒】${handlerName}　未決 ${allOpen.length} 件（新黃燈 ${newYellow.length}｜停泊 ${parkedCount}）`
+  return { subject, html }
+}
+
+// sample 預覽：以某主承辦人目前實際未決案件產生「每日案件提醒」內容（不寄，交由呼叫端決定收件人）
+export async function buildHandlerDigestSample(
+  handlerName: string,
+  now: Dayjs = taipeiNow(),
+): Promise<{ subject: string; html: string; caseCount: number } | null> {
+  const openCases = await loadOpenCases()
+  const cases = openCases.filter(c => primaryOf(c)?.name === handlerName)
+  if (cases.length === 0) return null
+  const { subject, html } = renderHandlerDigest(handlerName, cases, now)
+  return { subject, html, caseCount: cases.length }
 }
 
 export interface DailyDigestResult {
@@ -226,25 +302,9 @@ export async function runDailyDigest(now: Dayjs = taipeiNow()): Promise<DailyDig
   // ── a + b：每位主承辦人一封信 ─────────────────────────────────────────
   let handlerMailsSent = 0
   for (const { handler, cases } of Array.from(byPrimary.values())) {
-    const newYellow = cases.filter(isNewYellow).map(c => toRow(c, now, ''))
-    const allOpen = cases.map(c => toRow(c, now, c.pendingGate ?? ''))
-    const body =
-      `<h3 style="color:#D69E2E;margin:16px 0 4px;font-size:15px">① 今日新進入黃燈（D+14）案件　${newYellow.length} 件</h3>` +
-      caseTable(newYellow) +
-      `<h3 style="color:#1B4F8C;margin:16px 0 4px;font-size:15px">② 您仍未決的案件　${allOpen.length} 件</h3>` +
-      caseTable(allOpen, '狀態備註')
-    const html = shell(
-      `每日案件提醒　${handler.name}`,
-      `以下為您目前承辦（主辦）的待辦案件彙整，請及時處理逾期案件。`,
-      body,
-    )
+    const { subject, html } = renderHandlerDigest(handler.name, cases, now)
     const to = handler.email ? [formatRecipient(handler.name, handler.email)] : []
-    const ok = await safeSend(
-      to,
-      `【每日案件提醒】${handler.name}　未決 ${allOpen.length} 件（新黃燈 ${newYellow.length}）`,
-      html,
-      'daily_handler_digest',
-    )
+    const ok = await safeSend(to, subject, html, 'daily_handler_digest')
     if (ok) handlerMailsSent++
   }
 
@@ -307,26 +367,29 @@ export async function runDailyDigest(now: Dayjs = taipeiNow()): Promise<DailyDig
     })
     if (inScope.length === 0) continue
 
-    const newYellow = inScope.filter(isNewYellow)
+    const activeScope = inScope.filter(c => !c.parkingStatus)     // 燈號督導清單：排除停泊
+    const parkedCount = inScope.length - activeScope.length
+    const newYellow = activeScope.filter(isNewYellow)
     const rowsNew = newYellow.map(c => toRow(c, now, `主辦：${primaryOf(c)?.name ?? '—'}`))
-    const rowsAll = inScope.map(c =>
+    const rowsAll = activeScope.map(c =>
       toRow(c, now, [primaryOf(c)?.name ? `主辦：${primaryOf(c)?.name}` : '', c.pendingGate ?? ''].filter(Boolean).join('｜')),
     )
     const body =
       `<h3 style="color:#D69E2E;margin:16px 0 4px;font-size:15px">① 今日新進入黃燈（D+14）案件　${rowsNew.length} 件</h3>` +
       caseTable(rowsNew, '主辦') +
-      `<h3 style="color:#1B4F8C;margin:16px 0 4px;font-size:15px">② 組內未決案件　${rowsAll.length} 件</h3>` +
-      caseTable(rowsAll, '主辦／狀態')
+      `<h3 style="color:#1B4F8C;margin:16px 0 4px;font-size:15px">② 組內未決案件（不含停泊）　${rowsAll.length} 件</h3>` +
+      caseTable(rowsAll, '主辦／狀態') +
+      parkingSectionHtml(inScope, now, c => `主辦：${primaryOf(c)?.name ?? '—'}`, '主辦')
     const groupLabel = lead.teamGroup ? lead.teamGroup : '全部門'
     const html = shell(
       `每日組別彙整　${lead.name}（${groupLabel}）`,
-      `以下為您所屬組別承辦人的未決案件彙整，請督導逾期案件處理。`,
+      `以下為您所屬組別承辦人的未決案件彙整，請督導逾期案件處理。停泊案件另列於後，暫不計入逾期。`,
       body,
     )
     const to = lead.email ? [formatRecipient(lead.name, lead.email)] : []
     const ok = await safeSend(
       to,
-      `【每日組別彙整】${groupLabel}　未決 ${rowsAll.length} 件（新黃燈 ${rowsNew.length}）`,
+      `【每日組別彙整】${groupLabel}　未決 ${rowsAll.length} 件（新黃燈 ${rowsNew.length}｜停泊 ${parkedCount}）`,
       html,
       'daily_group_digest',
     )
@@ -466,18 +529,24 @@ export async function runWeeklyDeptReport(now: Dayjs = taipeiNow()): Promise<Wee
     .filter(v => !!v.employee.email)
     .map(v => formatRecipient(v.employee.name, v.employee.email as string))
 
-  // 依部門分組，僅保留黃 / 紅燈
-  const byDept = new Map<number, { name: string; rows: CaseRow[] }>()
+  // 依部門分組：亮燈（黃／紅）rows 排除停泊；停泊案件另存 parked（不論燈號）
+  const byDept = new Map<number, { name: string; rows: CaseRow[]; parked: OpenCase[] }>()
   for (const c of openCases) {
-    const light = getSlaStatus(c.commissionDate, c.preliminaryReportDate, c.status, now)
-    if (light === 'normal') continue
-    const bucket = byDept.get(c.departmentId) ?? { name: c.departmentName, rows: [] }
-    bucket.rows.push(toRow(c, now, primaryOf(c)?.name ? `主辦：${primaryOf(c)?.name}` : ''))
+    const bucket = byDept.get(c.departmentId) ?? { name: c.departmentName, rows: [], parked: [] }
+    if (c.parkingStatus) {
+      bucket.parked.push(c)
+    } else {
+      const light = getSlaStatus(c.commissionDate, c.preliminaryReportDate, c.status, now)
+      if (light !== 'normal') {
+        bucket.rows.push(toRow(c, now, primaryOf(c)?.name ? `主辦：${primaryOf(c)?.name}` : ''))
+      }
+    }
     byDept.set(c.departmentId, bucket)
   }
 
   let deptMailsSent = 0
-  for (const [deptId, { name, rows }] of Array.from(byDept.entries())) {
+  for (const [deptId, { name, rows, parked }] of Array.from(byDept.entries())) {
+    if (rows.length === 0 && parked.length === 0) continue   // 無亮燈亦無停泊 → 不寄
     const managers = mgrByDept.get(deptId) ?? []
     const to = managers
       .filter(m => !!m.email)
@@ -489,15 +558,16 @@ export async function runWeeklyDeptReport(now: Dayjs = taipeiNow()): Promise<Wee
       `<h3 style="color:#E53E3E;margin:16px 0 4px;font-size:15px">🔴 紅燈案件（D+30 未交初報／D+90 未決）　${red.length} 件</h3>` +
       caseTable(red, '主辦') +
       `<h3 style="color:#D69E2E;margin:16px 0 4px;font-size:15px">🟡 黃燈案件（D+14 未交初報）　${yellow.length} 件</h3>` +
-      caseTable(yellow, '主辦')
+      caseTable(yellow, '主辦') +
+      parkingSectionHtml(parked, now, c => primaryOf(c)?.name ? `主辦：${primaryOf(c)?.name}` : '', '主辦')
     const html = shell(
       `每週部門未決彙整　${name}`,
-      `以下為貴部門目前未決且已亮燈的案件清單，請督導承辦人加速處理。`,
+      `以下為貴部門目前未決且已亮燈的案件清單，請督導承辦人加速處理。停泊案件另列於後，暫不計入逾期督導。`,
       body,
     )
     const ok = await safeSend(
       to,
-      `【每週部門未決彙整】${name}　紅 ${red.length} / 黃 ${yellow.length} 件`,
+      `【每週部門未決彙整】${name}　紅 ${red.length} / 黃 ${yellow.length}　停泊 ${parked.length} 件`,
       html,
       'weekly_dept_report',
       vpCc,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
+import { splitFeeByRatio } from '@/lib/feeSplit'
 import { prisma } from '@/lib/prisma'
 import ExcelJS from 'exceljs'
 import dayjs from 'dayjs'
@@ -81,9 +82,10 @@ export async function GET(req: NextRequest) {
       const remarks = c.assignments.length > 1
         ? c.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
         : ''
-      for (const a of c.assignments) {
-        const ratio = a.contributionRatio ?? 0
-        const actualFee = Math.round(actualFeeFull * ratio)
+      // 純公證費依承辦比例分攤（非主辦捨去、主辦吸收剩餘）
+      const feeAmts = splitFeeByRatio(actualFeeFull, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
+      c.assignments.forEach((a, ai) => {
+        const actualFee = feeAmts[ai]
         const travelFee = a.role === '主辦' ? travelFeeFull : 0
         const subtotalFee = actualFee + travelFee
         if (!map.has(a.employeeId)) {
@@ -103,7 +105,7 @@ export async function GET(req: NextRequest) {
         g.totals.actualFee += actualFee
         g.totals.travelFee += travelFee
         g.totals.subtotalFee += subtotalFee
-      }
+      })
     }
     return Array.from(map.values())
   }

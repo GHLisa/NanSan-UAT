@@ -626,7 +626,8 @@ export default function DispatchListPage() {
                   </Col>
                   <Col span={12}>
                     <Form.Item label="保險公司" name="insuranceCompanyId" rules={[{ required: true, message: '必選' }]}>
-                      <Select options={(meta?.insuranceCompanies ?? []).map(i => ({ value: i.id, label: i.name }))}
+                      {/* 主保下拉排除「被保險人自保」（該選項僅供共保使用） */}
+                      <Select options={(meta?.insuranceCompanies ?? []).filter(i => i.name !== '被保險人自保').map(i => ({ value: i.id, label: i.name }))}
                         placeholder="請選擇"
                         onChange={v => setSelectedIcId(v)} />
                     </Form.Item>
@@ -740,7 +741,7 @@ export default function DispatchListPage() {
                             <Select allowClear showSearch placeholder="選填"
                               value={ci.companyId}
                               onChange={v => setNewCoInsurers(p => p.map((x, i) => i === idx ? { ...x, companyId: v ?? null } : x))}
-                              options={(meta?.insuranceCompanies ?? []).map(i => ({ value: i.id, label: i.name }))}
+                              options={(meta?.insuranceCompanies ?? []).slice().sort((a, b) => (a.name === '被保險人自保' ? -1 : b.name === '被保險人自保' ? 1 : 0)).map(i => ({ value: i.id, label: i.name }))}
                               filterOption={(input, opt) => (opt?.label ?? '').includes(input)}
                               style={{ width: '100%' }} />
                           </Col>
@@ -910,7 +911,7 @@ export default function DispatchListPage() {
           </Form.Item>
           <Form.Item name="insuranceCompanyId" label="保險公司" rules={[{ required: true, message: '必填' }]}>
             <Select placeholder="請選擇保險公司"
-              options={(meta?.insuranceCompanies ?? []).map(i => ({ value: i.id, label: i.name }))} />
+              options={(meta?.insuranceCompanies ?? []).filter(i => i.name !== '被保險人自保').map(i => ({ value: i.id, label: i.name }))} />
           </Form.Item>
           <Form.Item name="brokerCompanyId" label="保代/保經公司">
             <Select options={[{ value: null, label: '無' }, ...(meta?.brokerCompanies ?? []).map(b => ({ value: b.id, label: b.name }))]}

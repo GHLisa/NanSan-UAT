@@ -327,7 +327,7 @@ export default function CaseNewPage() {
           onChange={(v) => handleCoInsurerChange(record.key, 'companyId', v ?? null)}
           filterOption={(input, opt) => String(opt?.children ?? '').includes(input)}
         >
-          {meta.insuranceCompanies.map((ic) => <Option key={ic.id} value={ic.id}>{ic.name}</Option>)}
+          {meta.insuranceCompanies.slice().sort((a, b) => (a.name === '被保險人自保' ? -1 : b.name === '被保險人自保' ? 1 : 0)).map((ic) => <Option key={ic.id} value={ic.id}>{ic.name}</Option>)}
         </Select>
       ),
     },
@@ -423,7 +423,8 @@ export default function CaseNewPage() {
                   filterOption={(i, o) => String(o?.children ?? '').includes(i)}
                   onChange={(v) => setInsuranceCompanyId(v as number)}
                 >
-                  {meta.insuranceCompanies.map((ic) => <Option key={ic.id} value={ic.id}>{ic.name}</Option>)}
+                  {/* 主保下拉排除「被保險人自保」（該選項僅供共保使用） */}
+                  {meta.insuranceCompanies.filter((ic) => ic.name !== '被保險人自保').map((ic) => <Option key={ic.id} value={ic.id}>{ic.name}</Option>)}
                 </Select>
               </Form.Item>
             </Col>

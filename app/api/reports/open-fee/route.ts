@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
+import { splitFeeByRatio } from '@/lib/feeSplit'
 import { prisma } from '@/lib/prisma'
 import { caseReportYear } from '@/lib/caseYear'
 
@@ -87,8 +88,11 @@ export async function GET(req: NextRequest) {
       // [2026/07/14] - Lisa - 未決件數只計主辦；預估公證費依承辦比例分攤（主辦＋協辦各按其比例）
       const cnt = yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id && a.role === '主辦')).length
       const fee = yearCases.reduce((s, c) => {
-        const a = c.assignments.find(x => x.employeeId === emp.id)
-        return s + (a ? Math.round((c.estimatedFee ?? 0) * a.contributionRatio) : 0)
+        const idx = c.assignments.findIndex(x => x.employeeId === emp.id)
+        if (idx < 0) return s
+        // 依承辦比例分攤（非主辦捨去、主辦吸收剩餘），取本人份額
+        const amts = splitFeeByRatio(c.estimatedFee ?? 0, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
+        return s + amts[idx]
       }, 0)
       row[`cnt_${emp.id}`] = cnt
       row[`fee_${emp.id}`] = fee

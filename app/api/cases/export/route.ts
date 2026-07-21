@@ -109,8 +109,8 @@ export async function GET(req: NextRequest) {
       brokerCompany: { select: { name: true } },
       coInsurers: { include: { company: { select: { name: true } } } },
       assignments: { select: { role: true, employee: { select: { name: true } } } },
-      // P 欄：案件紀錄最新一筆（依紀錄日期排序，取第一筆）
-      caseNotes: { select: { content: true }, orderBy: { noteDate: 'desc' }, take: 1 },
+      // P 欄：案件紀錄全部事項（依紀錄日期舊→新），每筆一行「民國日期 內容」
+      caseNotes: { select: { content: true, noteDate: true }, orderBy: { noteDate: 'asc' } },
     },
     orderBy: { commissionDate: 'desc' },
   })
@@ -189,7 +189,9 @@ export async function GET(req: NextRequest) {
     ws.getCell(`M${r}`).value = est
     ws.getCell(`N${r}`).value = ded
     ws.getCell(`O${r}`).value = claim
-    ws.getCell(`P${r}`).value = c.caseNotes[0]?.content ?? ''
+    ws.getCell(`P${r}`).value = c.caseNotes
+      .map((n) => `${rocDate(n.noteDate)} ${n.content}`.trim())
+      .join('\n')
     ws.getCell(`Q${r}`).value = rocDate(c.commissionDate)
     ws.getCell(`R${r}`).value = primary?.employee.name ?? ''
     const isClosed = c.status === '已決'

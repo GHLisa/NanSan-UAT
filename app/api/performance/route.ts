@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, JWTPayload } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { splitFeeByRatio } from '@/lib/feeSplit'
 import dayjs from 'dayjs'
 
 // ── 可設定對象（對齊 demo FeeTargetPage subordinates）─────────────────────
@@ -38,7 +39,7 @@ async function calcActuals(empIds: number[], years: number[]) {
     select: {
       closeDate: true,
       actualFee: true,
-      assignments: { select: { employeeId: true, contributionRatio: true } },
+      assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
     },
   })
 
@@ -47,14 +48,18 @@ async function calcActuals(empIds: number[], years: number[]) {
   for (const c of closedCases) {
     const year = dayjs(c.closeDate).year()
     if (!yearSet.has(year)) continue
-    for (const a of c.assignments) {
-      if (!empSet.has(a.employeeId)) continue
+    // 依承辦比例分攤 actualFee（非主辦捨去、主辦吸收剩餘）
+    const amts = c.actualFee
+      ? splitFeeByRatio(c.actualFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
+      : null
+    c.assignments.forEach((a, i) => {
+      if (!empSet.has(a.employeeId)) return
       const key = `${a.employeeId}-${year}`
       const entry = map.get(key) ?? { fee: 0, count: 0 }
       entry.count += 1
-      if (c.actualFee) entry.fee += Math.round(c.actualFee * (a.contributionRatio ?? 1))
+      if (amts) entry.fee += amts[i]
       map.set(key, entry)
-    }
+    })
   }
   return map
 }
@@ -69,19 +74,21 @@ async function calcInventory(empIds: number[]) {
     where: { status: '未決' },
     select: {
       estimatedFee: true,
-      assignments: { select: { employeeId: true, contributionRatio: true } },
+      assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
     },
   })
 
   const empSet = new Set(empIds)
   for (const c of openCases) {
-    for (const a of c.assignments) {
-      if (!empSet.has(a.employeeId)) continue
+    // 依承辦比例分攤 estimatedFee（非主辦捨去、主辦吸收剩餘）
+    const amts = splitFeeByRatio(c.estimatedFee ?? 0, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
+    c.assignments.forEach((a, i) => {
+      if (!empSet.has(a.employeeId)) return
       const entry = map.get(a.employeeId) ?? { fee: 0, count: 0 }
       entry.count += 1
-      entry.fee += Math.round((c.estimatedFee ?? 0) * (a.contributionRatio ?? 1))
+      entry.fee += amts[i]
       map.set(a.employeeId, entry)
-    }
+    })
   }
   return map
 }
