@@ -16,7 +16,7 @@ import { api } from '@/lib/api'
 import { splitFeeByRatio } from '@/lib/feeSplit'
 import { useAuth } from '@/components/layout/AuthProvider'
 import {
-  CASE_STAGES, DOCUMENT_TYPES, STAGE_DOC_TYPES, INTERIM_DOC_TYPES, getApprovalFlow,
+  CASE_STAGES, DOCUMENT_TYPES, STAGE_DOC_TYPES, INTERIM_DOC_TYPES, getApprovalFlow, getClaimAmount,
 } from '@/lib/approvalFlow'
 import dayjs from 'dayjs'
 
@@ -169,6 +169,11 @@ export default function CaseDetailPage() {
   const [reviewerRejectOpen, setReviewerRejectOpen] = useState(false)
   const [reviewerRejectForm] = Form.useForm()
 
+  // [2026/07/28] - Lisa - 交辦事項修改（檢視模式入口；執行副總無案件編輯權，只能由此修改）
+  const [assignNotesOpen, setAssignNotesOpen] = useState(false)
+  const [assignNotesDraft, setAssignNotesDraft] = useState('')
+  const [savingAssignNotes, setSavingAssignNotes] = useState(false)
+
   const [isEditing, setIsEditing] = useState(false)
   const [editForm] = Form.useForm()
   const [editAssignments, setEditAssignments] = useState<Assignment[]>([])
@@ -256,6 +261,16 @@ export default function CaseDetailPage() {
     if (role === 'admin_staff' && (session?.departmentId == null || session.departmentId === caseData.departmentId)) return true
     return false
   }, [caseData, isClosed, isAssignee, role, session])
+
+  // [2026/07/28] - Lisa - 交辦事項修改權限：部門主管（本部門）／行政人員（有部門限本部門）／
+  // 執行副總（全公司）／系統管理員（全公司），且案件未決。承辦人不可修改。
+  const canEditAssignmentNotes = useMemo(() => {
+    if (!caseData || isClosed) return false
+    if (role === 'sysadmin' || role === 'vp') return true
+    if (role === 'dept_manager') return session?.departmentId === caseData.departmentId
+    if (role === 'admin_staff') return session?.departmentId == null || session.departmentId === caseData.departmentId
+    return false
+  }, [caseData, isClosed, role, session])
 
   // 結案日期溯及修正權限：sysadmin／本部門主管／行政人員（有部門限本部門、無部門全公司），且案件為已決
   const canFixCloseDate = useMemo(() => {
@@ -361,6 +376,7 @@ export default function CaseDetailPage() {
       travelOtherExpense: caseData.travelOtherExpense,
       isSpecialCase: caseData.isSpecialCase ?? false,
       notes: caseData.notes ?? '',
+      assignmentNotes: caseData.assignmentNotes ?? '',
     })
     setEditAssignments(caseData.assignments.map((a) => ({ ...a })))
     setEditCoInsurers((caseData.coInsurers ?? []).map((c, i) => ({ ...c, _key: i })))
@@ -429,6 +445,8 @@ export default function CaseDetailPage() {
       travelOtherExpense: values.travelOtherExpense ?? null,
       isSpecialCase: values.isSpecialCase ?? false,
       notes: values.notes || null,
+      // [2026/07/28] - Lisa - 交辦事項僅特定角色可改；無權者不送出此欄位，避免 API 403
+      ...(canEditAssignmentNotes ? { assignmentNotes: (values.assignmentNotes as string) ?? '' } : {}),
       assignees: editAssignments.map((a) => ({
         employeeId: a.employeeId,
         role: a.role,
@@ -449,6 +467,23 @@ export default function CaseDetailPage() {
       loadCase()
     } else {
       message.error(res.error ?? '更新失敗')
+    }
+  }
+
+  // [2026/07/28] - Lisa - 交辦事項修改（檢視模式）：走 action=updateAssignmentNotes，權限由 API 端把關
+  async function handleSaveAssignmentNotes() {
+    setSavingAssignNotes(true)
+    const res = await api.patch(`/api/cases/${id}`, {
+      action: 'updateAssignmentNotes',
+      assignmentNotes: assignNotesDraft,
+    })
+    setSavingAssignNotes(false)
+    if (res.success) {
+      message.success('交辦事項已更新')
+      setAssignNotesOpen(false)
+      loadCase()
+    } else {
+      message.error(res.error ?? '交辦事項更新失敗')
     }
   }
 
@@ -1049,6 +1084,22 @@ export default function CaseDetailPage() {
                       <Select allowClear placeholder="無" options={PARKING_STATUSES.map((s) => ({ value: s, label: s }))} />
                     </Form.Item>
                   </Col>
+                  {/* [2026/07/28] - Lisa - 交辦事項原為派案時填寫且不可修改，現開放部門主管／行政人員／
+                      執行副總／系統管理員修改；無權限者仍顯示但唯讀 */}
+                  <Col span={24}>
+                    <Form.Item
+                      name="assignmentNotes"
+                      label="交辦事項"
+                      style={{ marginBottom: 4 }}
+                      extra={canEditAssignmentNotes ? undefined : '交辦事項由派案時填寫，僅部門主管／行政人員／執行副總／系統管理員可修改'}
+                    >
+                      <Input.TextArea
+                        placeholder={canEditAssignmentNotes ? '請輸入交辦事項' : '無（派案時未填寫）'}
+                        autoSize={{ minRows: 1, maxRows: 3 }}
+                        disabled={!canEditAssignmentNotes}
+                      />
+                    </Form.Item>
+                  </Col>
                   <Col span={24}>
                     <Form.Item
                       label={
@@ -1141,7 +1192,20 @@ export default function CaseDetailPage() {
                       : '—'}
                   </Descriptions.Item>
                   <Descriptions.Item label="交辦事項" span={2}>
-                    {caseData.assignmentNotes ? <Text type="warning">{caseData.assignmentNotes}</Text> : '—'}
+                    <Space size={6}>
+                      {caseData.assignmentNotes ? <Text type="warning">{caseData.assignmentNotes}</Text> : '—'}
+                      {/* [2026/07/28] - Lisa - 交辦事項修改入口：僅在拿不到編輯表單時顯示，避免與編輯表單重複。
+                          適用情境：(1) 執行副總無案件編輯權（canOperate 不含 vp）
+                                    (2) 由文件審核進入案件（fromReviews 時不顯示編輯鈕） */}
+                      {canEditAssignmentNotes && (!canOperate || fromReviews) && (
+                        <Button
+                          size="small" type="link" icon={<EditOutlined />}
+                          onClick={() => { setAssignNotesDraft(caseData.assignmentNotes ?? ''); setAssignNotesOpen(true) }}
+                        >
+                          修改
+                        </Button>
+                      )}
+                    </Space>
                   </Descriptions.Item>
                   <Descriptions.Item label="共保資訊" span={2}>
                     {!caseData.coInsurers?.length ? '—' : (() => {
@@ -1575,6 +1639,31 @@ export default function CaseDetailPage() {
         }]}
       />
 
+      {/* ── 交辦事項修改 Modal（2026/07/28）── */}
+      <Modal
+        title={<Space><EditOutlined style={{ color: '#1B4F8C' }} /><span>修改交辦事項</span></Space>}
+        open={assignNotesOpen}
+        onCancel={() => setAssignNotesOpen(false)}
+        onOk={handleSaveAssignmentNotes}
+        okText="儲存"
+        cancelText="取消"
+        confirmLoading={savingAssignNotes}
+        okButtonProps={{ style: { background: '#1B4F8C' } }}
+        width={520}
+        destroyOnClose
+      >
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          交辦事項原為派案時填寫，修改後會寫入案件修改記錄。
+        </Text>
+        <Input.TextArea
+          value={assignNotesDraft}
+          onChange={(e) => setAssignNotesDraft(e.target.value)}
+          placeholder="請輸入交辦事項（清空表示不再顯示交辦事項）"
+          rows={4}
+          style={{ marginTop: 8 }}
+        />
+      </Modal>
+
       {/* ── 撤案 Modal（FR-11/48）── */}
       <Modal
         title={<Space><StopOutlined style={{ color: '#ff4d4f' }} /><span>撤案確認</span></Space>}
@@ -1776,11 +1865,13 @@ export default function CaseDetailPage() {
           )}
 
           {selectedDocType && (() => {
-            const flow = getApprovalFlow(deptCode, selectedDocType, caseData.estimatedAmount, caseData.isSpecialCase)
+            // [2026/07/28] - Lisa - 副總金額門檻判定基準由「預估金額」改為「預估賠償額」（預估金額 − 自負額）
+            const claimAmount = getClaimAmount(caseData.estimatedAmount, caseData.deductible)
+            const flow = getApprovalFlow(deptCode, selectedDocType, claimAmount, caseData.isSpecialCase)
             // [2026/07/15] - Lisa - 合併送審：結案報告書隨附勾選「公證費 DEBIT NOTE」→ 預覽取較嚴格(含VP)路由，注意事項合併呈現 - Start
             const merged = selectedDocType === '結案報告書' && dnChecked
             const baseNeedsVP = flow.alwaysVP || flow.amountVP
-            const dnFlow = merged ? getApprovalFlow(deptCode, '公證費 DEBIT NOTE', caseData.estimatedAmount, caseData.isSpecialCase) : null
+            const dnFlow = merged ? getApprovalFlow(deptCode, '公證費 DEBIT NOTE', claimAmount, caseData.isSpecialCase) : null
             const steps = merged && dnFlow ? dnFlow.steps : flow.steps
             // [2026/07/16] - Lisa - 合併送審時，節點7（結案報告書）與節點8（DEBIT NOTE）注意事項分段呈現，便於辨別 7、8 各自的說明
             const noteGroups = merged && dnFlow

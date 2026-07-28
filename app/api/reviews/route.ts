@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
-import { getApprovalFlow, INTERIM_DOC_TYPES, STAGE_DOC_TYPES, laterStage } from '@/lib/approvalFlow'
+import { getApprovalFlow, getClaimAmount, INTERIM_DOC_TYPES, STAGE_DOC_TYPES, laterStage } from '@/lib/approvalFlow'
 import { buildReviewWhere, type ReviewTab } from '@/lib/reviewScope'
 import { mailReviewSubmitted } from '@/lib/caseMail'
 import { reviewPendingNotification } from '@/lib/caseNotify'
@@ -124,6 +124,7 @@ export async function POST(req: NextRequest) {
       currentStage: true,
       departmentId: true,
       estimatedAmount: true,
+      deductible: true, // [2026/07/28] - Lisa - 副總門檻改判預估賠償額（預估金額−自負額）
       estimatedFee: true,
       actualFee: true, // [2026/06/18] - Lisa - Issue #8 追加公證費改加至實際公證費 - Start/end
       travelOtherExpense: true, // [2026/07/15] - Lisa - 合併送審/獨立DEBIT NOTE 節點8必填檢查用
@@ -227,10 +228,15 @@ export async function POST(req: NextRequest) {
 
   // ── (c) FR-47/90 伺服端計算審核路由 ─────────────────────────────────
   const categoryCode = DEPT_CODE_MAP[caseData.department.code ?? ''] ?? caseData.department.code
+  // [2026/07/28] - Lisa - 副總金額門檻判定基準由「預估金額」改為「預估賠償額」（預估金額 − 自負額）
+  const claimAmount = getClaimAmount(
+    caseData.estimatedAmount != null ? Number(caseData.estimatedAmount) : null,
+    caseData.deductible != null ? Number(caseData.deductible) : null
+  )
   const flow = getApprovalFlow(
     categoryCode,
     body.documentType,
-    caseData.estimatedAmount != null ? Number(caseData.estimatedAmount) : null,
+    claimAmount,
     caseData.isSpecialCase
   )
   // [2026/07/15] - Lisa - 合併送審強制送VP（DEBIT NOTE 各分類皆 alwaysVP，合併即取較嚴格路由）

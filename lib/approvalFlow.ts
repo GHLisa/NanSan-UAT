@@ -67,9 +67,22 @@ const DEPT_CATEGORY: Record<string, string> = {
 
 // ── 副總審閱規則查表 ─────────────────────────────────────────────────
 // alwaysVP: true  → 不論金額一律呈送副總
-// threshold: N    → 估計金額 ≥ N 才須呈送副總
+// threshold: N    → 預估賠償額 ≥ N 才須呈送副總
 // 未列文件類型 → 套用預設門檻 100 萬
 const DEFAULT_THRESHOLD = 1_000_000
+
+// [2026/07/28] - Lisa - 副總金額門檻判定基準由「預估金額」改為「預估賠償額」- Start
+/**
+ * 預估賠償額 ＝ 預估金額 − 自負額（負值以 0 計），與案件金額資訊卡、Excel 匯出同一算法。
+ * 副總審閱金額門檻（threshold）一律以此值比較，而非未扣自負額的預估金額。
+ */
+export function getClaimAmount(
+  estimatedAmount: number | null | undefined,
+  deductible: number | null | undefined
+): number {
+  return Math.max(0, (estimatedAmount ?? 0) - (deductible ?? 0))
+}
+// [2026/07/28] - Lisa - 副總金額門檻判定基準由「預估金額」改為「預估賠償額」- End
 
 interface VpRule {
   alwaysVP?: boolean
@@ -151,7 +164,8 @@ const VP_RULES: Record<string, Record<string, VpRule>> = {
 function vpLine(alwaysVP: boolean, threshold: number) {
   if (alwaysVP) return '不論金額均須呈送執行副總審閱'
   const wan = Math.round(threshold / 10000)
-  return `預估金額 ≥ ${wan} 萬須轉呈執行副總審閱`
+  // [2026/07/28] - Lisa - 門檻基準改為預估賠償額（預估金額 − 自負額）
+  return `預估賠償額（預估金額−自負額）≥ ${wan} 萬須轉呈執行副總審閱`
 }
 
 type NotesFn = (isLiability: boolean, alwaysVP: boolean, threshold: number) => string[]
@@ -232,16 +246,17 @@ export interface ApprovalFlow {
 }
 
 /**
- * 依部門、文件類型、估計金額回傳審核流程與注意事項（FR-47 / FR-90）
- * @param deptCode        部門代碼（NL / CL / KL / NB / CB / KB / NF / KF）
- * @param documentType    文件類型（DOCUMENT_TYPES 之一）
- * @param estimatedAmount 估計損失金額
- * @param isSpecialCase   特殊案件旗標，true 時不論金額均必送執行副總
+ * 依部門、文件類型、預估賠償額回傳審核流程與注意事項（FR-47 / FR-90）
+ * @param deptCode      部門代碼（NL / CL / KL / NB / CB / KB / NF / KF）
+ * @param documentType  文件類型（DOCUMENT_TYPES 之一）
+ * @param claimAmount   預估賠償額（＝預估金額 − 自負額，請用 getClaimAmount 計算）
+ *                      [2026/07/28] - Lisa - 原為預估金額，改為已扣自負額的預估賠償額
+ * @param isSpecialCase 特殊案件旗標，true 時不論金額均必送執行副總
  */
 export function getApprovalFlow(
   deptCode: string | null | undefined,
   documentType: string,
-  estimatedAmount: number | null | undefined,
+  claimAmount: number | null | undefined,
   isSpecialCase = false
 ): ApprovalFlow {
   const category = DEPT_CATEGORY[deptCode ?? ''] ?? '工程_台北'
@@ -255,7 +270,7 @@ export function getApprovalFlow(
   const baseThreshold = rule.threshold ?? DEFAULT_THRESHOLD
 
   const alwaysVP = baseAlwaysVP || isSpecialCase
-  const amountVP = !alwaysVP && (estimatedAmount ?? 0) >= baseThreshold
+  const amountVP = !alwaysVP && (claimAmount ?? 0) >= baseThreshold
 
   const steps: ApprovalStep[] = [
     { key: 'draft', title: '承辦人撰稿', desc: '完成文件後送組長互核' },

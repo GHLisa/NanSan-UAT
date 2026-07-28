@@ -74,7 +74,8 @@ const DETAIL_COLS = [
       if (r.type !== 'case') return null
       return r.caseNumber
     }},
-  { title: '被保險人', key: 'insuredName', ellipsis: true,
+  // [2026/07/27] - Lisa - 補固定寬度，避免高顯示比例(縮放)時本欄被壓縮至 0 而消失（原本唯一沒設 width）
+  { title: '被保險人', key: 'insuredName', width: 200, ellipsis: true,
     render: (_: unknown, r: FlatRow) => r.type !== 'case' ? null : r.insuredName },
   { title: '經辦人', key: 'empName', width: 80,
     render: (_: unknown, r: FlatRow) => r.type !== 'case' ? null : r.empName },
@@ -113,7 +114,7 @@ function DetailTable({ groups, grandTotals }: { groups: EmpGroup[]; grandTotals:
       rowKey="key"
       size="small"
       pagination={false}
-      scroll={{ x: 800 }}
+      scroll={{ x: 1104 }}
       onRow={r => ({
         style: {
           background: r.type === 'separator' ? '#F5F7FA' : r.type === 'subtotal' ? SUB_BG : GROUP_BG[r.groupIdx % 2],

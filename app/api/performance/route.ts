@@ -6,24 +6,63 @@ import dayjs from 'dayjs'
 
 // ── 可設定對象（對齊 demo FeeTargetPage subordinates）─────────────────────
 // team_lead：同部門同組別的承辦人；dept_manager：本部門承辦人＋組長；其餘角色無對象
+// [2026/07/28] - Lisa - 擴大可設定對象：組長納入組長、部門主管納入部門主管、vp／行政人員／系統管理員可設定全公司
+// team_lead：同部門同組別的承辦人＋組長
+// dept_manager：本部門承辦人＋組長＋部門主管
+// vp／admin_staff／sysadmin：全公司承辦人＋組長＋部門主管（不分部門）
+const TARGET_ROLES = ['handler', 'team_lead', 'dept_manager']
+const COMPANY_WIDE_ROLES = ['vp', 'admin_staff', 'sysadmin']
+
 async function getSubordinates(session: JWTPayload) {
   let roleWhere: Record<string, unknown> | null = null
-  if (session.role === 'team_lead' && session.departmentId) {
-    roleWhere = { departmentId: session.departmentId, teamGroup: session.teamGroup, role: 'handler' }
+  // [2026/07/28] - Lisa - 承辦人：僅本人一筆（唯讀查看自己的目標與達成；寫入由 POST 角色驗證擋掉）
+  if (session.role === 'handler') {
+    roleWhere = { employeeId: parseInt(session.sub) }
+  } else if (session.role === 'team_lead' && session.departmentId) {
+    roleWhere = { departmentId: session.departmentId, teamGroup: session.teamGroup, role: { in: ['handler', 'team_lead'] } }
   } else if (session.role === 'dept_manager' && session.departmentId) {
-    roleWhere = { departmentId: session.departmentId, role: { in: ['handler', 'team_lead'] } }
+    roleWhere = { departmentId: session.departmentId, role: { in: TARGET_ROLES } }
+  } else if (COMPANY_WIDE_ROLES.includes(session.role)) {
+    roleWhere = { role: { in: TARGET_ROLES } }
   }
   if (!roleWhere) return []
 
-  const roles = await prisma.employeeRole.findMany({ where: roleWhere, select: { employeeId: true } })
-  const ids = [...new Set(roles.map((r) => r.employeeId))]
-  if (ids.length === 0) return []
-
-  return prisma.employee.findMany({
-    where: { id: { in: ids }, isActive: true },
-    select: { id: true, name: true },
-    orderBy: { id: 'asc' },
+  // [2026/07/28] - Lisa - 一併帶回部門／組別，並依「部門代碼→組別→員工 ID」排序
+  const roles = await prisma.employeeRole.findMany({
+    where: { ...roleWhere, employee: { isActive: true } },
+    select: {
+      employeeId: true,
+      teamGroup: true,
+      isPrimary: true,
+      employee: { select: { name: true } },
+      department: { select: { name: true, code: true } },
+    },
   })
+
+  // 業績目標為「一員工一年一筆」，故跨部門／跨組別兼職者只取一筆（主要角色 isPrimary 優先）
+  const byEmployee = new Map<
+    number,
+    { id: number; name: string; departmentName: string; departmentCode: string; teamGroup: string | null; isPrimary: boolean }
+  >()
+  for (const r of roles) {
+    const prev = byEmployee.get(r.employeeId)
+    if (prev && !(r.isPrimary && !prev.isPrimary)) continue
+    byEmployee.set(r.employeeId, {
+      id: r.employeeId,
+      name: r.employee.name,
+      departmentName: r.department?.name ?? '',
+      departmentCode: r.department?.code ?? '',
+      teamGroup: r.teamGroup,
+      isPrimary: r.isPrimary,
+    })
+  }
+
+  return [...byEmployee.values()].sort(
+    (a, b) =>
+      a.departmentCode.localeCompare(b.departmentCode) ||
+      (a.teamGroup ?? '').localeCompare(b.teamGroup ?? '') ||
+      a.id - b.id
+  )
 }
 
 // ── 年度實績：closeDate 為該年度的案件，依貢獻比例分攤 actualFee ───────────
@@ -111,24 +150,36 @@ export async function GET(req: NextRequest) {
       orderBy: [{ year: 'desc' }, { employeeId: 'asc' }],
     })
     const actuals = await calcActuals(subIds, [...new Set(targets.map((t) => t.year))])
+    // [2026/07/28] - Lisa - 歷史查詢亦顯示部門／組別，排序為年度（新→舊）→部門→組別→員工
+    const empMap = new Map(subordinates.map((s) => [s.id, s]))
+    const empOrder = new Map(subordinates.map((s, i) => [s.id, i]))
 
     return NextResponse.json({
       success: true,
-      data: targets.map((t) => {
-        const actual = actuals.get(`${t.employeeId}-${t.year}`)
-        return {
-          id: t.id,
-          employeeId: t.employeeId,
-          employeeName: t.employee.name,
-          year: t.year,
-          targetAmount: t.targetAmount,
-          targetCaseCount: t.targetCaseCount,
-          actualFee: actual?.fee ?? 0,
-          actualCaseCount: actual?.count ?? 0,
-          setByName: t.setter.name,
-          setAt: t.setAt.toISOString(),
-        }
-      }),
+      data: targets
+        .map((t) => {
+          const actual = actuals.get(`${t.employeeId}-${t.year}`)
+          const emp = empMap.get(t.employeeId)
+          return {
+            id: t.id,
+            employeeId: t.employeeId,
+            employeeName: t.employee.name,
+            departmentName: emp?.departmentName ?? '',
+            teamGroup: emp?.teamGroup ?? null,
+            year: t.year,
+            targetAmount: t.targetAmount,
+            targetCaseCount: t.targetCaseCount,
+            actualFee: actual?.fee ?? 0,
+            actualCaseCount: actual?.count ?? 0,
+            setByName: t.setter.name,
+            setAt: t.setAt.toISOString(),
+          }
+        })
+        .sort(
+          (a, b) =>
+            b.year - a.year ||
+            (empOrder.get(a.employeeId) ?? 0) - (empOrder.get(b.employeeId) ?? 0)
+        ),
     })
   }
 
@@ -150,7 +201,12 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     success: true,
     data: {
-      employees: subordinates,
+      employees: subordinates.map((e) => ({
+        id: e.id,
+        name: e.name,
+        departmentName: e.departmentName,
+        teamGroup: e.teamGroup,
+      })),
       rows: subordinates.map((e) => {
         const cur = targetMap.get(`${e.id}-${year}`)
         const ref = targetMap.get(`${e.id}-${refYear}`)
@@ -159,6 +215,8 @@ export async function GET(req: NextRequest) {
         return {
           employeeId: e.id,
           name: e.name,
+          departmentName: e.departmentName,
+          teamGroup: e.teamGroup,
           curTargetAmount: cur?.targetAmount ?? null,
           curTargetCaseCount: cur?.targetCaseCount ?? null,
           refTargetAmount: ref?.targetAmount ?? null,
@@ -178,7 +236,8 @@ export async function POST(req: NextRequest) {
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
 
   // 角色驗證：僅組長／部門主管可設定業績目標（對齊 demo 選單權限）
-  if (session.role !== 'team_lead' && session.role !== 'dept_manager') {
+  // [2026/07/28] - Lisa - 開放 vp／行政人員／系統管理員設定（全公司範圍）
+  if (!['team_lead', 'dept_manager', ...COMPANY_WIDE_ROLES].includes(session.role)) {
     return NextResponse.json({ success: false, error: '無權限設定業績目標' }, { status: 403 })
   }
 

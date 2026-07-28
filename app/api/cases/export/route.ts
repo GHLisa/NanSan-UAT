@@ -98,6 +98,8 @@ export async function GET(req: NextRequest) {
       { insuredName: { contains: keyword, mode: 'insensitive' } },
       { policyNumber: { contains: keyword, mode: 'insensitive' } },
       { insuranceCompany: { name: { contains: keyword, mode: 'insensitive' } } },
+      // [2026/07/28] - Lisa - 關鍵字搜尋新增保代/保經公司名稱（與 /api/cases 查詢條件一致）
+      { brokerCompany: { name: { contains: keyword, mode: 'insensitive' } } },
     ]
   }
 

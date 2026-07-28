@@ -1,14 +1,17 @@
 export function getMenuPermissions(role: string): string[] {
   const base = ['dashboard', 'cases', 'settlements', 'notifications', 'admin-fee']
   const perRole: Record<string, string[]> = {
-    handler: [...base, 'dispatch', 'reviews', 'reports', 'case-detail-report'],
+    // [2026/07/28] - Lisa - 純公證費業績設定（fee-target）開放承辦人：僅可查自己、且唯讀（不可設定）
+    handler: [...base, 'dispatch', 'reviews', 'fee-target', 'reports', 'case-detail-report'],
     team_lead: [...base, 'dispatch', 'reviews', 'fee-target', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report'],
     dept_manager: [...base, 'dispatch', 'reviews', 'fee-target', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report'],
-    vp: [...base, 'dispatch', 'reviews', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report'],
+    // [2026/07/28] - Lisa - 純公證費業績設定（fee-target）開放副總，可設定全公司
+    vp: [...base, 'dispatch', 'reviews', 'fee-target', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report'],
     // [2026/07/01] - Lisa - 基礎資料開放行政人員：admin（顯示系統管理群組）＋ admin-master（僅基礎資料子項）
     // [2026/07/02] - Lisa - 公證編號修正（admin-case-number）開放行政人員
     // [2026/07/03] - Lisa - 出具報告作業（report-issue）開放行政人員
-    admin_staff: [...base, 'dispatch', 'reviews', 'report-issue', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report', 'admin', 'admin-master', 'admin-users', 'admin-case-number'],
+    // [2026/07/28] - Lisa - 純公證費業績設定（fee-target）開放行政人員，可設定全公司
+    admin_staff: [...base, 'dispatch', 'reviews', 'report-issue', 'fee-target', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report', 'admin', 'admin-master', 'admin-users', 'admin-case-number'],
     // sysadmin 需列出各子項 key（選單改為逐子項授權），維持全項開放
     // [2026/07/02] - Lisa - 新增公證編號修正 admin-case-number
     // [2026/07/03] - Lisa - 出具報告作業 report-issue

@@ -344,9 +344,10 @@ export default function CasesPage() {
         <Card size="small">
           {/* 第一列 */}
           <Row gutter={[8, 8]} align="bottom" style={{ marginBottom: 8 }}>
-            <Col flex="280px">
-              <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>
-                可搜尋：公證編號 / 被保險人 / 保險公司 / 保單號碼
+            {/* [2026/07/28] - Lisa - 提示文字加入「保代保經」後變長，加寬欄位並禁止折行 */}
+            <Col flex="340px">
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 2, whiteSpace: 'nowrap' }}>
+                可搜尋：公證編號 / 被保險人 / 保險公司 / 保單號碼 / 保代保經
               </div>
               <Search
                 placeholder="關鍵字搜尋"

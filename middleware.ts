@@ -16,7 +16,7 @@ const ROLE_GUARDED_ROUTES: { prefix: string; roles: string[] }[] = [
   { prefix: '/admin/case-number', roles: ['sysadmin', 'admin_staff'] }, // [2026/07/02] Lisa - 公證編號修正開放行政人員
   { prefix: '/report-issue',      roles: ['sysadmin', 'admin_staff'] }, // [2026/07/03] Lisa - 出具報告作業（API 內另做角色把關）
   { prefix: '/admin/login-logs',  roles: ['sysadmin'] },
-  { prefix: '/performance',       roles: ['team_lead', 'dept_manager'] },
+  { prefix: '/performance',       roles: ['handler', 'team_lead', 'dept_manager', 'vp', 'admin_staff', 'sysadmin'] }, // [2026/07/28] Lisa - 業績設定開放副總／行政人員／系統管理員（可設定全公司）＋承辦人（僅自己、唯讀）
 ]
 
 export async function middleware(req: NextRequest) {

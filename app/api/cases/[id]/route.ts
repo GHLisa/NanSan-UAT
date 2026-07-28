@@ -54,7 +54,8 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       insuranceCompanyName: c.insuranceCompany.name,
       insuranceCompanyCode: c.insuranceCompany.code,
       brokerCompanyName: c.brokerCompany?.name ?? null,
-      assignmentNotes: c.dispatchEntry?.assignmentNotes ?? null,
+      // [2026/07/28] - Lisa - 交辦事項：Case 欄位優先（成案後可修改），未設定時回退派案池原始交辦事項
+      assignmentNotes: c.assignmentNotes ?? c.dispatchEntry?.assignmentNotes ?? null,
       incidentDate: c.incidentDate.toISOString(),
       commissionDate: c.commissionDate.toISOString(),
       preliminaryReportDate: c.preliminaryReportDate?.toISOString() ?? null,
@@ -145,8 +146,32 @@ const FIELD_LABELS: Record<string, string> = {
   travelOtherExpense: '差旅其他費',
   actualFee: '實際公證費',
   isSpecialCase: '特殊案件',
-  notes: '交辦事項',
+  notes: '備註', // [2026/07/28] - Lisa - 修正標籤：Case.notes 對應畫面「備註」（交辦事項另存 assignmentNotes）
+  assignmentNotes: '交辦事項',
   status: '狀態',
+}
+
+// [2026/07/28] - Lisa - 交辦事項可修改角色：部門主管（限本部門）／行政人員（有部門限本部門、無部門全公司）／
+// 執行副總（全公司）／系統管理員（全公司）。承辦人不可修改（交辦事項為交辦方的指示）。
+function canEditAssignmentNotes(
+  session: { role: string; departmentId: number | null },
+  c: { departmentId: number },
+): boolean {
+  if (session.role === 'sysadmin' || session.role === 'vp') return true
+  if (session.role === 'dept_manager') return session.departmentId === c.departmentId
+  if (session.role === 'admin_staff') return session.departmentId == null || session.departmentId === c.departmentId
+  return false
+}
+
+// 交辦事項現值（比對基準）：Case 欄位優先，未設定時回退派案池原始值；空字串代表已被明確清空
+async function currentAssignmentNotes(c: { assignmentNotes: string | null; dispatchEntryId: number | null }): Promise<string> {
+  if (c.assignmentNotes != null) return c.assignmentNotes
+  if (!c.dispatchEntryId) return ''
+  const d = await prisma.dispatchQueue.findUnique({
+    where: { id: c.dispatchEntryId },
+    select: { assignmentNotes: true },
+  })
+  return d?.assignmentNotes ?? ''
 }
 
 const DATE_FIELDS = new Set([
@@ -334,6 +359,33 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ success: true, data: updated })
   }
 
+  // ── 交辦事項單獨修改 ────────────────────────────────────────────
+  // [2026/07/28] - Lisa - 執行副總無案件編輯權（assertCanEdit 不含 vp），故交辦事項另走此路徑，
+  // 由 canEditAssignmentNotes 自行把關；部門主管／行政人員／系統管理員亦可由此或編輯表單修改。
+  if (body.action === 'updateAssignmentNotes') {
+    if (existing.status !== '未決') {
+      return NextResponse.json({ success: false, error: '已決／銷案案件不可修改交辦事項' }, { status: 409 })
+    }
+    if (!canEditAssignmentNotes(session, existing)) {
+      return NextResponse.json({ success: false, error: '無權限修改交辦事項' }, { status: 403 })
+    }
+    const next = String(body.assignmentNotes ?? '').trim()
+    const current = await currentAssignmentNotes(existing)
+    if (next === current) return NextResponse.json({ success: true, data: existing })
+
+    await prisma.$transaction([
+      prisma.case.update({ where: { id }, data: { assignmentNotes: next } }),
+      prisma.caseLog.create({
+        data: {
+          caseId: id, employeeId: empId, fieldName: '交辦事項',
+          oldValue: current || null, newValue: next || null, logType: 'edit',
+        },
+      }),
+    ])
+    const updated = await prisma.case.findUnique({ where: { id } })
+    return NextResponse.json({ success: true, data: updated })
+  }
+
   // ── 一般編輯（含承辦人整批覆寫 FR-45）─────────────────────────
   const perm = await assertCanEdit(session, id)
   if (!perm.ok) return NextResponse.json({ success: false, error: perm.error }, { status: perm.status })
@@ -404,7 +456,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const logs: { fieldName: string; oldValue: string | null; newValue: string | null }[] = []
 
   for (const [key, value] of Object.entries(body)) {
-    if (key === 'assignees' || key === 'coInsurers' || key === 'action' || key === 'cancelReason' || key === 'caseNumber') continue // caseNumber 成案後不可修改
+    // caseNumber 成案後不可修改；assignmentNotes 另做角色把關與回退比對（見下方）
+    if (key === 'assignees' || key === 'coInsurers' || key === 'action' || key === 'cancelReason' || key === 'caseNumber' || key === 'assignmentNotes') continue
     if (!(key in existing)) continue
 
     let normalized: unknown = value
@@ -418,6 +471,20 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     if (oldVal !== cmpNew) {
       updates[key] = normalized
       logs.push({ fieldName: FIELD_LABELS[key] ?? key, oldValue: oldVal || null, newValue: cmpNew || null })
+    }
+  }
+
+  // [2026/07/28] - Lisa - 交辦事項：僅特定角色可改；比對基準為「Case 值 → 派案池原值」，
+  // 未實際變更則不寫入、不寫 log（避免舊案第一次儲存就產生假異動）
+  if ('assignmentNotes' in body) {
+    const next = String(body.assignmentNotes ?? '').trim()
+    const current = await currentAssignmentNotes(existing)
+    if (next !== current) {
+      if (!canEditAssignmentNotes(session, existing)) {
+        return NextResponse.json({ success: false, error: '無權限修改交辦事項' }, { status: 403 })
+      }
+      updates.assignmentNotes = next
+      logs.push({ fieldName: '交辦事項', oldValue: current || null, newValue: next || null })
     }
   }
 

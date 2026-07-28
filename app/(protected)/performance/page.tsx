@@ -7,6 +7,7 @@ import {
 import { SaveOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { api } from '@/lib/api'
+import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
 
 const { Title, Text } = Typography
@@ -14,9 +15,22 @@ const { Title, Text } = Typography
 const CURRENT_YEAR = dayjs().year()
 const YEAR_OPTIONS = [CURRENT_YEAR - 2, CURRENT_YEAR - 1, CURRENT_YEAR].map((y) => ({ value: y, label: `${y} 年` }))
 
+// [2026/07/28] - Lisa - 可設定全公司的角色（設定對象跨部門，故提供部門篩選）
+const COMPANY_WIDE_ROLES = ['vp', 'admin_staff', 'sysadmin']
+
+// [2026/07/28] - Lisa - 新增部門／組別欄位（後端已依部門→組別→員工排序）
+interface EmployeeOption {
+  id: number
+  name: string
+  departmentName: string
+  teamGroup: string | null
+}
+
 interface SettingRow {
   employeeId: number
   name: string
+  departmentName: string
+  teamGroup: string | null
   curTargetAmount: number | null
   curTargetCaseCount: number | null
   refTargetAmount: number | null
@@ -31,6 +45,8 @@ interface HistoryRow {
   id: number
   employeeId: number
   employeeName: string
+  departmentName: string
+  teamGroup: string | null
   year: number
   targetAmount: number | null
   targetCaseCount: number | null
@@ -57,9 +73,15 @@ function pctTag(actual: number, target: number | null | undefined) {
 }
 
 export default function PerformancePage() {
+  const { session } = useAuth()
+  const canFilterDept = COMPANY_WIDE_ROLES.includes(session?.role ?? '')
+  // [2026/07/28] - Lisa - 承辦人唯讀：兩個頁籤皆僅顯示本人（後端 getSubordinates 只回本人），不可設定
+  const isReadOnly = session?.role === 'handler'
+
   const [settingYear, setSettingYear] = useState(CURRENT_YEAR)
+  const [settingDept, setSettingDept] = useState<string | null>(null)
   const [rows, setRows] = useState<SettingRow[]>([])
-  const [employees, setEmployees] = useState<{ id: number; name: string }[]>([])
+  const [employees, setEmployees] = useState<EmployeeOption[]>([])
   const [history, setHistory] = useState<HistoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [histLoading, setHistLoading] = useState(true)
@@ -70,7 +92,7 @@ export default function PerformancePage() {
 
   const fetchSetting = async (year: number) => {
     setLoading(true)
-    const res = await api.get<{ employees: { id: number; name: string }[]; rows: SettingRow[] }>(
+    const res = await api.get<{ employees: EmployeeOption[]; rows: SettingRow[] }>(
       `/api/performance?year=${year}`
     )
     if (res.success && res.data) {
@@ -93,6 +115,20 @@ export default function PerformancePage() {
   useEffect(() => { fetchHistory() }, [])
 
   const rowMap = useMemo(() => new Map(rows.map((r) => [r.employeeId, r])), [rows])
+
+  // [2026/07/28] - Lisa - 部門篩選（僅 vp／行政人員／系統管理員）；選項依後端排序（部門代碼）去重
+  const deptOptions = useMemo(
+    () => [
+      { value: null as unknown as string, label: '全部部門' },
+      ...[...new Set(rows.map((r) => r.departmentName).filter(Boolean))].map((d) => ({ value: d, label: d })),
+    ],
+    [rows]
+  )
+
+  const settingRows = useMemo(
+    () => (canFilterDept && settingDept ? rows.filter((r) => r.departmentName === settingDept) : rows),
+    [rows, settingDept, canFilterDept]
+  )
 
   const dirtyFee = useMemo(
     () =>
@@ -149,6 +185,18 @@ export default function PerformancePage() {
 
   const settingColumns: ColumnsType<SettingRow> = [
     {
+      title: '部門', dataIndex: 'departmentName', key: 'departmentName',
+      width: 110, fixed: 'left',
+      onHeaderCell: () => ({ style: { textAlign: 'center' } }),
+      render: (v: string) => v || <Text type="secondary">—</Text>,
+    },
+    {
+      title: '組別', dataIndex: 'teamGroup', key: 'teamGroup',
+      width: 80, fixed: 'left',
+      onHeaderCell: () => ({ style: { textAlign: 'center' } }),
+      render: (v: string | null) => v || <Text type="secondary">—</Text>,
+    },
+    {
       title: '員工', dataIndex: 'name', key: 'name',
       width: 90, fixed: 'left',
       onHeaderCell: () => ({ style: { textAlign: 'center' } }),
@@ -158,9 +206,14 @@ export default function PerformancePage() {
       onHeaderCell: () => ({ style: { textAlign: 'center', background: '#f6ffed' } }),
       children: [
         {
-          title: '純公證費', key: 'curFeeTarget', width: 130,
+          // [2026/07/28] - Lisa - 唯讀角色（承辦人）不顯示輸入框，改為純文字
+          title: '純公證費', key: 'curFeeTarget', width: 130, align: isReadOnly ? 'right' : undefined,
           onHeaderCell: () => ({ style: { textAlign: 'center', background: '#f6ffed' } }),
-          render: (_, r) => (
+          render: (_, r) => isReadOnly ? (
+            r.curTargetAmount != null
+              ? `$${r.curTargetAmount.toLocaleString()}`
+              : <Text type="secondary">未設定</Text>
+          ) : (
             <InputNumber
               style={{ width: '100%' }}
               min={0} step={100000}
@@ -172,9 +225,13 @@ export default function PerformancePage() {
           ),
         },
         {
-          title: '結案件數', key: 'curCaseTarget', width: 95,
+          title: '結案件數', key: 'curCaseTarget', width: 95, align: isReadOnly ? 'right' : undefined,
           onHeaderCell: () => ({ style: { textAlign: 'center', background: '#f6ffed' } }),
-          render: (_, r) => (
+          render: (_, r) => isReadOnly ? (
+            r.curTargetCaseCount != null
+              ? r.curTargetCaseCount
+              : <Text type="secondary">未設定</Text>
+          ) : (
             <InputNumber
               style={{ width: '100%' }}
               min={0} step={1} precision={0}
@@ -259,6 +316,14 @@ export default function PerformancePage() {
   )
 
   const histColumns: ColumnsType<HistoryRow> = [
+    {
+      title: '部門', dataIndex: 'departmentName', key: 'departmentName', width: 110,
+      render: (v: string) => v || <Text type="secondary">—</Text>,
+    },
+    {
+      title: '組別', dataIndex: 'teamGroup', key: 'teamGroup', width: 80,
+      render: (v: string | null) => v || <Text type="secondary">—</Text>,
+    },
     { title: '員工', dataIndex: 'employeeName', key: 'emp', width: 100 },
     { title: '年度', dataIndex: 'year', key: 'year', width: 80, render: (v: number) => `${v} 年` },
     {
@@ -304,12 +369,31 @@ export default function PerformancePage() {
                           <Text>設定年度</Text>
                           <Select
                             value={settingYear}
-                            onChange={(v) => { setSettingYear(v); setEditFee({}); setEditCount({}) }}
+                            onChange={(v) => { setSettingYear(v); setEditFee({}); setEditCount({}); setSettingDept(null) }}
                             options={YEAR_OPTIONS}
                             style={{ width: 110 }}
                           />
+                          {/* [2026/07/28] - Lisa - 全公司範圍角色才顯示部門篩選 */}
+                          {canFilterDept && (
+                            <>
+                              <Text>部門</Text>
+                              <Select
+                                value={settingDept}
+                                onChange={setSettingDept}
+                                options={deptOptions}
+                                style={{ width: 160 }}
+                              />
+                              <Text type="secondary">共 {settingRows.length} 位員工</Text>
+                            </>
+                          )}
+                          {/* [2026/07/28] - Lisa - 承辦人唯讀提示 */}
+                          {isReadOnly && (
+                            <Tag color="default" style={{ marginLeft: 4 }}>唯讀：僅顯示本人業績目標</Tag>
+                          )}
                         </Space>
                       </Col>
+                      {/* [2026/07/28] - Lisa - 唯讀角色不顯示重置／儲存 */}
+                      {!isReadOnly && (
                       <Col>
                         <Space>
                           <Button
@@ -330,10 +414,11 @@ export default function PerformancePage() {
                           </Button>
                         </Space>
                       </Col>
+                      )}
                     </Row>
                   </Card>
                   <Table
-                    dataSource={rows}
+                    dataSource={settingRows}
                     columns={settingColumns}
                     rowKey="employeeId"
                     size="small"
@@ -341,7 +426,7 @@ export default function PerformancePage() {
                     loading={loading}
                     scroll={{ x: 'max-content' }}
                     pagination={false}
-                    locale={{ emptyText: '無可設定的員工' }}
+                    locale={{ emptyText: isReadOnly ? '主管尚未設定本年度業績目標' : '無可設定的員工' }}
                   />
                 </>
               ),
@@ -367,9 +452,13 @@ export default function PerformancePage() {
                           onChange={setHistEmployee}
                           options={[
                             { value: null as unknown as number, label: '全部員工' },
-                            ...employees.map((e) => ({ value: e.id, label: e.name })),
+                            // [2026/07/28] - Lisa - 全公司範圍下同名員工難分辨，標示部門／組別
+                            ...employees.map((e) => ({
+                              value: e.id,
+                              label: `${e.name}（${e.departmentName}${e.teamGroup ? `／${e.teamGroup}` : ''}）`,
+                            })),
                           ]}
-                          style={{ width: 120 }}
+                          style={{ width: 220 }}
                         />
                       </Col>
                       <Col>

@@ -15,8 +15,7 @@ const { Title } = Typography
 
 const PAGE_SIZE = 15
 
-// [2026/07/14] - Lisa - 年度移除「全部」、預設當年度；依委託日年份篩選
-// [2026/07/16] - Lisa - 下拉不再固定近三年，改依系統實際委託年度動態帶入（見 /api/meta caseYears）
+// [2026/07/27] - Lisa - 委託日年度：保留「全部年份」選項（可跨年度查詢），但預設值改為當年度
 const CURRENT_YEAR = new Date().getFullYear()
 const PERIOD_OPTIONS = [
   { value: '', label: '全年' },
@@ -85,11 +84,11 @@ export default function CaseQueryPage() {
   const [summary, setSummary] = useState({ count: 0, totalFee: 0, totalTravel: 0 })
   const [exporting, setExporting] = useState(false)
 
-  // 年度下拉：依系統實際委託年度（由新到舊）；資料未載入前先以當年度墊檔，維持「無全部、預設當年度」設計
-  const yearOptions = useMemo(() => {
-    const years = caseYears.length ? caseYears : [CURRENT_YEAR]
-    return years.map(y => ({ value: String(y), label: `${y} 年` }))
-  }, [caseYears])
+  // 年度下拉：保留「全部年份」，其餘依系統實際委託年度（由新到舊）動態帶入
+  const yearOptions = useMemo(
+    () => [{ value: '', label: '全部年份' }, ...caseYears.map(y => ({ value: String(y), label: `${y} 年` }))],
+    [caseYears],
+  )
 
   // Sticky filter bar height
   useEffect(() => {
@@ -288,12 +287,13 @@ export default function CaseQueryPage() {
         </Row>
         <Card size="small">
           <Row gutter={[8, 8]} align="bottom">
-            <Col flex="280px">
-              <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>
-                可搜尋：公證編號 / 被保險人 / 保險公司 / 保單號碼
+            {/* [2026/07/28] - Lisa - 提示文字加入「保代保經」後變長，加寬欄位並禁止折行 */}
+            <Col flex="340px">
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 2, whiteSpace: 'nowrap' }}>
+                可搜尋：公證編號 / 被保險人 / 保險公司 / 保單號碼 / 保代保經
               </div>
               <Input.Search
-                placeholder="公證編號 / 被保險人 / 保險公司 / 保單號碼"
+                placeholder="公證編號 / 被保險人 / 保險公司 / 保單號碼 / 保代保經"
                 value={searchInput}
                 onSearch={v => { setSearch(v); setPage(1) }}
                 onChange={e => { setSearchInput(e.target.value); if (!e.target.value) { setSearch(''); setPage(1) } }}

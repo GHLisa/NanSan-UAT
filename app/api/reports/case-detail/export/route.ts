@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
   const quarter = searchParams.get('quarter') ?? 'Q1'
   const deptId = searchParams.get('deptId') ? parseInt(searchParams.get('deptId')!) : null
   const empId = parseInt(session.sub)
-  const { role, departmentId } = session
+  const { role, departmentId, teamGroup } = session
 
   // ── closeDate 範圍（與 GET /api/reports/case-detail 相同）─────────────────
   let closeDateWhere: { gte: Date; lte: Date }
@@ -53,14 +53,42 @@ export async function GET(req: NextRequest) {
   }
 
   const scopeWhere: Record<string, unknown> = { status: '已決', closeDate: closeDateWhere }
+  // [2026/07/28] - Lisa - 可顯示的承辦人（null = 不限）：組長僅列同組同事，
+  // 他組承辦人的分攤列不顯示（分攤金額仍以案件全部承辦人為計算基準，個人份額不受影響）
+  let visibleEmpIds: Set<number> | null = null
   if (role === 'handler') {
+    // [2026/07/28] - Lisa - 承辦人不限部門：可能於他部門協辦，加部門條件會漏掉跨部門協辦案
+    //（對齊 api/cases Issue #5 的處理）；且僅列自己的分攤列，不顯示共同承辦人的列
     scopeWhere.assignments = { some: { employeeId: empId } }
-    if (departmentId) scopeWhere.departmentId = departmentId
+    visibleEmpIds = new Set([empId])
   } else if (canViewAllDepts(role) || role === 'admin_staff') {
     // [2026/07/07] - Lisa - 行政人員比照副總：全公司範圍，可依部門查詢條件篩選
     if (deptId) scopeWhere.departmentId = deptId
+  } else if (role === 'team_lead' && departmentId && teamGroup) {
+    // [2026/07/28] - Lisa - 組長：以「同組人員（同部門＋同組別，主要角色）的參與」為準，不限案件承辦部門，
+    // 使同組人員在他部門協辦的份額也納入（與部門主管同一套邏輯）；顯示列僅限同組人員。
+    // 註：案件管理清單（api/cases buildCaseScope，FR-34）仍維持「案屬本部門」的限制，兩者定義不同——
+    // 本報表算的是「本組人員的份額」，非「本部門的案件」。
+    const roles = await prisma.employeeRole.findMany({
+      where: { departmentId, teamGroup, isPrimary: true },
+      select: { employeeId: true },
+    })
+    const groupEmpIds = [...new Set(roles.map((r) => r.employeeId))]
+    scopeWhere.assignments = { some: { employeeId: { in: groupEmpIds } } }
+    visibleEmpIds = new Set(groupEmpIds)
   } else if (departmentId) {
-    scopeWhere.departmentId = departmentId
+    // 組長無組別 / 部門主管
+    // [2026/07/28] - Lisa - 範圍改以「本部門人員的參與」為準（不再限案件承辦部門），
+    // 使本部門人員在他部門協辦的份額也納入；顯示列仍僅限本部門人員（跨部門協辦者不顯示）。
+    // 人員認定採「主要角色（isPrimary）所屬部門」：兼任他部門主管者（如同時掛兩部門主管）
+    // 其本職案件應歸主要部門，否則會被重複計入兩個部門的報表。
+    const roles = await prisma.employeeRole.findMany({
+      where: { departmentId, isPrimary: true },
+      select: { employeeId: true },
+    })
+    const deptEmpIds = [...new Set(roles.map((r) => r.employeeId))]
+    scopeWhere.assignments = { some: { employeeId: { in: deptEmpIds } } }
+    visibleEmpIds = new Set(deptEmpIds)
   }
 
   const cases = await prisma.case.findMany({
@@ -85,6 +113,7 @@ export async function GET(req: NextRequest) {
       // 純公證費依承辦比例分攤（非主辦捨去、主辦吸收剩餘）
       const feeAmts = splitFeeByRatio(actualFeeFull, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
       c.assignments.forEach((a, ai) => {
+        if (visibleEmpIds && !visibleEmpIds.has(a.employeeId)) return // 組長：不列他組承辦人
         const actualFee = feeAmts[ai]
         const travelFee = a.role === '主辦' ? travelFeeFull : 0
         const subtotalFee = actualFee + travelFee

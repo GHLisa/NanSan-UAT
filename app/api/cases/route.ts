@@ -7,6 +7,17 @@ import { mailNewAssignment } from '@/lib/caseMail'
 import { newAssignmentNotification } from '@/lib/caseNotify'
 import { parseBody } from '@/lib/apiError'
 
+// [2026/07/27] - Lisa - 公證編號排序鍵：取「年度(前2碼)＋後三碼」，公證前綴與區域碼不列入排序
+// 例：NFNS-26K-024 → { year: 26, serial: 24 }；無法解析者以 -1 排在最後
+function caseNoSortKey(caseNumber: string): { year: number; serial: number } {
+  const parts = (caseNumber ?? '').split('-')
+  const mid = parts[1] ?? ''
+  const last = parts[parts.length - 1] ?? ''
+  const year = parseInt(mid.slice(0, 2), 10)
+  const serial = parseInt(last.replace(/\D/g, '').slice(-3), 10)
+  return { year: Number.isNaN(year) ? -1 : year, serial: Number.isNaN(serial) ? -1 : serial }
+}
+
 async function buildCaseScope(session: Awaited<ReturnType<typeof getSession>>) {
   if (!session) return {}
   if (canViewAllDepts(session.role) || !session.departmentId) return {}
@@ -120,6 +131,8 @@ export async function GET(req: NextRequest) {
       { insuredName: { contains: keyword, mode: 'insensitive' } },
       { policyNumber: { contains: keyword, mode: 'insensitive' } },
       { insuranceCompany: { name: { contains: keyword, mode: 'insensitive' } } },
+      // [2026/07/28] - Lisa - 關鍵字搜尋新增保代/保經公司名稱（無保代之案件不會被納入）
+      { brokerCompany: { name: { contains: keyword, mode: 'insensitive' } } },
     ]
   }
 
@@ -133,35 +146,44 @@ export async function GET(req: NextRequest) {
       })
     : Promise.resolve(null)
 
-  const [total, cases, summaryAgg] = await Promise.all([
-    prisma.case.count({ where }),
-    prisma.case.findMany({
-      where,
-      include: {
-        department: { select: { name: true } },
-        insuranceCompany: { select: { name: true } },
-        brokerCompany: { select: { name: true } },
-        assignments: { select: { employeeId: true, role: true, employee: { select: { name: true } } } },
-        // [2026/06/18] - Lisa - Issue #9/#10 退件涵蓋全關卡 + 只看每個文件類型最新一次送審 - Start
-        // 撈該案全部送審（含已核准），以便依 submittedAt 取每個 documentType 的最新一筆判定狀態
-        reviews: {
-          select: {
-            reviewStatus: true, reviewRemarks: true,
-            midApprovalStatus: true, midApprovalRemarks: true,
-            approvalStatus: true, approvalRemarks: true,
-            documentType: true, submittedAt: true,
-            recordStatus: true, // [2026/06/18] - Lisa - 方案1/2 終結狀態（已重送/已放棄）
-            mergedBilling: true, // [2026/07/15] - Lisa - 合併送審旗標（清單 (併DN) 標註用）
-          },
-        },
-        // [2026/06/18] - Lisa - Issue #9/#10 - end
-      },
-      orderBy: { commissionDate: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
+  // [2026/07/27] - Lisa - 排序改依公證編號「年度+後三碼」由大到小；因需跨全體排序後再分頁，
+  // 先輕量取回符合條件的 id/caseNumber 做全域排序，再只針對「當頁」id 撈完整資料（含關聯）
+  const [allMatched, summaryAgg] = await Promise.all([
+    prisma.case.findMany({ where, select: { id: true, caseNumber: true } }),
     summaryPromise,
   ])
+  allMatched.sort((a, b) => {
+    const ka = caseNoSortKey(a.caseNumber)
+    const kb = caseNoSortKey(b.caseNumber)
+    return kb.year - ka.year || kb.serial - ka.serial
+  })
+  const total = allMatched.length
+  const pageIds = allMatched.slice((page - 1) * pageSize, page * pageSize).map((c) => c.id)
+  const pageCases = await prisma.case.findMany({
+    where: { id: { in: pageIds } },
+    include: {
+      department: { select: { name: true } },
+      insuranceCompany: { select: { name: true } },
+      brokerCompany: { select: { name: true } },
+      assignments: { select: { employeeId: true, role: true, employee: { select: { name: true } } } },
+      // [2026/06/18] - Lisa - Issue #9/#10 退件涵蓋全關卡 + 只看每個文件類型最新一次送審 - Start
+      // 撈該案全部送審（含已核准），以便依 submittedAt 取每個 documentType 的最新一筆判定狀態
+      reviews: {
+        select: {
+          reviewStatus: true, reviewRemarks: true,
+          midApprovalStatus: true, midApprovalRemarks: true,
+          approvalStatus: true, approvalRemarks: true,
+          documentType: true, submittedAt: true,
+          recordStatus: true, // [2026/06/18] - Lisa - 方案1/2 終結狀態（已重送/已放棄）
+          mergedBilling: true, // [2026/07/15] - Lisa - 合併送審旗標（清單 (併DN) 標註用）
+        },
+      },
+      // [2026/06/18] - Lisa - Issue #9/#10 - end
+    },
+  })
+  // in 查詢不保證順序，依全域排序結果還原「當頁」順序
+  const caseById = new Map(pageCases.map((c) => [c.id, c]))
+  const cases = pageIds.map((id) => caseById.get(id)).filter((c): c is typeof pageCases[number] => !!c)
 
   const today = dayjs()
   const data = cases.map((c) => {
