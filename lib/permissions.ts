@@ -11,6 +11,7 @@ export function getMenuPermissions(role: string): string[] {
     // [2026/07/02] - Lisa - 公證編號修正（admin-case-number）開放行政人員
     // [2026/07/03] - Lisa - 出具報告作業（report-issue）開放行政人員
     // [2026/07/28] - Lisa - 純公證費業績設定（fee-target）開放行政人員，可設定全公司
+    // [2026/07/30] - Lisa - 行政人員改唯讀：選單仍需保留（否則無法進入頁面檢視），寫入由 API CAN_SET_ROLES 擋
     admin_staff: [...base, 'dispatch', 'reviews', 'report-issue', 'fee-target', 'reports', 'case-year-report', 'fee-year-report', 'open-fee-report', 'case-detail-report', 'admin', 'admin-master', 'admin-users', 'admin-case-number'],
     // sysadmin 需列出各子項 key（選單改為逐子項授權），維持全項開放
     // [2026/07/02] - Lisa - 新增公證編號修正 admin-case-number

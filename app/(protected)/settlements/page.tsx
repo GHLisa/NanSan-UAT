@@ -4,8 +4,9 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Table, Card, Row, Col, Typography, Tag, Select, Button, Statistic, Input, DatePicker, message,
+  Modal, Alert, Tooltip,
 } from 'antd'
-import { FileExcelOutlined } from '@ant-design/icons'
+import { FileExcelOutlined, DeleteOutlined } from '@ant-design/icons'
 import { api, type ApiResponse } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
@@ -30,6 +31,10 @@ const STATUS_OPTIONS = [
   { value: '已決', label: '已決' },
   { value: '銷案', label: '銷案' },
 ]
+
+// [2026/07/31] - Lisa - 銷案案件刪除可用角色（與 API DELETE_CANCELLED_ROLES 一致）：
+// 部門主管／行政人員／系統管理員；不含執行副總。後端另依部門範圍再檢核一次。
+const DELETE_CANCELLED_ROLES = ['dept_manager', 'admin_staff', 'sysadmin']
 
 interface CaseItem {
   id: number
@@ -83,6 +88,12 @@ export default function CaseQueryPage() {
   const [total, setTotal] = useState(0)
   const [summary, setSummary] = useState({ count: 0, totalFee: 0, totalTravel: 0 })
   const [exporting, setExporting] = useState(false)
+
+  // [2026/07/31] - Lisa - 銷案案件刪除：刪除後資料移入封存表（deleted_cases），查詢／報表統計不再計入
+  const canDeleteCancelled = !!session && DELETE_CANCELLED_ROLES.includes(session.role)
+  const [deleteTarget, setDeleteTarget] = useState<CaseItem | null>(null)
+  const [deleteReason, setDeleteReason] = useState('')
+  const [deleting, setDeleting] = useState(false)
 
   // 年度下拉：保留「全部年份」，其餘依系統實際委託年度（由新到舊）動態帶入
   const yearOptions = useMemo(
@@ -213,6 +224,21 @@ export default function CaseQueryPage() {
     }
   }
 
+  // [2026/07/31] - Lisa - 銷案案件刪除：原因必填，成功後重新載入清單（該筆已不在 cases 表，不會再出現）
+  async function handleDelete() {
+    if (!deleteTarget) return
+    const reason = deleteReason.trim()
+    if (!reason) { message.warning('請填寫刪除原因'); return }
+    setDeleting(true)
+    const res = await api.delete(`/api/cases/${deleteTarget.id}`, { deleteReason: reason })
+    setDeleting(false)
+    if (!res.success) { message.error(res.error ?? '刪除失敗'); return }
+    message.success(`案件 ${deleteTarget.caseNumber} 已刪除，公證編號已釋出`)
+    setDeleteTarget(null)
+    setDeleteReason('')
+    loadCases()
+  }
+
   const columns = [
     {
       title: '公證編號', dataIndex: 'caseNumber', key: 'caseNumber', width: 160, fixed: 'left' as const,
@@ -257,6 +283,21 @@ export default function CaseQueryPage() {
         <Tag color={v === '已決' ? 'green' : v === '銷案' ? 'default' : 'blue'}>{v}</Tag>
       ),
     },
+    // [2026/07/31] - Lisa - 刪除欄僅對可刪除角色顯示；按鈕僅在「銷案」案件出現（未決／已決不可刪）
+    ...(canDeleteCancelled ? [{
+      title: '刪除', key: 'delete', width: 60, align: 'center' as const, fixed: 'right' as const,
+      render: (_: unknown, r: CaseItem) => r.status !== '銷案' ? null : (
+        <Tooltip title="刪除銷案案件（資料移入封存表，公證編號釋出）">
+          <Button
+            type="text"
+            danger
+            size="small"
+            icon={<DeleteOutlined />}
+            onClick={() => { setDeleteTarget(r); setDeleteReason('') }}
+          />
+        </Tooltip>
+      ),
+    }] : []),
   ]
 
   return (
@@ -440,6 +481,52 @@ export default function CaseQueryPage() {
           showTotal: t => `共 ${t} 筆`,
         }}
       />
+
+      {/* ── [2026/07/31] - Lisa - 銷案案件刪除確認（原因必填）── */}
+      <Modal
+        title="刪除銷案案件"
+        open={!!deleteTarget}
+        onCancel={() => { setDeleteTarget(null); setDeleteReason('') }}
+        onOk={handleDelete}
+        okText="確認刪除"
+        okButtonProps={{ danger: true, loading: deleting, disabled: !deleteReason.trim() }}
+        cancelText="取消"
+        destroyOnHidden
+      >
+        {deleteTarget && (
+          <>
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="刪除後不可從畫面復原"
+              description={
+                <span>
+                  本案將自案件查詢與所有報表統計中移除且無法再查詢，完整資料保留於封存表供稽核追溯。
+                  公證編號 <b>{deleteTarget.caseNumber}</b> 將釋出，可於建案時以人工填號重新使用。
+                </span>
+              }
+            />
+            <div style={{ marginBottom: 12, lineHeight: 1.9 }}>
+              <div>公證編號：<b>{deleteTarget.caseNumber}</b></div>
+              <div>被保險人：{deleteTarget.insuredName}</div>
+              <div>保險公司：{deleteTarget.insuranceCompanyName}</div>
+              <div>部門／承辦人：{deleteTarget.departmentName}／{deleteTarget.primaryHandlerName || '—'}</div>
+            </div>
+            <div style={{ marginBottom: 4 }}>
+              刪除原因 <span style={{ color: '#ff4d4f' }}>*</span>
+            </div>
+            <Input.TextArea
+              value={deleteReason}
+              onChange={e => setDeleteReason(e.target.value)}
+              rows={3}
+              maxLength={200}
+              showCount
+              placeholder="請說明刪除此銷案案件的原因（必填，將寫入封存紀錄）"
+            />
+          </>
+        )}
+      </Modal>
     </div>
   )
 }

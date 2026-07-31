@@ -12,6 +12,9 @@ import dayjs from 'dayjs'
 // vp／admin_staff／sysadmin：全公司承辦人＋組長＋部門主管（不分部門）
 const TARGET_ROLES = ['handler', 'team_lead', 'dept_manager']
 const COMPANY_WIDE_ROLES = ['vp', 'admin_staff', 'sysadmin']
+// [2026/07/30] - Lisa - 行政人員改為唯讀：可檢視全公司業績目標（GET 仍走 COMPANY_WIDE_ROLES），
+// 但不得設定；寫入角色改由本清單把關（不含 admin_staff／handler）
+const CAN_SET_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin']
 
 async function getSubordinates(session: JWTPayload) {
   let roleWhere: Record<string, unknown> | null = null
@@ -237,7 +240,8 @@ export async function POST(req: NextRequest) {
 
   // 角色驗證：僅組長／部門主管可設定業績目標（對齊 demo 選單權限）
   // [2026/07/28] - Lisa - 開放 vp／行政人員／系統管理員設定（全公司範圍）
-  if (!['team_lead', 'dept_manager', ...COMPANY_WIDE_ROLES].includes(session.role)) {
+  // [2026/07/30] - Lisa - 行政人員改唯讀，自寫入角色移除（僅 team_lead／dept_manager／vp／sysadmin 可設定）
+  if (!CAN_SET_ROLES.includes(session.role)) {
     return NextResponse.json({ success: false, error: '無權限設定業績目標' }, { status: 403 })
   }
 

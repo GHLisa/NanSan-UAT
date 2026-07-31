@@ -390,6 +390,32 @@ model Notification {
   @@map("notifications")
 }
 
+// [2026/07/31] - Lisa - 案件刪除封存表：案件查詢刪除「銷案」案件時，Case 本體與十張關聯表
+// （含派案紀錄）完整快照寫入此表後才實刪，確保查詢／報表統計完全不計入亦不可查，但稽核可追溯。
+// caseNumber 不設 @unique：公證編號釋出後可經人工填號重用，同一號可能對應多筆封存紀錄。
+// departmentId / deletedById 為去正規化欄位不設 FK，比照 MailLog 快照模式，確保案件／帳號變動仍保留當時快照。
+model DeletedCase {
+  id                   Int      @id                 // 沿用原 cases.id（非 autoincrement，便於回溯子表快照的 caseId）
+  caseNumber           String                       // 刪除當時公證編號
+  insuredName          String
+  departmentId         Int
+  departmentName       String
+  insuranceCompanyName String
+  status               String                       // 刪除當時案件狀態（銷案）
+  commissionDate       DateTime
+  closeDate            DateTime?
+  caseSnapshot         Json                         // Case 本體完整欄位（BigInt 轉字串、Date 轉 ISO）
+  detailSnapshot       Json                         // 十張關聯表資料快照，key 為各表 @@map 名稱
+  deletedAt            DateTime @default(now())
+  deletedById          Int
+  deletedByName        String
+  deleteReason         String                       // 刪除原因（必填）
+
+  @@index([caseNumber])
+  @@index([deletedAt])
+  @@map("deleted_cases")
+}
+
 // 發信稽核紀錄（每次 sendMail 嘗試皆寫入一筆，best-effort、不影響寄送）
 // caseId / caseNumber 為去正規化欄位（不設 FK），確保紀錄即使案件變動仍保留當時快照
 model MailLog {

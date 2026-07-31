@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
+// [2026/07/31] - Lisa - deriveSeqKey / recomputeSeq 抽至 lib/caseNumber 共用（銷案刪除亦需重算計數器）
+import { deriveSeqKey, recomputeSeq } from '@/lib/caseNumber'
 
 // 公證編號修正（系統管理）— sysadmin / 行政人員可用
 // GET  ?keyword=  依公證編號或被保險人搜尋案件（供選取欲修正的案件）
@@ -53,53 +55,6 @@ export async function GET(req: NextRequest) {
       departmentName: r.department.name,
     })),
   })
-}
-
-// ── 依公證編號推導 seqKey（比照建案取號規則）──────────────────────────────
-// 公證編號格式：[caseNoCode][保司代碼][CO?]-[年度2碼][區域代號]-[三位流水號]
-// seqKey = `${caseNoCode}${regionCode}-${year}`；caseNoCode / regionCode 取自案件當前
-// 的部門／區域基礎資料（與建案 route 一致），year 由編號中段解析。
-// 若編號非自動格式（人工自訂）而無法解析年度，回傳 null（該號不屬任何計數器群組）。
-function deriveSeqKey(
-  caseNumber: string,
-  caseNoCode: string,
-  regionCode: string,
-): { seqKey: string; year: string } | null {
-  const parts = caseNumber.split('-')
-  if (parts.length < 3) return null
-  const ym = parts[1].match(/^(\d{2})/)
-  if (!ym) return null
-  const year = ym[1]
-  return { seqKey: `${caseNoCode}${regionCode}-${year}`, year }
-}
-
-// ── 重算單一 seqKey 計數器 → 該群組實際最大流水號 + 1 ─────────────────────
-async function recomputeSeq(
-  tx: Prisma.TransactionClient,
-  seqKey: string,
-  caseNoCode: string,
-  regionCode: string,
-  year: string,
-): Promise<{ seqKey: string; nextSeq: number }> {
-  const rows = await tx.case.findMany({
-    where: { caseNumber: { startsWith: caseNoCode, contains: `-${year}${regionCode}-` } },
-    select: { caseNumber: true },
-  })
-  let maxSeq = 0
-  for (const r of rows) {
-    const mm = r.caseNumber.match(/-(\d+)$/)
-    if (mm) {
-      const n = parseInt(mm[1], 10)
-      if (n > maxSeq) maxSeq = n
-    }
-  }
-  const nextSeq = maxSeq + 1
-  await tx.caseNumberSeq.upsert({
-    where: { deptCode: seqKey },
-    create: { deptCode: seqKey, nextSeq },
-    update: { nextSeq },
-  })
-  return { seqKey, nextSeq }
 }
 
 // ── PATCH：修正公證編號 ───────────────────────────────────────────────────

@@ -49,5 +49,7 @@ export const api = {
     request<T>(url, { method: 'PUT', body: JSON.stringify(body) }),
   patch: <T>(url: string, body: unknown) =>
     request<T>(url, { method: 'PATCH', body: JSON.stringify(body) }),
-  delete: <T>(url: string) => request<T>(url, { method: 'DELETE' }),
+  // [2026/07/31] - Lisa - DELETE 支援選填 body（銷案案件刪除需帶 deleteReason）；不帶時行為與原本相同
+  delete: <T>(url: string, body?: unknown) =>
+    request<T>(url, { method: 'DELETE', ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
 }

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { canDispatch } from '@/lib/permissions'
 import { prisma } from '@/lib/prisma'
+// [2026/07/31] - Lisa - 銷案案件刪除：封存後實刪（含派案紀錄標記、發信紀錄加註、序號重算）
+import { archiveAndDeleteCase } from '@/lib/caseArchive'
 
 function parseJsonArray(s: string | null): string[] {
   if (!s) return []
@@ -547,22 +549,98 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   return NextResponse.json({ success: true, data: updated })
 }
 
-// 派案池刪除案件：連同關聯紀錄一併刪除。
-// 注意：公證編號序號（case_number_seq）採遞增不回補，刪除已配號案件會造成公證編號跳號。
-export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
+// [2026/07/31] - Lisa - 銷案案件刪除（案件查詢作業）可刪除角色：
+// 部門主管（限本部門）／行政人員（有部門限本部門、無部門全公司）／系統管理員（全公司）。
+// 刻意不含執行副總（vp）—— 刪除定位為業務／行政作業，故不沿用 canDispatch()（其含 vp）。
+const DELETE_CANCELLED_ROLES = ['dept_manager', 'admin_staff', 'sysadmin']
+
+function canDeleteCancelled(
+  session: { role: string; departmentId: number | null },
+  c: { departmentId: number },
+): boolean {
+  if (!DELETE_CANCELLED_ROLES.includes(session.role)) return false
+  if (session.role === 'sysadmin') return true
+  if (session.role === 'dept_manager') return session.departmentId === c.departmentId
+  // 行政人員：有部門限本部門、無部門視為全公司（比照 canEditAssignmentNotes / fixCloseDate）
+  return session.departmentId == null || session.departmentId === c.departmentId
+}
+
+// 刪除案件（兩條業務路徑，權限與行為皆不同）：
+//  1) 未決 → 派案池刪除（既有行為，不變）：連同關聯紀錄一併硬刪、不封存。
+//     注意：公證編號序號（case_number_seq）採遞增不回補，刪除已配號案件會造成公證編號跳號。
+//  2) 銷案 → [2026/07/31] - Lisa - 案件查詢刪除：Case 本體與十張關聯表（含派案紀錄）快照寫入
+//     deleted_cases 後才實刪；派案紀錄改記 status='已刪除' 以保留派案量統計；發信紀錄加註
+//     「（案件已刪除）」；實刪後重算序號計數器，讓釋出的公證編號可經人工填號重用。詳見 lib/caseArchive。
+export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   const session = await getSession()
   if (!session) return NextResponse.json({ success: false, error: '未登入' }, { status: 401 })
-  if (!canDispatch(session.role) && session.role !== 'sysadmin') {
-    return NextResponse.json({ success: false, error: '無權限刪除' }, { status: 403 })
-  }
 
   const id = parseInt(params.id)
   const c = await prisma.case.findUnique({ where: { id } })
   if (!c) return NextResponse.json({ success: false, error: '找不到案件' }, { status: 404 })
 
-  // 已決／銷案案件含結算等紀錄，不可刪除
+  // ── 銷案案件刪除（封存後實刪）────────────────────────────────────────────
+  if (c.status === '銷案') {
+    if (!canDeleteCancelled(session, c)) {
+      return NextResponse.json({ success: false, error: '無權限刪除本案' }, { status: 403 })
+    }
+
+    const body = await req.json().catch(() => ({} as Record<string, unknown>))
+    const deleteReason = String((body as Record<string, unknown>).deleteReason ?? '').trim()
+    if (!deleteReason) {
+      return NextResponse.json({ success: false, error: '刪除原因必填' }, { status: 400 })
+    }
+
+    // 審核中文件不可刪除（比照撤案防護；避免審核佇列殘留指向已刪案件的項目）
+    const pending = await prisma.caseReview.findMany({
+      where: {
+        caseId: id,
+        OR: [
+          { reviewStatus: '待複核' },
+          { midApprovalStatus: '待加簽審核' },
+          { approvalStatus: '待執行副總閱' },
+        ],
+      },
+      select: { documentType: true },
+    })
+    if (pending.length > 0) {
+      const docs = [...new Set(pending.map((p) => p.documentType))]
+      return NextResponse.json(
+        { success: false, error: `以下文件審核中，無法刪除：${docs.join('、')}` },
+        { status: 409 },
+      )
+    }
+
+    // 已有結算紀錄者不可刪除：SettlementSplit 連動年度業績目標與績效統計，
+    // 刪除等同追溯調整他人業績數字，須先由結算作業處理後再刪。
+    const settlement = await prisma.settlement.findUnique({ where: { caseId: id }, select: { id: true } })
+    if (settlement) {
+      return NextResponse.json(
+        { success: false, error: '本案已有結算紀錄（影響業績統計），無法刪除；請先移除結算資料' },
+        { status: 409 },
+      )
+    }
+
+    try {
+      // timeout 放寬：封存需讀寫十張關聯表，遠端 DB 下預設 5 秒交易時限偏緊
+      const result = await prisma.$transaction(
+        (tx) => archiveAndDeleteCase(tx, id, { id: parseInt(session.sub), name: session.name }, deleteReason),
+        { timeout: 20000, maxWait: 10000 },
+      )
+      return NextResponse.json({ success: true, data: result })
+    } catch (e) {
+      console.error('[case delete] 銷案案件刪除失敗：', e)
+      return NextResponse.json({ success: false, error: '刪除失敗，請稍後再試' }, { status: 500 })
+    }
+  }
+
+  // ── 派案池刪除（未決案件；既有行為）──────────────────────────────────────
+  if (!canDispatch(session.role) && session.role !== 'sysadmin') {
+    return NextResponse.json({ success: false, error: '無權限刪除' }, { status: 403 })
+  }
+  // 已決案件含結算等紀錄，不可刪除
   if (c.status !== '未決') {
-    return NextResponse.json({ success: false, error: '已決／銷案案件不可刪除' }, { status: 409 })
+    return NextResponse.json({ success: false, error: '已決案件不可刪除' }, { status: 409 })
   }
   // 部門主管僅可刪除本部門案件（副總／行政／系統管理員不限）
   if (session.role === 'dept_manager' && c.departmentId !== session.departmentId) {

@@ -15,8 +15,10 @@ const { Title, Text } = Typography
 const CURRENT_YEAR = dayjs().year()
 const YEAR_OPTIONS = [CURRENT_YEAR - 2, CURRENT_YEAR - 1, CURRENT_YEAR].map((y) => ({ value: y, label: `${y} 年` }))
 
-// [2026/07/28] - Lisa - 可設定全公司的角色（設定對象跨部門，故提供部門篩選）
+// [2026/07/28] - Lisa - 可檢視全公司的角色（範圍跨部門，故提供部門篩選）
 const COMPANY_WIDE_ROLES = ['vp', 'admin_staff', 'sysadmin']
+// [2026/07/30] - Lisa - 唯讀角色：承辦人（僅本人）＋行政人員（全公司但不可設定）
+const READ_ONLY_ROLES = ['handler', 'admin_staff']
 
 // [2026/07/28] - Lisa - 新增部門／組別欄位（後端已依部門→組別→員工排序）
 interface EmployeeOption {
@@ -76,7 +78,9 @@ export default function PerformancePage() {
   const { session } = useAuth()
   const canFilterDept = COMPANY_WIDE_ROLES.includes(session?.role ?? '')
   // [2026/07/28] - Lisa - 承辦人唯讀：兩個頁籤皆僅顯示本人（後端 getSubordinates 只回本人），不可設定
-  const isReadOnly = session?.role === 'handler'
+  // [2026/07/30] - Lisa - 行政人員一併改唯讀：範圍維持全公司（含部門篩選），但不可設定目標
+  const isReadOnly = READ_ONLY_ROLES.includes(session?.role ?? '')
+  const isSelfOnly = session?.role === 'handler'
 
   const [settingYear, setSettingYear] = useState(CURRENT_YEAR)
   const [settingDept, setSettingDept] = useState<string | null>(null)
@@ -206,7 +210,7 @@ export default function PerformancePage() {
       onHeaderCell: () => ({ style: { textAlign: 'center', background: '#f6ffed' } }),
       children: [
         {
-          // [2026/07/28] - Lisa - 唯讀角色（承辦人）不顯示輸入框，改為純文字
+          // [2026/07/28] - Lisa - 唯讀角色（承辦人／[2026/07/30] 行政人員）不顯示輸入框，改為純文字
           title: '純公證費', key: 'curFeeTarget', width: 130, align: isReadOnly ? 'right' : undefined,
           onHeaderCell: () => ({ style: { textAlign: 'center', background: '#f6ffed' } }),
           render: (_, r) => isReadOnly ? (
@@ -386,9 +390,11 @@ export default function PerformancePage() {
                               <Text type="secondary">共 {settingRows.length} 位員工</Text>
                             </>
                           )}
-                          {/* [2026/07/28] - Lisa - 承辦人唯讀提示 */}
+                          {/* [2026/07/28] - Lisa - 承辦人唯讀提示；[2026/07/30] 行政人員唯讀（全公司可看不可設） */}
                           {isReadOnly && (
-                            <Tag color="default" style={{ marginLeft: 4 }}>唯讀：僅顯示本人業績目標</Tag>
+                            <Tag color="default" style={{ marginLeft: 4 }}>
+                              {isSelfOnly ? '唯讀：僅顯示本人業績目標' : '唯讀：僅可檢視，不可設定'}
+                            </Tag>
                           )}
                         </Space>
                       </Col>
@@ -426,7 +432,7 @@ export default function PerformancePage() {
                     loading={loading}
                     scroll={{ x: 'max-content' }}
                     pagination={false}
-                    locale={{ emptyText: isReadOnly ? '主管尚未設定本年度業績目標' : '無可設定的員工' }}
+                    locale={{ emptyText: isSelfOnly ? '主管尚未設定本年度業績目標' : isReadOnly ? '無業績目標資料' : '無可設定的員工' }}
                   />
                 </>
               ),

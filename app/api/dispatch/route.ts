@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { canDispatch } from '@/lib/permissions'
 import { prisma } from '@/lib/prisma'
+import { DISPATCH_DELETED_STATUS } from '@/lib/caseArchive'
 import { z } from 'zod'
 import { parseBody } from '@/lib/apiError'
 
@@ -88,8 +89,13 @@ export async function GET(req: NextRequest) {
   }
 
   // ── 一般模式（依 status 篩選）──────────────────────────────────────────
+  // [2026/07/31] - Lisa - 一律排除已封存刪除的派案紀錄：案件經案件查詢刪除後，其派案紀錄改記
+  // status='已刪除'（不實刪，保留保司派案量統計），但不應再出現於派案池任何清單。
+  // pool 模式僅撈 status='待取件'，本就不受影響。
   const where: Record<string, unknown> = {}
-  if (status) where.status = status
+  where.status = status && status !== DISPATCH_DELETED_STATUS
+    ? status
+    : { not: DISPATCH_DELETED_STATUS }
   if (deptFilter) where.assignedDepartmentId = deptFilter
 
   const items = await prisma.dispatchQueue.findMany({
