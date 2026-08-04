@@ -1,7 +1,7 @@
 // ── 區域「公證編號代號」回填腳本（非破壞性、可重複執行）────────────────────
 // 用途：將既有區域尚未設定（null）的 case_no_code 補為預設區域代號。
 //       台北 TP→""、台中 TC→"T"、高雄 KH→"K"（含舊代碼相容）。
-//       只補 null 值，不覆寫已設定者；不影響既有案件編號。
+//       只補 null 值，不覆寫已設定者；不影響既有公證編號。
 //
 // 前置：需先 `npx prisma db push` 新增 case_no_code 欄位。
 // 執行（於 web-site_UAT 目錄下）：npx tsx scripts/backfill-region-caseno.ts

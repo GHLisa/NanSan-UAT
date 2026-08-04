@@ -229,7 +229,8 @@ export default function PerformancePage() {
           ),
         },
         {
-          title: '結案件數', key: 'curCaseTarget', width: 95, align: isReadOnly ? 'right' : undefined,
+          // [2026/08/04] - Lisa - FR-110 達成率以「主辦件數」為分子，目標欄同步標示以免誤設為含協辦的人次
+          title: '結案件數(主辦)', key: 'curCaseTarget', width: 110, align: isReadOnly ? 'right' : undefined,
           onHeaderCell: () => ({ style: { textAlign: 'center', background: '#f6ffed' } }),
           render: (_, r) => isReadOnly ? (
             r.curTargetCaseCount != null
@@ -262,7 +263,7 @@ export default function PerformancePage() {
                 r.refTargetAmount != null ? `$${r.refTargetAmount.toLocaleString()}` : <Text type="secondary">—</Text>,
             },
             {
-              title: '結案件數', key: 'refCaseTarget', width: 68, align: 'right',
+              title: '結案件數(主辦)', key: 'refCaseTarget', width: 100, align: 'right',
               onHeaderCell: () => ({ style: { textAlign: 'center', background: '#f0f5ff' } }),
               render: (_, r) =>
                 r.refTargetCaseCount != null ? r.refTargetCaseCount : <Text type="secondary">—</Text>,
@@ -281,7 +282,8 @@ export default function PerformancePage() {
               ),
             },
             {
-              title: '結案數/達成率', key: 'refActualCount', width: 100, align: 'right',
+              // [2026/08/04] - Lisa - FR-110 件數只計主辦，欄名標示避免與「參與人次」混淆
+              title: '結案數(主辦)/達成率', key: 'refActualCount', width: 118, align: 'right',
               onHeaderCell: () => ({ style: { textAlign: 'center', background: '#f0f5ff' } }),
               render: (_, r) => (
                 <span>{r.refActualCaseCount}{pctTag(r.refActualCaseCount, r.refTargetCaseCount)}</span>
@@ -301,7 +303,8 @@ export default function PerformancePage() {
           render: (_, r) => `$${r.inventoryFee.toLocaleString()}`,
         },
         {
-          title: '未決件數', key: 'inventoryCount', width: 68, align: 'right',
+          // [2026/08/04] - Lisa - FR-110 庫存件數亦只計主辦
+          title: '未決件數(主辦)', key: 'inventoryCount', width: 100, align: 'right',
           onHeaderCell: () => ({ style: { textAlign: 'center', background: '#fffbe6' } }),
           render: (_, r) => r.inventoryCaseCount,
         },
@@ -335,7 +338,7 @@ export default function PerformancePage() {
       render: (v: number | null) => (v != null ? `$${v.toLocaleString()}` : '—'),
     },
     {
-      title: '結案件數目標', dataIndex: 'targetCaseCount', key: 'targetCaseCount', width: 100, align: 'right',
+      title: '結案件數(主辦)目標', dataIndex: 'targetCaseCount', key: 'targetCaseCount', width: 130, align: 'right',
       render: (v: number | null) => (v != null ? v : '—'),
     },
     {
@@ -345,7 +348,8 @@ export default function PerformancePage() {
       ),
     },
     {
-      title: '實際結案數/達成率', key: 'actualCount', width: 130, align: 'right',
+      // [2026/08/04] - Lisa - FR-110 件數只計主辦
+      title: '實際結案數(主辦)/達成率', key: 'actualCount', width: 150, align: 'right',
       render: (_, r) => (
         <span>{r.actualCaseCount}{r.targetCaseCount ? pctTag(r.actualCaseCount, r.targetCaseCount) : null}</span>
       ),

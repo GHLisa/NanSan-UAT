@@ -4,6 +4,8 @@ import { splitFeeByRatio } from '@/lib/feeSplit'
 import { prisma } from '@/lib/prisma'
 import ExcelJS from 'exceljs'
 import dayjs from 'dayjs'
+// [2026/08/05] - Lisa - 檔名日期取台北時間（伺服器 UTC 於台北 00:00~08:00 會標成前一日）
+import { taipeiNow } from '@/lib/sla'
 
 export const runtime = 'nodejs'
 
@@ -23,7 +25,8 @@ type CaseRow = {
   id: number; caseNumber: string; insuredName: string
   closeDate: string; actualFee: number; travelFee: number; subtotalFee: number; remarks: string
 }
-type EmpGroup = { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
+// [2026/08/04] - Lisa - FR-109 caseCount＝參與人次（月明細小計用）／primaryCount＝主辦件數（季統計用）
+type EmpGroup = { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; primaryCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
 
 export async function GET(req: NextRequest) {
   const session = await getSession()
@@ -37,6 +40,14 @@ export async function GET(req: NextRequest) {
   const deptId = searchParams.get('deptId') ? parseInt(searchParams.get('deptId')!) : null
   const empId = parseInt(session.sub)
   const { role, departmentId, teamGroup } = session
+  // [2026/08/04] - Lisa - FR-107 統計範圍切換（與 GET /api/reports/case-detail 相同）：
+  //   'dept'（預設）＝限案件承辦部門；'share'＝含本單位人員於他部門協辦之份額
+  const scopeMode = searchParams.get('scopeMode') === 'share' ? 'share' : 'dept'
+  const scopeModeLabel = scopeMode === 'share'
+    ? '含本單位人員於他部門協辦之案件（僅列其份額）'
+    : '限案件承辦部門'
+  // [2026/08/04] - Lisa - FR-107：備註僅標註「非本單位」之案件承辦部門（比對基準與查詢 API 相同）
+  const refDeptId = (canViewAllDepts(role) || role === 'admin_staff') ? deptId : departmentId
 
   // ── closeDate 範圍（與 GET /api/reports/case-detail 相同）─────────────────
   let closeDateWhere: { gte: Date; lte: Date }
@@ -63,7 +74,20 @@ export async function GET(req: NextRequest) {
     visibleEmpIds = new Set([empId])
   } else if (canViewAllDepts(role) || role === 'admin_staff') {
     // [2026/07/07] - Lisa - 行政人員比照副總：全公司範圍，可依部門查詢條件篩選
-    if (deptId) scopeWhere.departmentId = deptId
+    // [2026/08/04] - Lisa - FR-107：選定部門時可切換範圍定義；未選部門（全部部門）時兩者等價
+    if (deptId) {
+      if (scopeMode === 'share') {
+        const roles = await prisma.employeeRole.findMany({
+          where: { departmentId: deptId, isPrimary: true },
+          select: { employeeId: true },
+        })
+        const ids = [...new Set(roles.map((r) => r.employeeId))]
+        scopeWhere.assignments = { some: { employeeId: { in: ids } } }
+        visibleEmpIds = new Set(ids)
+      } else {
+        scopeWhere.departmentId = deptId
+      }
+    }
   } else if (role === 'team_lead' && departmentId && teamGroup) {
     // [2026/07/28] - Lisa - 組長：以「同組人員（同部門＋同組別，主要角色）的參與」為準，不限案件承辦部門，
     // 使同組人員在他部門協辦的份額也納入（與部門主管同一套邏輯）；顯示列僅限同組人員。
@@ -76,6 +100,8 @@ export async function GET(req: NextRequest) {
     const groupEmpIds = [...new Set(roles.map((r) => r.employeeId))]
     scopeWhere.assignments = { some: { employeeId: { in: groupEmpIds } } }
     visibleEmpIds = new Set(groupEmpIds)
+    // [2026/08/04] - Lisa - FR-107：'dept' 模式再加上「案屬本部門」限制（顯示列仍僅同組人員）
+    if (scopeMode === 'dept') scopeWhere.departmentId = departmentId
   } else if (departmentId) {
     // 組長無組別 / 部門主管
     // [2026/07/28] - Lisa - 範圍改以「本部門人員的參與」為準（不再限案件承辦部門），
@@ -89,6 +115,8 @@ export async function GET(req: NextRequest) {
     const deptEmpIds = [...new Set(roles.map((r) => r.employeeId))]
     scopeWhere.assignments = { some: { employeeId: { in: deptEmpIds } } }
     visibleEmpIds = new Set(deptEmpIds)
+    // [2026/08/04] - Lisa - FR-107：'dept' 模式再加上「案屬本部門」限制（顯示列仍僅本部門人員）
+    if (scopeMode === 'dept') scopeWhere.departmentId = departmentId
   }
 
   const cases = await prisma.case.findMany({
@@ -96,6 +124,9 @@ export async function GET(req: NextRequest) {
     select: {
       id: true, caseNumber: true, insuredName: true, closeDate: true,
       actualFee: true, travelOtherExpense: true,
+      // [2026/08/04] - Lisa - FR-107：備註欄標記案件承辦部門（僅非本單位案件）
+      departmentId: true,
+      department: { select: { name: true } },
       assignments: { select: { employeeId: true, role: true, contributionRatio: true, employee: { select: { name: true } } } },
     },
     orderBy: { closeDate: 'asc' },
@@ -107,9 +138,12 @@ export async function GET(req: NextRequest) {
     for (const c of list) {
       const travelFeeFull = c.travelOtherExpense ?? 0
       const actualFeeFull = c.actualFee ?? 0
-      const remarks = c.assignments.length > 1
+      // [2026/08/04] - Lisa - FR-107：備註＝（非本單位案件時）[案件承辦部門]＋（多人時）分工比例
+      const ratioText = c.assignments.length > 1
         ? c.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
         : ''
+      const deptTag = refDeptId && c.departmentId !== refDeptId ? `[${c.department.name}]` : ''
+      const remarks = [deptTag, ratioText].filter(Boolean).join(' ')
       // 純公證費依承辦比例分攤（非主辦捨去、主辦吸收剩餘）
       const feeAmts = splitFeeByRatio(actualFeeFull, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
       c.assignments.forEach((a, ai) => {
@@ -120,7 +154,7 @@ export async function GET(req: NextRequest) {
         if (!map.has(a.employeeId)) {
           map.set(a.employeeId, {
             empId: a.employeeId, empName: a.employee.name,
-            cases: [], totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
+            cases: [], totals: { caseCount: 0, primaryCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
           })
         }
         const g = map.get(a.employeeId)!
@@ -131,6 +165,8 @@ export async function GET(req: NextRequest) {
           })
         }
         g.totals.caseCount++
+        // [2026/08/04] - Lisa - FR-109 主辦件數（季統計工作表用）
+        if (a.role === '主辦') g.totals.primaryCount++
         g.totals.actualFee += actualFee
         g.totals.travelFee += travelFee
         g.totals.subtotalFee += subtotalFee
@@ -142,9 +178,9 @@ export async function GET(req: NextRequest) {
   const wb = new ExcelJS.Workbook()
 
   if (type === 'monthly') {
-    buildDetailSheet(wb, `${year}年${month}月 已決案明細`, groupByHandler(cases, true))
+    buildDetailSheet(wb, `${year}年${month}月 已決案明細`, groupByHandler(cases, true), scopeModeLabel)
   } else {
-    buildQuarterSheet(wb, `${year}年${quarter}已決案統計`, groupByHandler(cases, false))
+    buildQuarterSheet(wb, `${year}年${quarter}已決案統計`, groupByHandler(cases, false), scopeModeLabel)
 
     // YTD（Q1 ~ 當季）
     const qMonths = QUARTER_MONTHS[quarter] ?? [1, 2, 3]
@@ -154,15 +190,17 @@ export async function GET(req: NextRequest) {
       select: {
         id: true, caseNumber: true, insuredName: true, closeDate: true,
         actualFee: true, travelOtherExpense: true,
+        departmentId: true, // [2026/08/04] - Lisa - FR-107：與主查詢欄位一致（groupByHandler 共用）
+        department: { select: { name: true } },
         assignments: { select: { employeeId: true, role: true, contributionRatio: true, employee: { select: { name: true } } } },
       },
     })
-    buildQuarterSheet(wb, `Q1~${quarter}累計`, groupByHandler(ytdCases, false))
+    buildQuarterSheet(wb, `Q1~${quarter}累計`, groupByHandler(ytdCases, false), scopeModeLabel)
   }
 
   const buffer = await wb.xlsx.writeBuffer()
   const label = type === 'monthly' ? `${year}${String(month).padStart(2, '0')}` : `${year}${quarter}`
-  const filename = `已決案明細表_${label}_${dayjs().format('YYYYMMDD')}.xlsx`
+  const filename = `已決案明細表_${label}_${taipeiNow().format('YYYYMMDD')}.xlsx`
   return new NextResponse(buffer, {
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -172,7 +210,7 @@ export async function GET(req: NextRequest) {
 }
 
 // ── 月明細：依經辦人分組逐筆列出，每組小計，末列總計 ──────────────────────
-function buildDetailSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpGroup[]) {
+function buildDetailSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpGroup[], scopeModeLabel: string) {
   const ws = wb.addWorksheet(sheetName)
   ws.columns = [
     { header: '序', key: 'seq', width: 6 },
@@ -225,7 +263,8 @@ function buildDetailSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpGr
   for (let col = 1; col <= 9; col++) total.getCell(col).fill = TOTAL_FILL
 
   // [2026/07/14] - Lisa - 表格下方加註
-  const note = ws.addRow(['註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；同一案分列於各經辦人，件數依參與人計。'])
+  // [2026/08/04] - Lisa - FR-107：加註本次統計範圍與備註欄部門標記說明（匯出檔可獨立判讀）
+  const note = ws.addRow([`註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；同一案分列於各經辦人，件數依參與人計。備註欄 [ ] 為非本單位之案件承辦部門。統計範圍：${scopeModeLabel}。`])
   ws.mergeCells(note.number, 1, note.number, 9)
   note.getCell(1).font = { size: 9, italic: true, color: { argb: 'FF888888' } }
   note.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }
@@ -234,12 +273,13 @@ function buildDetailSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpGr
 }
 
 // ── 季統計：每位經辦人一列（件數/純公證費/差旅其他費/小計）+ 合計 ─────────
-function buildQuarterSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpGroup[]) {
+function buildQuarterSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpGroup[], scopeModeLabel: string) {
   const ws = wb.addWorksheet(sheetName)
   ws.columns = [
     { header: '序', key: 'seq', width: 6 },
     { header: '經辦人', key: 'empName', width: 14 },
-    { header: '件數', key: 'caseCount', width: 8 },
+    // [2026/08/04] - Lisa - FR-109 季統計件數只計主辦（協辦不計件，仍計金額份額）
+    { header: '件數(主辦)', key: 'caseCount', width: 12 },
     { header: '純公證費', key: 'actualFee', width: 16 },
     { header: '差旅其他費', key: 'travelFee', width: 14 },
     { header: '小計', key: 'subtotalFee', width: 16 },
@@ -249,11 +289,12 @@ function buildQuarterSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpG
   const grand = { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 }
   groups.forEach((g, i) => {
     const row = ws.addRow({
-      seq: i + 1, empName: g.empName, caseCount: g.totals.caseCount || null,
+      // [2026/08/04] - Lisa - FR-109 件數欄改用 primaryCount（主辦件數）
+      seq: i + 1, empName: g.empName, caseCount: g.totals.primaryCount || null,
       actualFee: g.totals.actualFee || null, travelFee: g.totals.travelFee || null, subtotalFee: g.totals.subtotalFee || null,
     })
     styleBody(row, 6, [4, 5, 6])
-    grand.caseCount += g.totals.caseCount
+    grand.caseCount += g.totals.primaryCount
     grand.actualFee += g.totals.actualFee
     grand.travelFee += g.totals.travelFee
     grand.subtotalFee += g.totals.subtotalFee
@@ -268,7 +309,8 @@ function buildQuarterSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpG
   for (let col = 1; col <= 6; col++) total.getCell(col).fill = TOTAL_FILL
 
   // [2026/07/14] - Lisa - 表格下方加註
-  const note = ws.addRow(['註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；件數依參與人計。'])
+  // [2026/08/04] - Lisa - FR-107：加註本次統計範圍
+  const note = ws.addRow([`註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；件數僅計主辦案件（協辦不計件，惟仍計入其金額份額）。統計範圍：${scopeModeLabel}。`])
   ws.mergeCells(note.number, 1, note.number, 6)
   note.getCell(1).font = { size: 9, italic: true, color: { argb: 'FF888888' } }
   note.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }

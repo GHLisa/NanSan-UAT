@@ -3,6 +3,7 @@ import { getSession, JWTPayload } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { splitFeeByRatio } from '@/lib/feeSplit'
 import dayjs from 'dayjs'
+import { taipeiNow } from '@/lib/sla'
 
 // ── 可設定對象（對齊 demo FeeTargetPage subordinates）─────────────────────
 // team_lead：同部門同組別的承辦人；dept_manager：本部門承辦人＋組長；其餘角色無對象
@@ -70,6 +71,7 @@ async function getSubordinates(session: JWTPayload) {
 
 // ── 年度實績：closeDate 為該年度的案件，依貢獻比例分攤 actualFee ───────────
 // 對齊 demo calcActualFee / calcActualCaseCount
+// [2026/08/04] - Lisa - FR-110 fee＝依比例分攤的份額；count＝**只計主辦**的案件數
 async function calcActuals(empIds: number[], years: number[]) {
   const map = new Map<string, { fee: number; count: number }>()
   if (empIds.length === 0 || years.length === 0) return map
@@ -98,7 +100,9 @@ async function calcActuals(empIds: number[], years: number[]) {
       if (!empSet.has(a.employeeId)) return
       const key = `${a.employeeId}-${year}`
       const entry = map.get(key) ?? { fee: 0, count: 0 }
-      entry.count += 1
+      // [2026/08/04] - Lisa - FR-110 件數只計主辦（協辦不計件，惟金額份額仍計）。
+      // 與已決案明細表季統計（FR-109）、儀表板結案件數達成率同一口徑。
+      if (a.role === '主辦') entry.count += 1
       if (amts) entry.fee += amts[i]
       map.set(key, entry)
     })
@@ -108,6 +112,7 @@ async function calcActuals(empIds: number[], years: number[]) {
 
 // ── 庫存：未決案件的預估公證費（依貢獻比例分攤）與件數 ─────────────────────
 // 對齊 demo calcInventoryFee / calcInventoryCaseCount
+// [2026/08/04] - Lisa - FR-110 fee＝依比例分攤的份額；count＝**只計主辦**的未決案件數
 async function calcInventory(empIds: number[]) {
   const map = new Map<number, { fee: number; count: number }>()
   if (empIds.length === 0) return map
@@ -127,7 +132,8 @@ async function calcInventory(empIds: number[]) {
     c.assignments.forEach((a, i) => {
       if (!empSet.has(a.employeeId)) return
       const entry = map.get(a.employeeId) ?? { fee: 0, count: 0 }
-      entry.count += 1
+      // [2026/08/04] - Lisa - FR-110 庫存件數同樣只計主辦，與同頁實績件數口徑一致
+      if (a.role === '主辦') entry.count += 1
       entry.fee += amts[i]
       map.set(a.employeeId, entry)
     })
@@ -187,7 +193,8 @@ export async function GET(req: NextRequest) {
   }
 
   // ── 年度目標設定（含前一年參考值／實績與庫存）──────────────────────────
-  const year = parseInt(req.nextUrl.searchParams.get('year') ?? String(dayjs().year()))
+  // [2026/08/05] - Lisa - 預設年度取台北時間（伺服器 UTC 於元旦台北 00:00~08:00 會落在去年）
+  const year = parseInt(req.nextUrl.searchParams.get('year') ?? String(taipeiNow().year()))
   const refYear = year - 1
 
   const [targets, refActuals, inventory] = await Promise.all([

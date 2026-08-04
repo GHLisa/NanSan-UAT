@@ -4,6 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
 import { mailReviewRejected, mailReviewCascade, emailsByIds, vpEmails } from '@/lib/caseMail'
 import { reviewPendingNotification } from '@/lib/caseNotify'
+// [2026/08/05] - Lisa - 終審核准自動回填案件報告日期（節點2→初步報告日期、節點7→最終報告日期）
+import { reportDateFieldOf } from '@/lib/reportStage'
 
 const ActionSchema = z.object({
   // [2026/06/18] - Lisa - 方案1 新增 'abandon'（承辦人放棄被退回的送審）
@@ -40,7 +42,15 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   const review = await prisma.caseReview.findUnique({
     where: { id },
-    include: { case: { select: { id: true, caseNumber: true, departmentId: true, estimatedFee: true, actualFee: true } } },
+    include: {
+      case: {
+        select: {
+          id: true, caseNumber: true, departmentId: true, estimatedFee: true, actualFee: true,
+          // [2026/08/05] - Lisa - 自動回填前需確認欄位是否為空（已有值不覆寫）
+          preliminaryReportDate: true, finalReportDate: true,
+        },
+      },
+    },
   })
   if (!review) return NextResponse.json({ success: false, error: '找不到審核記錄' }, { status: 404 })
 
@@ -178,6 +188,23 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       break
   }
 
+  // ── [2026/08/05] - Lisa - 終審核准自動回填案件報告日期 ────────────────────
+  // 節點2（查勘初步報告書／初步預估試算表）→ 初步報告日期；節點7（結案報告書）→ 最終報告日期。
+  // 「終審核准」＝本次動作讓該筆走完所需的全部關卡：
+  //   - approve 且不需加簽、不需副總 → 當下即終審
+  //   - vp_approve → 當下即終審
+  //   - mid_approve 一律 cascade 至副總關卡，故非終審
+  // 已有值不覆寫（保留人工／補登的原始日期），退回不寫，重送再核准時若已有值亦不動。
+  const isTerminalApproval =
+    (body.action === 'approve' && !review.requiresMidApproval && !review.requiresVP) ||
+    body.action === 'vp_approve'
+  const reportDateField = isTerminalApproval ? reportDateFieldOf(review.documentType) : null
+  const shouldFillReportDate = !!reportDateField && review.case[reportDateField] == null
+  const REPORT_DATE_LABEL: Record<'preliminaryReportDate' | 'finalReportDate', string> = {
+    preliminaryReportDate: '初步報告日期',
+    finalReportDate: '最終報告日期',
+  }
+
   // ── FR-86 退件還原追加預估公證費 ──────────────────────────────────────
   const interimTypes = tryParseArray(review.interimTypes)
   const shouldRevertFee =
@@ -212,6 +239,24 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         },
       })
       // [2026/06/18] - Lisa - Issue #8 追加公證費改加至實際公證費 - end
+    }
+
+    // [2026/08/05] - Lisa - 終審核准回填報告日期（含修改記錄，logType 'auto_fill' 以免被誤判為「送審後已修改」）
+    if (reportDateField && shouldFillReportDate) {
+      await tx.case.update({
+        where: { id: review.case.id },
+        data: { [reportDateField]: now },
+      })
+      await tx.caseLog.create({
+        data: {
+          caseId: review.case.id,
+          employeeId: empId,
+          fieldName: REPORT_DATE_LABEL[reportDateField],
+          logType: 'auto_fill',
+          oldValue: null,
+          newValue: now.toISOString().slice(0, 10),
+        },
+      })
     }
 
     // ── FR-13 通知原送審人 ────────────────────────────────────────────

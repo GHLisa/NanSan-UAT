@@ -15,9 +15,14 @@ export async function GET() {
       prisma.insuranceType.findMany({ where: { isActive: true }, orderBy: { id: 'asc' } }),
       prisma.incidentLocation.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } }),
       prisma.incidentCause.findMany({ where: { isActive: true }, orderBy: { id: 'asc' } }),
+      // [2026/08/04] - Lisa - FR-111 一併回傳員工的部門／組別角色，供前端把「承辦人」下拉限縮於
+      // 該部門（原為全公司在職員工，部門主管會看到一堆非本部門人員）。兼任多部門者於各部門皆出現。
       prisma.employee.findMany({
         where: { isActive: true },
-        select: { id: true, name: true, username: true },
+        select: {
+          id: true, name: true, username: true,
+          roles: { select: { departmentId: true, teamGroup: true, isPrimary: true } },
+        },
         orderBy: { name: 'asc' },
       }),
       // [2026/07/16] - Lisa - 案件查詢年度下拉改依實際資料動態產生：列出系統中所有案件的委託年度

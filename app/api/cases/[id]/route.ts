@@ -4,6 +4,8 @@ import { canDispatch } from '@/lib/permissions'
 import { prisma } from '@/lib/prisma'
 // [2026/07/31] - Lisa - 銷案案件刪除：封存後實刪（含派案紀錄標記、發信紀錄加註、序號重算）
 import { archiveAndDeleteCase } from '@/lib/caseArchive'
+// [2026/08/05] - Lisa - 初報完成多來源判定（明細頁 SLA 燈號用）
+import { isPrelimDone } from '@/lib/reportStage'
 
 function parseJsonArray(s: string | null): string[] {
   if (!s) return []
@@ -62,6 +64,8 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       commissionDate: c.commissionDate.toISOString(),
       preliminaryReportDate: c.preliminaryReportDate?.toISOString() ?? null,
       finalReportDate: c.finalReportDate?.toISOString() ?? null,
+      // [2026/08/05] - Lisa - 初報是否完成（日期／初報文件終審核准／階段已越過初報），供明細頁 SLA 燈號
+      prelimDone: isPrelimDone(c),
       closeDate: c.closeDate?.toISOString() ?? null,
       contactReturnDate: c.contactReturnDate?.toISOString() ?? null,
       createdAt: c.createdAt.toISOString(),

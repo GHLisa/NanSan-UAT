@@ -26,6 +26,8 @@ import {
   isNewlyYellowToday,
   taipeiNow,
 } from './sla'
+// [2026/08/05] - Lisa - 初報完成改多來源判定（初報日期／初報文件終審核准／案件階段），與畫面同一規則
+import { isPrelimDone } from './reportStage'
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? ''
 
@@ -77,7 +79,7 @@ function caseTable(rows: CaseRow[], noteHeader = '備註'): string {
     `<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #1B4F8C;font-size:13px;color:#1B4F8C;white-space:nowrap">${t}</th>`
   const td = (t: string) =>
     `<td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:13px;vertical-align:top">${t}</td>`
-  const head = `<tr>${th('案號')}${th('被保險人')}${th('部門')}${th('委辦日')}${th('已逾天數')}${th('燈號')}${th(noteHeader)}</tr>`
+  const head = `<tr>${th('公證編號')}${th('被保險人')}${th('部門')}${th('委辦日')}${th('已逾天數')}${th('燈號')}${th(noteHeader)}</tr>`
   const body = rows
     .map(
       r =>
@@ -121,6 +123,7 @@ interface OpenCase {
   insuredName: string
   commissionDate: Date
   preliminaryReportDate: Date | null
+  prelimDone: boolean          // [2026/08/05] - Lisa - 初報是否完成（多來源判定，SLA 燈號依此）
   status: string
   departmentId: number
   departmentName: string
@@ -157,6 +160,7 @@ async function loadOpenCases(): Promise<OpenCase[]> {
       insuredName: true,
       commissionDate: true,
       preliminaryReportDate: true,
+      currentStage: true, // [2026/08/05] - Lisa - 初報完成判定第三來源（階段已越過初步報告）
       status: true,
       parkingStatus: true,
       departmentId: true,
@@ -167,7 +171,11 @@ async function loadOpenCases(): Promise<OpenCase[]> {
       // recordStatus null = 進行中（未被重送 / 放棄取代）
       reviews: {
         where: { recordStatus: null },
-        select: { reviewStatus: true, midApprovalStatus: true, approvalStatus: true },
+        select: {
+          reviewStatus: true, midApprovalStatus: true, approvalStatus: true,
+          // [2026/08/05] - Lisa - 判定初報文件是否「終審核准」所需
+          documentType: true, requiresVP: true, requiresMidApproval: true,
+        },
       },
     },
   })
@@ -177,6 +185,7 @@ async function loadOpenCases(): Promise<OpenCase[]> {
     insuredName: c.insuredName,
     commissionDate: c.commissionDate,
     preliminaryReportDate: c.preliminaryReportDate,
+    prelimDone: isPrelimDone(c),
     status: c.status,
     parkingStatus: c.parkingStatus,
     departmentId: c.departmentId,
@@ -199,7 +208,7 @@ function toRow(c: OpenCase, now: Dayjs, note: string): CaseRow {
     departmentName: c.departmentName,
     commissionDate: c.commissionDate,
     daysSince: daysSinceCommission(c.commissionDate, now),
-    light: getSlaStatus(c.commissionDate, c.preliminaryReportDate, c.status, now),
+    light: getSlaStatus(c.commissionDate, c.prelimDone, c.status, now),
     note,
   }
 }
@@ -245,7 +254,7 @@ function renderHandlerDigest(
   const activeCases = cases.filter(c => !c.parkingStatus)          // 燈號督導清單：排除停泊
   const parkedCount = cases.length - activeCases.length
   const newYellow = activeCases
-    .filter(c => isNewlyYellowToday(c.commissionDate, c.preliminaryReportDate, c.status, now))
+    .filter(c => isNewlyYellowToday(c.commissionDate, c.prelimDone, c.status, now))
     .map(c => toRow(c, now, ''))
   const allOpen = activeCases.map(c => toRow(c, now, c.pendingGate ?? ''))
   const body =
@@ -297,7 +306,7 @@ export async function runDailyDigest(now: Dayjs = taipeiNow()): Promise<DailyDig
 
   // a. 今日新進入黃燈案件對照表（caseId → 是否新黃燈），供分區呈現
   const isNewYellow = (c: OpenCase) =>
-    isNewlyYellowToday(c.commissionDate, c.preliminaryReportDate, c.status, now)
+    isNewlyYellowToday(c.commissionDate, c.prelimDone, c.status, now)
 
   // ── a + b：每位主承辦人一封信 ─────────────────────────────────────────
   let handlerMailsSent = 0
@@ -473,7 +482,7 @@ async function runReviewerDigest(): Promise<number> {
       `<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #1B4F8C;font-size:13px;color:#1B4F8C;white-space:nowrap">${t}</th>`
     const td = (t: string) =>
       `<td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:13px">${t}</td>`
-    const head = `<tr>${th('案號')}${th('被保險人')}${th('文件類型')}${th('審核關卡')}${th('送審日')}</tr>`
+    const head = `<tr>${th('公證編號')}${th('被保險人')}${th('文件類型')}${th('審核關卡')}${th('送審日')}</tr>`
     const body = docs
       .map(
         d =>
@@ -536,7 +545,7 @@ export async function runWeeklyDeptReport(now: Dayjs = taipeiNow()): Promise<Wee
     if (c.parkingStatus) {
       bucket.parked.push(c)
     } else {
-      const light = getSlaStatus(c.commissionDate, c.preliminaryReportDate, c.status, now)
+      const light = getSlaStatus(c.commissionDate, c.prelimDone, c.status, now)
       if (light !== 'normal') {
         bucket.rows.push(toRow(c, now, primaryOf(c)?.name ? `主辦：${primaryOf(c)?.name}` : ''))
       }
@@ -618,20 +627,20 @@ export function buildEventDigestHtml(events: QueuedEvent[]): string {
   const assignNew = pick('new_assignment')
   if (assignNew.length) {
     const rows = assignNew.map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}</tr>`).join('')
-    body += section(`🆕 新派案　${assignNew.length} 件`, '#1B4F8C', `${th('案號')}${th('被保險人')}`, rows)
+    body += section(`🆕 新派案　${assignNew.length} 件`, '#1B4F8C', `${th('公證編號')}${th('被保險人')}`, rows)
   }
 
   const assignChg = pick('assignment_changed')
   if (assignChg.length) {
     const rows = assignChg.map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}</tr>`).join('')
-    body += section(`🔁 承辦人異動　${assignChg.length} 件`, '#1B4F8C', `${th('案號')}${th('被保險人')}`, rows)
+    body += section(`🔁 承辦人異動　${assignChg.length} 件`, '#1B4F8C', `${th('公證編號')}${th('被保險人')}`, rows)
   }
 
   const toReview = pick(['review_submitted', 'review_cascade'])
   if (toReview.length) {
     // [2026/07/15] - Lisa - 合併送審：文件類型後加註「（合併送審 請款單DEBIT NOTE）」讓審核人一眼看出
     const rows = toReview.map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}${td((e.documentType ?? '—') + (e.mergedBilling ? '（合併送審 請款單DEBIT NOTE）' : ''))}</tr>`).join('')
-    body += section(`📄 待您審核的文件　${toReview.length} 件`, '#2E7D32', `${th('案號')}${th('被保險人')}${th('文件類型')}`, rows)
+    body += section(`📄 待您審核的文件　${toReview.length} 件`, '#2E7D32', `${th('公證編號')}${th('被保險人')}${th('文件類型')}`, rows)
   }
 
   const rejected = pick('review_rejected')
@@ -639,7 +648,7 @@ export function buildEventDigestHtml(events: QueuedEvent[]): string {
     const rows = rejected
       .map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}${td(e.documentType ?? '—')}${td(e.remarks ?? '—')}</tr>`)
       .join('')
-    body += section(`↩️ 文件退回　${rejected.length} 件`, '#E53E3E', `${th('案號')}${th('被保險人')}${th('文件類型')}${th('退回原因')}`, rows)
+    body += section(`↩️ 文件退回　${rejected.length} 件`, '#E53E3E', `${th('公證編號')}${th('被保險人')}${th('文件類型')}${th('退回原因')}`, rows)
   }
 
   return shell(

@@ -3,7 +3,7 @@ import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
 // [2026/07/31] - Lisa - deriveSeqKey / recomputeSeq 抽至 lib/caseNumber 共用（銷案刪除亦需重算計數器）
-import { deriveSeqKey, recomputeSeq } from '@/lib/caseNumber'
+import { deriveSeqKey, recomputeSeq, findSeqConflicts, parseSeqParts } from '@/lib/caseNumber'
 
 // 公證編號修正（系統管理）— sysadmin / 行政人員可用
 // GET  ?keyword=  依公證編號或被保險人搜尋案件（供選取欲修正的案件）
@@ -107,6 +107,21 @@ export async function PATCH(req: NextRequest) {
   const empId = parseInt(session.sub)
   const caseNoCode = target.department.caseNoCode || target.department.code
   const regionCode = target.department.region.caseNoCode ?? ''
+
+  // [2026/08/04] - Lisa - FR-108 同群組流水號重複警示（警示＋二次確認，不硬擋）。
+  // 與建案人工填號同一漏洞：unique 只管完整字串，改成他保司的同序號可造出群組重號。
+  const seqConflicts = await findSeqConflicts(prisma, newCaseNumber, caseNoCode, id)
+  if (seqConflicts.length > 0 && body.confirmDuplicateSeq !== true) {
+    const parts = parseSeqParts(newCaseNumber)
+    return NextResponse.json(
+      {
+        success: false,
+        error: `流水號 ${parts?.seq ?? ''} 在「${caseNoCode}${parts?.regionCode ?? ''}-${parts?.year ?? ''}」群組已被使用：${seqConflicts.join('、')}。同部門同年度流水號原則上不重複，確定仍要改為「${newCaseNumber}」？`,
+        code: 'DUPLICATE_SEQ',
+      },
+      { status: 409 },
+    )
+  }
 
   try {
     const result = await prisma.$transaction(async (tx) => {

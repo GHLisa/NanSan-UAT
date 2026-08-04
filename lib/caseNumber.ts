@@ -26,6 +26,54 @@ export function deriveSeqKey(
 }
 
 /**
+ * [2026/08/04] - Lisa - FR-108 解析公證編號的「年度＋區域＋流水號」三段。
+ * 取第一個符合 `-[年度2碼][區域代號]-[流水號]` 的片段，故 `NLSC-19K-021-1`（分件尾碼）
+ * 解析為 seq=21 而非尾碼 1（與 deriveSeqKey 只取 parts[1] 的年度判定一致）。
+ */
+export function parseSeqParts(
+  caseNumber: string,
+): { year: string; regionCode: string; seq: number } | null {
+  const m = caseNumber.match(/-(\d{2})([A-Za-z]*)-0*(\d+)/)
+  if (!m) return null
+  return { year: m[1], regionCode: m[2].toUpperCase(), seq: parseInt(m[3], 10) }
+}
+
+/**
+ * [2026/08/04] - Lisa - FR-108 找出「同群組（部門代號＋區域＋年度）已使用同一流水號」的案件。
+ *
+ * 存在原因：`Case.caseNumber` 的 unique 只約束「完整字串」，保司代碼不同即視為不同編號，
+ * 因此人工填號／編號修正可讓同群組序號重複（如 NLCK-26K-114 與 NLFB-26K-114 併存），
+ * 破壞 seqKey「同部門同年度序號唯一」的前提。本函式供建案與編號修正做「警示＋二次確認」，
+ * 非硬性阻擋（客戶需保留補登歷史案件的彈性）。
+ *
+ * 群組判定與 recomputeSeq 相同（startsWith caseNoCode + contains `-年度區域-`），
+ * 序號比對改用 parseSeqParts，避免分件尾碼誤判。
+ */
+export async function findSeqConflicts(
+  tx: Prisma.TransactionClient,
+  caseNumber: string,
+  caseNoCode: string,
+  excludeCaseId?: number,
+): Promise<string[]> {
+  const parts = parseSeqParts(caseNumber)
+  if (!parts) return []
+  const { year, regionCode, seq } = parts
+  const rows = await tx.case.findMany({
+    where: {
+      caseNumber: { startsWith: caseNoCode, contains: `-${year}${regionCode}-` },
+      ...(excludeCaseId ? { id: { not: excludeCaseId } } : {}),
+    },
+    select: { caseNumber: true },
+  })
+  return rows
+    .filter((r) => {
+      const p = parseSeqParts(r.caseNumber)
+      return !!p && p.seq === seq && p.year === year && p.regionCode === regionCode
+    })
+    .map((r) => r.caseNumber)
+}
+
+/**
  * 重算單一 seqKey 計數器 → 該群組實際最大流水號 + 1。
  *
  * 本函式為「無條件正確」：掃描 cases 現況取 maxSeq 後設 nextSeq = maxSeq + 1，因此

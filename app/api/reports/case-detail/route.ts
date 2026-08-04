@@ -20,6 +20,15 @@ export async function GET(req: NextRequest) {
   const deptId  = searchParams.get('deptId') ? parseInt(searchParams.get('deptId')!) : null
   const empId   = parseInt(session.sub)
   const { role, departmentId, teamGroup } = session
+  // [2026/08/04] - Lisa - 新增「統計範圍」切換（FR-107）：
+  //   'dept'（預設）＝限案件承辦部門：只納入案屬本單位的案件，顯示列仍僅本單位人員
+  //   'share'        ＝含本單位人員於他部門協辦之案件（v3.11/FR-104 原行為），僅列其份額
+  // 承辦人不適用（一律不限部門、僅自己），故不受此參數影響。
+  const scopeMode = searchParams.get('scopeMode') === 'share' ? 'share' : 'dept'
+  // [2026/08/04] - Lisa - FR-107：備註僅標註「非本單位」之案件承辦部門。
+  // 比對基準：副總/行政/系統管理員＝下拉所選部門（選「全部部門」時無基準，一律不標）；
+  // 其餘角色（承辦人/組長/部門主管）＝當前角色所屬部門。
+  const refDeptId = (canViewAllDepts(role) || role === 'admin_staff') ? deptId : departmentId
 
   // ── closeDate 範圍 ─────────────────────────────────────────────────────
   let closeDateWhere: { gte: Date; lte: Date }
@@ -50,7 +59,22 @@ export async function GET(req: NextRequest) {
     visibleEmpIds = new Set([empId])
   } else if (canViewAllDepts(role) || role === 'admin_staff') {
     // [2026/07/07] - Lisa - 行政人員比照副總：全公司範圍，可依部門查詢條件篩選
-    if (deptId) scopeWhere.departmentId = deptId
+    // [2026/08/04] - Lisa - FR-107：選定部門時可切換範圍定義；未選部門（全部部門）時兩者等價，不做處理
+    if (deptId) {
+      if (scopeMode === 'share') {
+        // 該部門人員（主要角色）有參與之案件（不限案件承辦部門），僅列該部門人員的分攤列
+        const roles = await prisma.employeeRole.findMany({
+          where: { departmentId: deptId, isPrimary: true },
+          select: { employeeId: true },
+        })
+        const ids = [...new Set(roles.map((r) => r.employeeId))]
+        scopeWhere.assignments = { some: { employeeId: { in: ids } } }
+        visibleEmpIds = new Set(ids)
+      } else {
+        // 限案件承辦部門：維持原行為（案屬該部門、列全部承辦人，部門合計完整）
+        scopeWhere.departmentId = deptId
+      }
+    }
   } else if (role === 'team_lead' && departmentId && teamGroup) {
     // [2026/07/28] - Lisa - 組長：以「同組人員（同部門＋同組別，主要角色）的參與」為準，不限案件承辦部門，
     // 使同組人員在他部門協辦的份額也納入（與部門主管同一套邏輯）；顯示列僅限同組人員。
@@ -63,6 +87,8 @@ export async function GET(req: NextRequest) {
     const groupEmpIds = [...new Set(roles.map((r) => r.employeeId))]
     scopeWhere.assignments = { some: { employeeId: { in: groupEmpIds } } }
     visibleEmpIds = new Set(groupEmpIds)
+    // [2026/08/04] - Lisa - FR-107：'dept' 模式再加上「案屬本部門」限制（顯示列仍僅同組人員）
+    if (scopeMode === 'dept') scopeWhere.departmentId = departmentId
   } else if (departmentId) {
     // 組長無組別 / 部門主管
     // [2026/07/28] - Lisa - 範圍改以「本部門人員的參與」為準（不再限案件承辦部門），
@@ -76,6 +102,8 @@ export async function GET(req: NextRequest) {
     const deptEmpIds = [...new Set(roles.map((r) => r.employeeId))]
     scopeWhere.assignments = { some: { employeeId: { in: deptEmpIds } } }
     visibleEmpIds = new Set(deptEmpIds)
+    // [2026/08/04] - Lisa - FR-107：'dept' 模式再加上「案屬本部門」限制（顯示列仍僅本部門人員）
+    if (scopeMode === 'dept') scopeWhere.departmentId = departmentId
   }
 
   // ── 取得已決案件 ─────────────────────────────────────────────────────────
@@ -89,6 +117,9 @@ export async function GET(req: NextRequest) {
       actualFee: true,
       travelOtherExpense: true,
       notes: true,
+      // [2026/08/04] - Lisa - FR-107：備註欄標記案件承辦部門（僅非本單位案件）
+      departmentId: true,
+      department: { select: { name: true } },
       assignments: {
         select: {
           employeeId: true,
@@ -107,7 +138,11 @@ export async function GET(req: NextRequest) {
     closeDate: string; actualFee: number; travelFee: number
     subtotalFee: number; remarks: string
   }
-  type EmpGroup = { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
+  // [2026/08/04] - Lisa - FR-109 季統計件數改「只計主辦」：
+  //   caseCount    ＝參與人次（同一案主辦＋協辦各計 1）→ 月統計明細小計／合計沿用
+  //   primaryCount ＝主辦件數（協辦不計）→ 季統計（當季表／YTD 累計表）使用
+  // 兩者並存而非改寫 caseCount，避免月統計小計與明細列數不符（明細是逐「人次」列）。
+  type EmpGroup = { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; primaryCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
 
   const empMap = new Map<number, EmpGroup>()
 
@@ -116,10 +151,13 @@ export async function GET(req: NextRequest) {
     const travelFeeFull = c.travelOtherExpense ?? 0
     const actualFeeFull = c.actualFee ?? 0
 
-    // 備註：多位承辦人時顯示分工比例
-    const remarks = c.assignments.length > 1
+    // 備註：非本單位案件標記其承辦部門＋多位承辦人時顯示分工比例
+    // [2026/08/04] - Lisa - FR-107：僅「非本單位」之案件加 [承辦部門]，讓跨部門協辦案一眼可辨
+    const ratioText = c.assignments.length > 1
       ? c.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
       : ''
+    const deptTag = refDeptId && c.departmentId !== refDeptId ? `[${c.department.name}]` : ''
+    const remarks = [deptTag, ratioText].filter(Boolean).join(' ')
 
     // 純公證費依承辦比例分攤（非主辦捨去、主辦吸收剩餘）
     const feeAmts = splitFeeByRatio(actualFeeFull, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
@@ -134,7 +172,7 @@ export async function GET(req: NextRequest) {
           empId: a.employeeId,
           empName: a.employee.name,
           cases: [],
-          totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
+          totals: { caseCount: 0, primaryCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
         })
       }
       const group = empMap.get(a.employeeId)!
@@ -149,6 +187,8 @@ export async function GET(req: NextRequest) {
         remarks,
       })
       group.totals.caseCount++
+      // [2026/08/04] - Lisa - FR-109 主辦件數（季統計用）
+      if (a.role === '主辦') group.totals.primaryCount++
       group.totals.actualFee += actualFee
       group.totals.travelFee += travelFee
       group.totals.subtotalFee += subtotalFee
@@ -160,11 +200,12 @@ export async function GET(req: NextRequest) {
   const grandTotals = groups.reduce(
     (s, g) => ({
       caseCount: s.caseCount + g.totals.caseCount,
+      primaryCount: s.primaryCount + g.totals.primaryCount, // [2026/08/04] - Lisa - FR-109
       actualFee: s.actualFee + g.totals.actualFee,
       travelFee: s.travelFee + g.totals.travelFee,
       subtotalFee: s.subtotalFee + g.totals.subtotalFee,
     }),
-    { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 }
+    { caseCount: 0, primaryCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 }
   )
 
   // ── 季統計：計算 YTD ─────────────────────────────────────────────────────
@@ -202,10 +243,12 @@ export async function GET(req: NextRequest) {
         const actualFee = ytdFeeAmts[ai]
         const travelFee = a.role === '主辦' ? travelFeeFull : 0
         if (!ytdMap.has(a.employeeId)) {
-          ytdMap.set(a.employeeId, { empId: a.employeeId, empName: a.employee.name, cases: [], totals: { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 } })
+          ytdMap.set(a.employeeId, { empId: a.employeeId, empName: a.employee.name, cases: [], totals: { caseCount: 0, primaryCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 } })
         }
         const g = ytdMap.get(a.employeeId)!
         g.totals.caseCount++
+        // [2026/08/04] - Lisa - FR-109 YTD 累計表件數同樣只計主辦
+        if (a.role === '主辦') g.totals.primaryCount++
         g.totals.actualFee += actualFee
         g.totals.travelFee += travelFee
         g.totals.subtotalFee += actualFee + travelFee
@@ -216,6 +259,6 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     success: true,
-    data: { type, year, month, quarter, groups, grandTotals, ytdGroups },
+    data: { type, year, month, quarter, scopeMode, groups, grandTotals, ytdGroups },
   })
 }

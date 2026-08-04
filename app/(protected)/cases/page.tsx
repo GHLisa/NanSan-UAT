@@ -20,6 +20,25 @@ const CASE_STAGES = [
 ]
 const STAGE_OPTIONS = [{ value: '', label: '全部階段' }, ...CASE_STAGES.map(s => ({ value: s, label: s }))]
 
+// [2026/08/04] - Lisa - 儀表板卡片「查看全部」導向 /cases?alert=sla|statute|returned；
+// 於此提供對應下拉，讓使用者看得到目前正被預警篩選、也能自行切換或清除
+const ALERT_OPTIONS = [
+  { value: '', label: '全部預警狀態' },
+  { value: 'sla', label: '🔴🟡 SLA 預警' },
+  { value: 'statute', label: '⚠️ 兩年時效預警' },
+  { value: 'returned', label: '🟠 退回待修' },
+  // [2026/08/05] - Lisa - 儀表板待辦事項 P1／P2 提醒的完整清單
+  { value: 'prelim14', label: '⏱ 初報期限（14天內）' },
+  { value: 'close14', label: '📕 待結案（結報/請款已核准）' },
+  // [2026/08/05] - Lisa - 儀表板 SLA 預警四段的完整清單
+  { value: 'prelim_overdue', label: '🔴 初報逾期（D+14 以上）' },
+  { value: 'closing60', label: '📐 結報期限（節點6核定後60天）' },
+  { value: 'open90', label: '🕰 長期未決（D+90 以上）' },
+  { value: 'parked', label: '⏸ 停泊案件' },
+]
+// URL ?alert= 可接受的值（由儀表板卡片帶入）
+const ALERT_VALUES = ALERT_OPTIONS.map(o => o.value).filter(Boolean)
+
 const SLA_INFO = {
   green:  { emoji: '🟢', text: '正常', color: '#52c41a' },
   yellow: { emoji: '🟡', text: '黃燈預警', color: '#faad14' },
@@ -60,7 +79,8 @@ interface CaseItem {
 
 interface MetaData {
   departments: { id: number; name: string }[]
-  employees: { id: number; name: string }[]
+  // [2026/08/04] - Lisa - FR-111 roles 供「承辦人」下拉依部門（組長再依組別）限縮
+  employees: { id: number; name: string; roles?: { departmentId: number | null; teamGroup: string | null; isPrimary: boolean }[] }[]
 }
 
 function getDefaultFilters(role: string, empId: number, deptId: number | null) {
@@ -100,6 +120,7 @@ export default function CasesPage() {
     assigneeId: defaults.assigneeId,
     incidentDateFrom: '',
     incidentDateTo: '',
+    alert: '', // [2026/08/04] - Lisa - 預警篩選：'' | 'sla' | 'statute' | 'returned'
     page: 1,
     pageSize: 15,
   })
@@ -135,11 +156,25 @@ export default function CasesPage() {
   // [2026/07/09] - Lisa - 掛載時還原 sessionStorage 保存的分頁/篩選狀態（僅還原一次）
   useEffect(() => {
     if (!listStateKey) return
+    // [2026/08/04] - Lisa - 由儀表板卡片「查看全部」進入（?alert=<ALERT_OPTIONS 之值>）時，
+    // 該預警篩選優先於 sessionStorage 快取；同時清掉承辦人／階段／日期等既有條件，
+    // 尤其承辦人預設（承辦人、組長為「自己」）會讓清單少於儀表板卡片的可視範圍。
+    const alertParam = new URLSearchParams(window.location.search).get('alert')
+    if (alertParam && ALERT_VALUES.includes(alertParam)) {
+      setFilters(f => ({
+        ...f, alert: alertParam, q: '', stage: '', assigneeId: '',
+        incidentDateFrom: '', incidentDateTo: '', page: 1,
+      }))
+      setDateRange(null)
+      setRestored(true)
+      return
+    }
     try {
       const saved = sessionStorage.getItem(listStateKey)
       if (saved) {
         const parsed = JSON.parse(saved) as { filters?: typeof filters; dateRange?: [string | null, string | null] | null }
-        if (parsed.filters) setFilters(parsed.filters)
+        // [2026/08/04] - Lisa - 舊版快取無 alert 欄位，補預設值避免 undefined
+        if (parsed.filters) setFilters({ ...parsed.filters, alert: parsed.filters.alert ?? '' })
         if (parsed.dateRange && parsed.dateRange[0]) {
           setDateRange([dayjs(parsed.dateRange[0]), dayjs(parsed.dateRange[1] ?? parsed.dateRange[0])])
         }
@@ -161,13 +196,16 @@ export default function CasesPage() {
 
   const loadCases = useCallback(async () => {
     setLoading(true)
-    const params = new URLSearchParams({ status: '未決' })
+    // [2026/08/04] - Lisa - 退回待修不限案件狀態：退回文件可能落在已決/銷案案件上（仍需修正重送），
+    // 若沿用預設的「未決」會讓儀表板待辦有數字、點進來卻 0 筆
+    const params = new URLSearchParams({ status: filters.alert === 'returned' ? 'all' : '未決' })
     if (filters.q) params.set('q', filters.q)
     if (filters.stage) params.set('stage', filters.stage)
     if (filters.deptId) params.set('deptId', filters.deptId)
     if (filters.assigneeId) params.set('assigneeId', filters.assigneeId)
     if (filters.incidentDateFrom) params.set('incidentDateFrom', filters.incidentDateFrom)
     if (filters.incidentDateTo) params.set('incidentDateTo', filters.incidentDateTo)
+    if (filters.alert) params.set('alert', filters.alert) // [2026/08/04] - Lisa - 預警篩選（SLA／兩年時效）
     params.set('page', String(filters.page))
     params.set('pageSize', String(filters.pageSize))
     const res = await api.get<CaseItem[]>(`/api/cases?${params.toString()}`)
@@ -181,7 +219,7 @@ export default function CasesPage() {
   useEffect(() => { if (restored) loadCases() }, [loadCases, restored])
 
   function resetFilters() {
-    setFilters({ q: '', stage: '', deptId: defaults.deptId, assigneeId: defaults.assigneeId, incidentDateFrom: '', incidentDateTo: '', page: 1, pageSize: 15 })
+    setFilters({ q: '', stage: '', deptId: defaults.deptId, assigneeId: defaults.assigneeId, incidentDateFrom: '', incidentDateTo: '', alert: '', page: 1, pageSize: 15 })
     setDateRange(null)
   }
 
@@ -210,9 +248,25 @@ export default function CasesPage() {
   // 部門篩選被限制在單一部門（僅一個選項）時，清單毋需再顯示部門欄；多選項（如執行副總）才保留
   const showDeptColumn = deptOptions.length > 1
 
+  // [2026/08/04] - Lisa - FR-111 承辦人下拉限縮於「當前部門範圍」的人員（原為全公司在職員工）：
+  //   - 可跨部門角色（副總／系統管理員／無部門行政人員）：跟隨「部門」篩選；選「全部部門」時才列全公司
+  //   - 組長：本部門且同組別（其可視範圍即同組人員，列出他組會查出 0 筆）
+  //   - 部門主管／有部門行政人員：本部門人員
+  // 兼任他部門者（EmployeeRole 有該部門任一角色，不限 isPrimary）亦列入，因其確實會承辦該部門案件。
+  const scopeDeptId = filters.deptId
+    ? parseInt(filters.deptId)
+    : (isWide ? null : session?.departmentId ?? null)
+  const scopedEmployees = scopeDeptId == null
+    ? meta.employees
+    : meta.employees.filter(e =>
+        (e.roles ?? []).some(r =>
+          r.departmentId === scopeDeptId &&
+          (session?.role !== 'team_lead' || !session.teamGroup || r.teamGroup === session.teamGroup)
+        )
+      )
   const assigneeOptions = isWide
-    ? [{ value: '', label: '全部承辦人' }, ...meta.employees.map(e => ({ value: String(e.id), label: e.name }))]
-    : [{ value: '', label: '全部' }, ...meta.employees.map(e => ({ value: String(e.id), label: e.name }))]
+    ? [{ value: '', label: '全部承辦人' }, ...scopedEmployees.map(e => ({ value: String(e.id), label: e.name }))]
+    : [{ value: '', label: '全部' }, ...scopedEmployees.map(e => ({ value: String(e.id), label: e.name }))]
 
   const columns = [
     {
@@ -361,6 +415,12 @@ export default function CasesPage() {
                 value={filters.stage} onChange={v => setFilters(f => ({ ...f, stage: v, page: 1 }))}
                 options={STAGE_OPTIONS} style={{ width: 145 }} />
             </Col>
+            {/* [2026/08/04] - Lisa - 預警篩選（儀表板「查看全部」帶入，亦可自行切換／清除） */}
+            <Col>
+              <Select
+                value={filters.alert} onChange={v => setFilters(f => ({ ...f, alert: v, page: 1 }))}
+                options={ALERT_OPTIONS} style={{ width: 165 }} />
+            </Col>
             <Col>
               <DatePicker.RangePicker
                 placeholder={['出險日期起', '出險日期迄']}
@@ -379,8 +439,11 @@ export default function CasesPage() {
           {!isHandler && (
             <Row gutter={[8, 8]} align="middle">
               <Col>
+                {/* [2026/08/04] - Lisa - FR-111 切換部門時清掉已選承辦人：該人員可能不屬新部門，
+                    留著會讓下拉顯示不存在的選項值、且查出 0 筆 */}
                 <Select
-                  value={filters.deptId} onChange={v => setFilters(f => ({ ...f, deptId: v, page: 1 }))}
+                  value={filters.deptId}
+                  onChange={v => setFilters(f => ({ ...f, deptId: v, assigneeId: '', page: 1 }))}
                   options={deptOptions} style={{ width: 145 }} />
               </Col>
               <Col>

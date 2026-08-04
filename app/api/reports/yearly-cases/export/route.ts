@@ -4,6 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { caseReportYear } from '@/lib/caseYear'
 import ExcelJS from 'exceljs'
 import dayjs from 'dayjs'
+// [2026/08/05] - Lisa - 檔名日期取台北時間（伺服器 UTC 於台北 00:00~08:00 會標成前一日）
+import { taipeiNow } from '@/lib/sla'
 
 export const runtime = 'nodejs'
 
@@ -206,7 +208,7 @@ export async function GET(req: NextRequest) {
   )
 
   const buffer = await wb.xlsx.writeBuffer()
-  const filename = `年度案件統計_${dayjs().format('YYYYMMDD')}.xlsx`
+  const filename = `年度案件統計_${taipeiNow().format('YYYYMMDD')}.xlsx`
 
   return new NextResponse(buffer, {
     headers: {

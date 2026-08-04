@@ -74,6 +74,7 @@ interface CaseDetail {
   parkingStatus: string | null; incidentDate: string; commissionDate: string
   contactFormStatus: string | null; contactReturnDate: string | null
   preliminaryReportDate: string | null; finalReportDate: string | null; closeDate: string | null
+  prelimDone: boolean // [2026/08/05] - Lisa - 初報完成（日期／初報文件終審核准／階段已越過）
   nasFolder: string | null; isSpecialCase: boolean; notes: string | null
   estimatedAmount: number | null; coverageLimit: number | null; deductible: number | null; adjustmentAmount: number | null
   salvageValue: number | null
@@ -97,14 +98,16 @@ interface MetaData {
 }
 
 // SLA 燈號（FR：依委託日推算）
-function calcSla(commissionDate: string, prelimDate: string | null, status: string) {
+// [2026/08/05] - Lisa - 初報完成與否改由後端多來源判定（prelimDone），天數門檻同步對齊 lib/sla
+// 的 D+14 / D+30 / D+90（原為 >14 / >30 / >90，與清單燈號差一天）
+function calcSla(commissionDate: string, prelimDone: boolean, status: string) {
   if (status !== '未決') return { emoji: '🟢', text: '正常' }
-  const days = dayjs().diff(dayjs(commissionDate), 'day')
-  if (!prelimDate) {
-    if (days > 30) return { emoji: '🔴', text: '紅燈預警' }
-    if (days > 14) return { emoji: '🟡', text: '黃燈預警' }
+  const days = dayjs().startOf('day').diff(dayjs(commissionDate).startOf('day'), 'day')
+  if (!prelimDone) {
+    if (days >= 30) return { emoji: '🔴', text: '紅燈預警' }
+    if (days >= 14) return { emoji: '🟡', text: '黃燈預警' }
   }
-  if (days > 90) return { emoji: '🔴', text: '紅燈預警' }
+  if (days >= 90) return { emoji: '🔴', text: '紅燈預警' }
   return { emoji: '🟢', text: '正常' }
 }
 
@@ -842,7 +845,7 @@ export default function CaseDetailPage() {
     )
   }
 
-  const sla = calcSla(caseData.commissionDate, caseData.preliminaryReportDate, caseData.status)
+  const sla = calcSla(caseData.commissionDate, caseData.prelimDone, caseData.status)
   const currentStageIndex = CASE_STAGES.indexOf(caseData.currentStage)
   const deptCode = caseData.departmentCode
 

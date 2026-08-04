@@ -74,17 +74,33 @@ function FixTab() {
     setNewNumber(row.caseNumber)
   }
 
-  async function handleSave() {
+  // [2026/08/04] - Lisa - FR-108 confirmDuplicateSeq：同群組流水號重複時警示，確認後帶旗標重送
+  async function handleSave(confirmDuplicateSeq = false) {
     if (!editing) return
     const next = newNumber.trim()
     if (!next) { message.warning('新公證編號不可為空'); return }
     if (next === editing.caseNumber) { message.warning('新公證編號與現有相同'); return }
 
     setSaving(true)
-    const res = await api.patch<FixResult>('/api/admin/case-number', { id: editing.id, newCaseNumber: next })
+    const res = await api.patch<FixResult>('/api/admin/case-number', {
+      id: editing.id,
+      newCaseNumber: next,
+      confirmDuplicateSeq,
+    })
     setSaving(false)
 
     if (!res.success || !res.data) {
+      // [2026/08/04] - Lisa - FR-108 同群組流水號已被他保司使用：警示＋二次確認（不硬擋）
+      if ((res as { code?: string }).code === 'DUPLICATE_SEQ') {
+        Modal.confirm({
+          title: '流水號重複',
+          content: res.error ?? '此流水號在該部門本年度已被使用，確定仍要改為此編號？',
+          okText: '確認沿用此編號',
+          cancelText: '返回修改',
+          onOk: () => handleSave(true),
+        })
+        return
+      }
       message.error(res.error ?? '修正失敗')
       return
     }
@@ -167,11 +183,13 @@ function FixTab() {
         />
       </Card>
 
+      {/* [2026/08/04] - Lisa - FR-108：onOk／onPressEnter 均包 arrow function，
+          避免事件物件被當成 handleSave 的 confirmDuplicateSeq 參數而略過重號確認 */}
       <Modal
         title="修正公證編號"
         open={!!editing}
         onCancel={() => setEditing(null)}
-        onOk={handleSave}
+        onOk={() => handleSave()}
         confirmLoading={saving}
         okText="確認修正"
         cancelText="取消"
@@ -188,7 +206,7 @@ function FixTab() {
             <Input
               value={newNumber}
               onChange={(e) => setNewNumber(e.target.value)}
-              onPressEnter={handleSave}
+              onPressEnter={() => handleSave()}
               placeholder="輸入新的公證編號"
               style={{ marginTop: 4 }}
             />

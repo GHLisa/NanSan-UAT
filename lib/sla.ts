@@ -6,6 +6,10 @@
 //   紅燈 = 未交初步報告且 D≥30，或（不論初報）未決 D≥90
 //   黃燈 = 未交初步報告且 D≥14
 //
+// [2026/08/05] - Lisa - 「未交初步報告」改由呼叫端以 lib/reportStage 的 isPrelimDone() 判定後
+// 以 prelimDone 布林傳入（原本直接看 Case.preliminaryReportDate，但該欄位無寫入入口、恆為
+// null，導致所有未決案件過 14 天一律黃燈）。本模組只負責天數門檻，不再碰欄位。
+//
 // 所有函式皆以 `now` 參數注入「當下時間」，便於排程指定台北時區、亦利於測試。
 
 import dayjs, { type Dayjs } from 'dayjs'
@@ -21,32 +25,36 @@ export function taipeiNow(base: Dayjs = dayjs()): Dayjs {
 }
 
 // 委辦日至今的「日曆天數」（去除時分秒，純以日為單位）
+// [2026/08/05] - Lisa - 兩端一律換算成台北曆日再相減。實測 DB 內 93% 的 commissionDate 存成
+// 「台北午夜」(=前一日 16:00Z)，若直接取 UTC 曆日會比實際多算一天，且會與資料庫端的日期門檻
+// （以台北日界計算）產生落差，造成卡片件數與清單件數對不起來。
 export function daysSinceCommission(commissionDate: Date, now: Dayjs): number {
-  return now.startOf('day').diff(dayjs(commissionDate).startOf('day'), 'day')
+  const taipeiDay = dayjs(commissionDate).add(TAIPEI_UTC_OFFSET_HOURS, 'hour').startOf('day')
+  return now.startOf('day').diff(taipeiDay, 'day')
 }
 
 export function getSlaStatus(
   commissionDate: Date,
-  preliminaryReportDate: Date | null,
+  prelimDone: boolean,
   status: string,
   now: Dayjs,
 ): SlaStatus {
   if (status !== '未決') return 'normal'
   const d = daysSinceCommission(commissionDate, now)
-  if (!preliminaryReportDate && d >= 30) return 'red'
+  if (!prelimDone && d >= 30) return 'red'
   if (d >= 90) return 'red'
-  if (!preliminaryReportDate && d >= 14) return 'yellow'
+  if (!prelimDone && d >= 14) return 'yellow'
   return 'normal'
 }
 
-// 是否「今日新進入黃燈」：未交初步報告且委辦日恰滿 14 天（今天剛跨入 D+14）
+// 是否「今日新進入黃燈」：未完成初步報告且委辦日恰滿 14 天（今天剛跨入 D+14）
 export function isNewlyYellowToday(
   commissionDate: Date,
-  preliminaryReportDate: Date | null,
+  prelimDone: boolean,
   status: string,
   now: Dayjs,
 ): boolean {
   if (status !== '未決') return false
-  if (preliminaryReportDate) return false
+  if (prelimDone) return false
   return daysSinceCommission(commissionDate, now) === 14
 }

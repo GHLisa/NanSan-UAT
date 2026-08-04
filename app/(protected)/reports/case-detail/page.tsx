@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { Card, Typography, Tabs, Select, Table, Space, Button, message } from 'antd'
+import { Card, Typography, Tabs, Select, Table, Space, Button, Radio, Tooltip, message } from 'antd'
 import { FileExcelOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
@@ -28,8 +28,9 @@ const TOTAL_BG = '#FFF7E6'
 
 // ── Types ─────────────────────────────────────────────────────────────────
 interface CaseRow { id: number; caseNumber: string; insuredName: string; closeDate: string; actualFee: number; travelFee: number; subtotalFee: number; remarks: string }
-interface EmpGroup { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
-interface ReportData { type: string; year: number; month: number; quarter: string; groups: EmpGroup[]; grandTotals: { caseCount: number; actualFee: number; travelFee: number; subtotalFee: number }; ytdGroups: EmpGroup[] | null }
+// [2026/08/04] - Lisa - FR-109 caseCount＝參與人次（月統計小計／合計用）；primaryCount＝主辦件數（季統計用）
+interface EmpGroup { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; primaryCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
+interface ReportData { type: string; year: number; month: number; quarter: string; scopeMode: string; groups: EmpGroup[]; grandTotals: { caseCount: number; primaryCount: number; actualFee: number; travelFee: number; subtotalFee: number }; ytdGroups: EmpGroup[] | null }
 
 // ── Flat row builder for detail table ─────────────────────────────────────
 type FlatRow = {
@@ -143,7 +144,8 @@ function DetailTable({ groups, grandTotals }: { groups: EmpGroup[]; grandTotals:
 const QUARTER_COLS = [
   { title: '序', dataIndex: 'seq', key: 'seq', width: 44, align: 'center' as const },
   { title: '經辦人', dataIndex: 'empName', key: 'empName', width: 100 },
-  { title: '件數', dataIndex: 'caseCount', key: 'caseCount', width: 70, align: 'center' as const, render: (v: number) => fmtN(v) },
+  // [2026/08/04] - Lisa - FR-109 件數只計主辦（協辦不計件，其金額份額仍列入）
+  { title: '件數（主辦）', dataIndex: 'primaryCount', key: 'primaryCount', width: 90, align: 'center' as const, render: (v: number) => fmtN(v) },
   { title: '純公證費', dataIndex: 'actualFee', key: 'actualFee', width: 130, align: 'right' as const, render: (v: number) => fmtFee(v) },
   { title: '差旅其他費', dataIndex: 'travelFee', key: 'travelFee', width: 120, align: 'right' as const, render: (v: number) => fmtFee(v) },
   { title: '小計', dataIndex: 'subtotalFee', key: 'subtotalFee', width: 130, align: 'right' as const, render: (v: number) => fmtFee(v) },
@@ -151,7 +153,8 @@ const QUARTER_COLS = [
 
 function QuarterTable({ groups }: { groups: EmpGroup[] }) {
   const rows = groups.map((g, i) => ({ key: g.empId, seq: i + 1, empName: g.empName, ...g.totals }))
-  const grand = groups.reduce((s, g) => ({ caseCount: s.caseCount + g.totals.caseCount, actualFee: s.actualFee + g.totals.actualFee, travelFee: s.travelFee + g.totals.travelFee, subtotalFee: s.subtotalFee + g.totals.subtotalFee }), { caseCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 })
+  // [2026/08/04] - Lisa - FR-109 合計件數改用 primaryCount（主辦件數），與各列一致
+  const grand = groups.reduce((s, g) => ({ primaryCount: s.primaryCount + g.totals.primaryCount, actualFee: s.actualFee + g.totals.actualFee, travelFee: s.travelFee + g.totals.travelFee, subtotalFee: s.subtotalFee + g.totals.subtotalFee }), { primaryCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 })
   if (rows.length === 0) return <Text type="secondary">查無已決案件資料。</Text>
   return (
     <Table
@@ -161,7 +164,7 @@ function QuarterTable({ groups }: { groups: EmpGroup[] }) {
         <Table.Summary fixed>
           <Table.Summary.Row style={{ background: TOTAL_BG }}>
             <Table.Summary.Cell index={0} colSpan={2} align="left"><Text strong>合計</Text></Table.Summary.Cell>
-            <Table.Summary.Cell index={2} align="center"><Text strong>{grand.caseCount}</Text></Table.Summary.Cell>
+            <Table.Summary.Cell index={2} align="center"><Text strong>{grand.primaryCount}</Text></Table.Summary.Cell>
             <Table.Summary.Cell index={3} align="right"><Text strong>{fmtFee(grand.actualFee)}</Text></Table.Summary.Cell>
             <Table.Summary.Cell index={4} align="right"><Text strong>{fmtFee(grand.travelFee)}</Text></Table.Summary.Cell>
             <Table.Summary.Cell index={5} align="right"><Text strong>{fmtFee(grand.subtotalFee)}</Text></Table.Summary.Cell>
@@ -182,6 +185,8 @@ export default function CaseDetailReportPage() {
   const [filterMonth, setFilterMonth] = useState(dayjs().month() + 1)
   const [filterQ,     setFilterQ]     = useState('Q1')
   const [filterDeptId, setFilterDeptId] = useState<number | null>(null)
+  // [2026/08/04] - Lisa - FR-107 統計範圍：'dept'＝限案件承辦部門（預設）／'share'＝含本單位人員於他部門協辦之份額
+  const [scopeMode, setScopeMode] = useState<'dept' | 'share'>('dept')
   const [monthData,   setMonthData]   = useState<ReportData | null>(null)
   const [quarterData, setQuarterData] = useState<ReportData | null>(null)
   const [loadingM, setLoadingM] = useState(false)
@@ -209,21 +214,21 @@ export default function CaseDetailReportPage() {
 
   const loadMonth = useCallback(async () => {
     setLoadingM(true)
-    const p = new URLSearchParams({ type: 'monthly', year: String(filterYear), month: String(filterMonth) })
+    const p = new URLSearchParams({ type: 'monthly', year: String(filterYear), month: String(filterMonth), scopeMode })
     if (filterDeptId) p.set('deptId', String(filterDeptId))
     const res = await api.get<ReportData>(`/api/reports/case-detail?${p}`)
     if (res.success && res.data) setMonthData(res.data)
     setLoadingM(false)
-  }, [filterYear, filterMonth, filterDeptId])
+  }, [filterYear, filterMonth, filterDeptId, scopeMode])
 
   const loadQuarter = useCallback(async () => {
     setLoadingQ(true)
-    const p = new URLSearchParams({ type: 'quarterly', year: String(filterYear), quarter: filterQ })
+    const p = new URLSearchParams({ type: 'quarterly', year: String(filterYear), quarter: filterQ, scopeMode })
     if (filterDeptId) p.set('deptId', String(filterDeptId))
     const res = await api.get<ReportData>(`/api/reports/case-detail?${p}`)
     if (res.success && res.data) setQuarterData(res.data)
     setLoadingQ(false)
-  }, [filterYear, filterQ, filterDeptId])
+  }, [filterYear, filterQ, filterDeptId, scopeMode])
 
   useEffect(() => { loadMonth() }, [loadMonth])
   useEffect(() => { loadQuarter() }, [loadQuarter])
@@ -246,7 +251,7 @@ export default function CaseDetailReportPage() {
   async function handleExportMonth() {
     setExportingM(true)
     try {
-      const p = new URLSearchParams({ type: 'monthly', year: String(filterYear), month: String(filterMonth) })
+      const p = new URLSearchParams({ type: 'monthly', year: String(filterYear), month: String(filterMonth), scopeMode })
       if (filterDeptId) p.set('deptId', String(filterDeptId))
       await downloadExport(p, `已決案明細表_${filterYear}${String(filterMonth).padStart(2, '0')}_${dayjs().format('YYYYMMDD')}.xlsx`)
     } catch {
@@ -259,7 +264,7 @@ export default function CaseDetailReportPage() {
   async function handleExportQuarter() {
     setExportingQ(true)
     try {
-      const p = new URLSearchParams({ type: 'quarterly', year: String(filterYear), quarter: filterQ })
+      const p = new URLSearchParams({ type: 'quarterly', year: String(filterYear), quarter: filterQ, scopeMode })
       if (filterDeptId) p.set('deptId', String(filterDeptId))
       await downloadExport(p, `已決案明細表_${filterYear}${filterQ}_${dayjs().format('YYYYMMDD')}.xlsx`)
     } catch {
@@ -278,6 +283,28 @@ export default function CaseDetailReportPage() {
     />
   )
 
+  // [2026/08/04] - Lisa - FR-107 統計範圍切換。承辦人不顯示（一律「自己全部已決案、不限部門、僅自己份額」，
+  // 若對承辦人生效，預設的「限案件承辦部門」會讓他在他部門協辦的案件默默消失）。
+  // 副總/行政/系統管理員選「全部部門」時兩種定義等價，故停用以免誤會有差異。
+  const scopeModeRadio = !!role && role !== 'handler' && (
+    <Tooltip
+      title={
+        scopeMode === 'dept'
+          ? '限案件承辦部門：只統計案件承辦部門屬本單位的已決案（顯示列仍僅本單位人員的份額）'
+          : '含他部門協辦：本單位人員參與的已決案全數納入（不限案件承辦部門），僅列本單位人員的份額；非本單位之案件於備註欄以 [部門名] 標註'
+      }
+    >
+      <Radio.Group
+        value={scopeMode}
+        onChange={e => setScopeMode(e.target.value as 'dept' | 'share')}
+        disabled={isWide && !filterDeptId}
+      >
+        <Radio value="dept">限案件承辦部門</Radio>
+        <Radio value="share">含他部門協辦份額</Radio>
+      </Radio.Group>
+    </Tooltip>
+  )
+
   const tabItems = [
     {
       key: '1',
@@ -289,6 +316,7 @@ export default function CaseDetailReportPage() {
               <Select value={filterYear} onChange={setFilterYear} options={yearOptions} style={{ width: 100 }} />
               <Select value={filterMonth} onChange={setFilterMonth} options={MONTH_OPTIONS} style={{ width: 80 }} />
               {deptSelect}
+              {scopeModeRadio}
               <Button
                 color="green"
                 variant="solid"
@@ -319,6 +347,7 @@ export default function CaseDetailReportPage() {
               <Select value={filterYear} onChange={setFilterYear} options={yearOptions} style={{ width: 100 }} />
               <Select value={filterQ} onChange={setFilterQ} options={QUARTER_OPTIONS} style={{ width: 140 }} />
               {deptSelect}
+              {scopeModeRadio}
               <Button
                 color="green"
                 variant="solid"
@@ -354,7 +383,10 @@ export default function CaseDetailReportPage() {
           <div style={{ position: 'sticky', top: 64, zIndex: 50, background: '#F5F7FA', paddingTop: 16 }}>
             <Title level={4} style={{ margin: '0 0 4px' }}>已決案明細表</Title>
             <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-              註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；同一案分列於各經辦人，件數依參與人計。
+              {/* [2026/08/04] - Lisa - FR-109：兩分頁件數口徑不同，註記明確區分 */}
+              註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；同一案分列於各經辦人（月統計小計／合計件數依參與人計；季統計件數僅計主辦案件，協辦不計件但仍計金額份額）。
+              {/* [2026/08/04] - Lisa - FR-107：說明備註欄的部門標記（僅非本單位案件才標） */}
+              備註欄 [ ] 為非本單位之案件承辦部門。
             </Text>
             <DefaultTabBar {...props} style={{ marginBottom: 0 }} />
           </div>

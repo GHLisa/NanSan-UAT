@@ -6,6 +6,16 @@ import dayjs from 'dayjs'
 import { mailNewAssignment } from '@/lib/caseMail'
 import { newAssignmentNotification } from '@/lib/caseNotify'
 import { parseBody } from '@/lib/apiError'
+// [2026/08/04] - Lisa - FR-108 同群組流水號重複判定（與編號修正共用同一份規則）
+import { findSeqConflicts, parseSeqParts } from '@/lib/caseNumber'
+// [2026/08/05] - Lisa - 初報完成判定（多來源）與 SLA 燈號共用模組
+import {
+  isPrelimDone, prelimPendingWhere, finalApprovedReviewWhere, closingApprovedAt,
+  closingReportPendingWhere, FINAL_REPORT_DOC_TYPES, BILLING_DOC_TYPES, PRELIM_REMINDER_DAYS,
+} from '@/lib/reportStage'
+// [2026/08/05] - Lisa - 「今天」改取台北時間，與排程彙整信（lib/digestMail）同一基準；
+// 伺服器為 UTC，台北 00:00~08:00 用 dayjs() 會算成前一日，造成同一案件燈號差一天
+import { getSlaStatus, taipeiNow, daysSinceCommission } from '@/lib/sla'
 
 // [2026/07/27] - Lisa - 公證編號排序鍵：取「年度(前2碼)＋後三碼」，公證前綴與區域碼不列入排序
 // 例：NFNS-26K-024 → { year: 26, serial: 24 }；無法解析者以 -1 排在最後
@@ -81,6 +91,9 @@ export async function GET(req: NextRequest) {
   const filterQuarter = searchParams.get('quarter') // Q1~Q4
   const icId = searchParams.get('insuranceCompanyId')  // 保險公司（第一層篩選）
   const contactsParam = searchParams.get('contacts')   // 保險公司承辦人（第二層，逗號分隔多選）
+  // [2026/08/04] - Lisa - 儀表板「SLA 預警／兩年時效預警／待辦事項 → 查看全部」帶入的預警篩選
+  // （sla | statute | returned）；判定規則與 /api/dashboard 相同，確保清單即為該卡片的完整清單
+  const alert = searchParams.get('alert')
 
   const scopeFilter = await buildCaseScope(session)
 
@@ -136,6 +149,85 @@ export async function GET(req: NextRequest) {
     ]
   }
 
+  // [2026/08/04] - Lisa - 預警篩選（僅未決案件）；以 AND 疊加而非直接指定欄位條件，
+  // 因 where.OR 已被關鍵字搜尋佔用、where.commissionDate 可能已被年度/季度篩選佔用
+  if (alert === 'sla' || alert === 'statute') {
+    where.status = '未決'
+    // 以台北曆日為界（startOf('day')），使門檻與清單列的 D+N 判定完全一致
+    const now = taipeiNow().startOf('day')
+    where.AND = [
+      alert === 'sla'
+        // SLA 預警：未完成初步報告且委託滿 14 天（黃/紅燈），或委託已滿 90 天（紅燈）
+        // [2026/08/05] - Lisa - 「未完成初報」改用 prelimPendingWhere()（日期／終審核准／案件階段三來源）
+        // 「滿 N 天」＝委託日在「今天減 (N−1) 天」的台北零點之前（用 lt 而非 lte）：
+        // DB 內 commissionDate 有台北午夜(16:00Z)與 UTC 午夜(00:00Z) 兩種存法，用 lte 會漏掉後者。
+        ? {
+            OR: [
+              { ...prelimPendingWhere(), commissionDate: { lt: now.subtract(13, 'day').toDate() } },
+              { commissionDate: { lt: now.subtract(89, 'day').toDate() } },
+            ],
+          }
+        // 兩年時效預警：請求權到期日（委託日 +2 年）在 30 天內到期或已逾期
+        : { commissionDate: { lte: now.subtract(2, 'year').add(30, 'day').toDate() } },
+    ]
+  }
+
+  // [2026/08/04] - Lisa - 退回待修：案件有「未終結(recordStatus=null)且任一關卡退回」的送審紀錄。
+  // 此處先以 some 縮小候選，稍後再比照清單「退件」標記（每個文件類型只看最新一次送審）精確過濾，
+  // 避免篩出的列沒有退件標記。注意 withSummary 聚合走此 where（為候選集合），
+  // 案件查詢頁不會帶 alert，故不影響其統計卡數字。
+  const returnedOnly = alert === 'returned'
+  if (returnedOnly) {
+    where.reviews = {
+      some: {
+        recordStatus: null,
+        OR: [{ reviewStatus: '退回' }, { midApprovalStatus: '退回' }, { approvalStatus: '退回' }],
+      },
+    }
+  }
+
+  // [2026/08/05] - Lisa - 待辦提醒兩段的完整清單（與 /api/dashboard 同判定）
+  // prelim14：委託後 14 天內（期限內）且初報未完成；逾期者屬 SLA 預警的「初報逾期」段
+  if (alert === 'prelim14') {
+    where.status = '未決'
+    where.AND = [
+      prelimPendingWhere(),
+      { commissionDate: { gte: taipeiNow().startOf('day').subtract(PRELIM_REMINDER_DAYS, 'day').toDate() } },
+    ]
+  }
+
+  // [2026/08/05] - Lisa - SLA 預警四段的完整清單；與儀表板同樣採「每案只歸一段」的優先序
+  // （停泊 > 初報逾期 > 結報期限 > 長期未決），故後段需排除前段條件，件數才對得起來
+  if (alert === 'prelim_overdue' || alert === 'closing60' || alert === 'open90' || alert === 'parked') {
+    const day0 = taipeiNow().startOf('day')
+    // 「滿 N 天」的台北日界：委託日 < 今天減 (N−1) 天的零點（lt 而非 lte，說明見上方 sla 分支）
+    const d14 = day0.subtract(PRELIM_REMINDER_DAYS - 1, 'day').toDate()
+    const d90 = day0.subtract(89, 'day').toDate()
+    // 初報逾期（未完成節點2 且 D+14 以上）
+    const prelimOverdue = { AND: [prelimPendingWhere(), { commissionDate: { lt: d14 } }] }
+    where.status = '未決'
+    if (alert === 'parked') {
+      where.parkingStatus = { not: null }
+    } else {
+      where.parkingStatus = null // 停泊案件另段呈現，不計逾期
+      if (alert === 'prelim_overdue') {
+        where.AND = [prelimPendingWhere(), { commissionDate: { lt: d14 } }]
+      } else if (alert === 'closing60') {
+        where.AND = [closingReportPendingWhere()]
+        where.NOT = [prelimOverdue]
+      } else {
+        where.AND = [{ commissionDate: { lt: d90 } }]
+        where.NOT = [prelimOverdue, closingReportPendingWhere()]
+      }
+    }
+  }
+  // close14：節點7 結案報告書已終審核准者為候選，節點8（請款單／合併送審）與起算日於程式端精算
+  const closingOnly = alert === 'close14'
+  if (closingOnly) {
+    where.status = '未決'
+    where.reviews = { some: finalApprovedReviewWhere(FINAL_REPORT_DOC_TYPES) }
+  }
+
   // [2026/07/14] - Lisa - 案件查詢統計卡需「全量」件數與費用合計，不受分頁上限影響；
   // withSummary=1 時另跑一次聚合，回傳整個 where 範圍的 公證費/差旅其他費 總額（件數沿用 total）
   const wantSummary = searchParams.get('withSummary') === '1'
@@ -152,13 +244,62 @@ export async function GET(req: NextRequest) {
     prisma.case.findMany({ where, select: { id: true, caseNumber: true } }),
     summaryPromise,
   ])
-  allMatched.sort((a, b) => {
+  // [2026/08/04] - Lisa - 退回待修精確過濾：每個 documentType 只看最新一次送審，且該筆未終結並為退回，
+  // 與下方列資料的 hasRejectedReview（橘色「退件」標記）同一判定，確保件數與標記一致
+  let matched = allMatched
+  if (returnedOnly && allMatched.length > 0) {
+    const reviewRows = await prisma.caseReview.findMany({
+      where: { caseId: { in: allMatched.map((c) => c.id) } },
+      select: {
+        caseId: true, documentType: true, submittedAt: true, recordStatus: true,
+        reviewStatus: true, midApprovalStatus: true, approvalStatus: true,
+      },
+    })
+    const latestByDoc = new Map<string, typeof reviewRows[number]>()
+    for (const r of reviewRows) {
+      const key = `${r.caseId}|${r.documentType}`
+      const cur = latestByDoc.get(key)
+      if (!cur || r.submittedAt > cur.submittedAt) latestByDoc.set(key, r)
+    }
+    const keep = new Set<number>()
+    for (const r of latestByDoc.values()) {
+      if (r.recordStatus != null) continue
+      if (r.reviewStatus === '退回' || r.midApprovalStatus === '退回' || r.approvalStatus === '退回') {
+        keep.add(r.caseId)
+      }
+    }
+    matched = allMatched.filter((c) => keep.has(c.id))
+  }
+  // [2026/08/05] - Lisa - 待結案精確過濾：候選已確定節點7 核准，此處再確認節點8（請款單／合併送審）
+  // 亦已終審核准，與儀表板「待結案」提醒同一判定（closingApprovedAt）
+  if (closingOnly && allMatched.length > 0) {
+    const reviewRows = await prisma.caseReview.findMany({
+      where: {
+        caseId: { in: allMatched.map((c) => c.id) },
+        documentType: { in: [...FINAL_REPORT_DOC_TYPES, ...BILLING_DOC_TYPES] },
+      },
+      select: {
+        caseId: true, documentType: true, mergedBilling: true, recordStatus: true,
+        reviewStatus: true, midApprovalStatus: true, approvalStatus: true,
+        requiresVP: true, requiresMidApproval: true,
+        reviewedAt: true, midApprovedAt: true, approvedAt: true,
+      },
+    })
+    const byCase = new Map<number, typeof reviewRows>()
+    for (const r of reviewRows) {
+      const list = byCase.get(r.caseId) ?? []
+      list.push(r)
+      byCase.set(r.caseId, list)
+    }
+    matched = matched.filter((c) => closingApprovedAt(byCase.get(c.id) ?? []) != null)
+  }
+  matched.sort((a, b) => {
     const ka = caseNoSortKey(a.caseNumber)
     const kb = caseNoSortKey(b.caseNumber)
     return kb.year - ka.year || kb.serial - ka.serial
   })
-  const total = allMatched.length
-  const pageIds = allMatched.slice((page - 1) * pageSize, page * pageSize).map((c) => c.id)
+  const total = matched.length
+  const pageIds = matched.slice((page - 1) * pageSize, page * pageSize).map((c) => c.id)
   const pageCases = await prisma.case.findMany({
     where: { id: { in: pageIds } },
     include: {
@@ -176,6 +317,8 @@ export async function GET(req: NextRequest) {
           documentType: true, submittedAt: true,
           recordStatus: true, // [2026/06/18] - Lisa - 方案1/2 終結狀態（已重送/已放棄）
           mergedBilling: true, // [2026/07/15] - Lisa - 合併送審旗標（清單 (併DN) 標註用）
+          // [2026/08/05] - Lisa - 判定「終審核准」需知該筆是否有加簽／副總關卡（初報完成判定用）
+          requiresVP: true, requiresMidApproval: true,
         },
       },
       // [2026/06/18] - Lisa - Issue #9/#10 - end
@@ -185,15 +328,15 @@ export async function GET(req: NextRequest) {
   const caseById = new Map(pageCases.map((c) => [c.id, c]))
   const cases = pageIds.map((id) => caseById.get(id)).filter((c): c is typeof pageCases[number] => !!c)
 
-  const today = dayjs()
+  const today = taipeiNow()
   const data = cases.map((c) => {
-    const daysSince = today.diff(dayjs(c.commissionDate), 'day')
-    let slaStatus: 'green' | 'yellow' | 'red' = 'green'
-    if (c.status === '未決') {
-      if (!c.preliminaryReportDate && daysSince >= 30) slaStatus = 'red'
-      else if (daysSince >= 90) slaStatus = 'red'
-      else if (!c.preliminaryReportDate && daysSince >= 14) slaStatus = 'yellow'
-    }
+    // [2026/08/05] - Lisa - D+N 改用共用的台北曆日算法，與 SLA 燈號、排程信、儀表板完全一致
+    const daysSince = daysSinceCommission(c.commissionDate, today)
+    // [2026/08/05] - Lisa - 初報完成改多來源判定（日期／初報文件終審核准／階段已越過初報），
+    // 燈號門檻沿用共用模組 lib/sla；'normal' 對應清單的綠燈
+    const prelimDone = isPrelimDone(c)
+    const sla = getSlaStatus(c.commissionDate, prelimDone, c.status, today)
+    const slaStatus: 'green' | 'yellow' | 'red' = sla === 'normal' ? 'green' : sla
     const primaryHandler = c.assignments.find(a => a.role === '主辦') ?? c.assignments[0]
     // [2026/06/18] - Lisa - Issue #9/#10 退件涵蓋全關卡 + 只看每個文件類型「最新一次送審」- Start
     // 每個 documentType 取最新一筆送審（依 submittedAt），避免「曾被退回過就永遠顯示退件」
@@ -244,6 +387,7 @@ export async function GET(req: NextRequest) {
       preliminaryReportDate: c.preliminaryReportDate?.toISOString() ?? null,
       daysSince,
       slaStatus,
+      prelimDone, // [2026/08/05] - Lisa - 供前端於燈號 tooltip 說明初報是否已完成
       primaryHandlerName: primaryHandler?.employee.name ?? '—',
       travelOtherExpenseTotal: c.travelOtherExpense ?? 0,
       handlers: c.assignments.map((a) => ({ id: a.employeeId, name: a.employee.name, role: a.role })),
@@ -296,6 +440,7 @@ const CaseSchema = z.object({
   })).optional(),
   dispatchId: z.number().optional(),
   confirmDuplicate: z.boolean().optional(),  // FR-80 確認重複建檔後重送
+  confirmDuplicateSeq: z.boolean().optional(), // [2026/08/04] - Lisa - FR-108 確認同群組流水號重複後重送
   contactFormStatus: z.string().optional(),
   contactReturnDate: z.string().nullable().optional(),
   nasFolder: z.string().optional(),
@@ -379,7 +524,8 @@ export async function POST(req: NextRequest) {
   // [2026/07/01] - Lisa - 區域代號改抓「區域基礎資料」的公證編號代號（Region.caseNoCode），不再 hardcode；
   // 未設定（null）時回退空字串（等同台北無區域段）
   const regionCode = dept.region.caseNoCode ?? ''
-  const year = String(dayjs().year()).slice(-2)
+  // [2026/08/05] - Lisa - 年度取台北時間：伺服器 UTC 於元旦台北 00:00~08:00 仍是去年，會取到舊年度編號
+  const year = String(taipeiNow().year()).slice(-2)
   const hasCoInsurance = !!(body.coInsurers && body.coInsurers.length > 0)
   const coTag = hasCoInsurance ? 'CO' : ''
   // [2026/07/01] - Lisa - 公證編號前綴改用「公證編號代號」(caseNoCode)；未設定時回退部門代碼
@@ -394,6 +540,21 @@ export async function POST(req: NextRequest) {
     const dup = await prisma.case.findFirst({ where: { caseNumber: manualCaseNumber }, select: { id: true } })
     if (dup) {
       return NextResponse.json({ success: false, error: `公證編號「${manualCaseNumber}」已存在，請確認` }, { status: 409 })
+    }
+    // [2026/08/04] - Lisa - FR-108 同群組流水號重複警示（警示＋二次確認，不硬擋）。
+    // caseNumber unique 只管完整字串，保司代碼不同即放行，故人工填號可造出同群組重號
+    // （實例：NLCK-26K-114 與 NLFB-26K-114）。補登歷史案件確有需要沿用既定號碼，故僅提醒。
+    const seqConflicts = await findSeqConflicts(prisma, manualCaseNumber, caseNoCode)
+    if (seqConflicts.length > 0 && body.confirmDuplicateSeq !== true) {
+      const parts = parseSeqParts(manualCaseNumber)
+      return NextResponse.json(
+        {
+          success: false,
+          error: `流水號 ${parts?.seq ?? ''} 在「${caseNoCode}${parts?.regionCode ?? ''}-${parts?.year ?? ''}」群組已被使用：${seqConflicts.join('、')}。同部門同年度流水號原則上不重複，確定仍要使用「${manualCaseNumber}」？`,
+          code: 'DUPLICATE_SEQ',
+        },
+        { status: 409 },
+      )
     }
   }
 

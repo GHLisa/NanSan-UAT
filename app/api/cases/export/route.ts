@@ -3,6 +3,8 @@ import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import ExcelJS from 'exceljs'
 import dayjs from 'dayjs'
+// [2026/08/05] - Lisa - 檔名日期取台北時間（伺服器 UTC 於台北 00:00~08:00 會標成前一日）
+import { taipeiNow } from '@/lib/sla'
 
 export const runtime = 'nodejs'
 
@@ -79,7 +81,7 @@ export async function GET(req: NextRequest) {
       ...(incidentDateTo ? { lte: new Date(incidentDateTo) } : {}),
     }
   }
-  // [2026/07/14] - Lisa - 年度改依委託日 commissionDate（與列表 API 一致，原為結案日 closeDate）
+  // [2026/07/16] - Lisa - 年度改依委託日 commissionDate（與列表 API 一致，原為結案日 closeDate）
   if (filterYear) {
     const year = parseInt(filterYear)
     const qMonth: Record<string, [number, number]> = {
@@ -224,7 +226,7 @@ export async function GET(req: NextRequest) {
   ws.views = [{ state: 'frozen', ySplit: 1 }]
 
   const buffer = await wb.xlsx.writeBuffer()
-  const filename = `案件查詢_${dayjs().format('YYYYMMDD')}.xlsx`
+  const filename = `案件查詢_${taipeiNow().format('YYYYMMDD')}.xlsx`
 
   return new NextResponse(buffer, {
     headers: {

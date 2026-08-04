@@ -1,6 +1,6 @@
 // ── 部門「公證編號代號」回填腳本（非破壞性、可重複執行）────────────────────
 // 用途：將既有部門尚未設定的 case_no_code 補為其部門代碼 code。
-//       不影響已設定值、不影響既有案件編號。
+//       不影響已設定值、不影響既有公證編號。
 //
 // 前置：需先 `npx prisma db push` 新增 case_no_code 欄位。
 // 執行（於 web-site_UAT 目錄下）：npx tsx scripts/backfill-dept-caseno.ts

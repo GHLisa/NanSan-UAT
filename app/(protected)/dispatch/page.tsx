@@ -57,6 +57,17 @@ interface PoolItem {
   time: string
 }
 
+// [2026/08/04] - Lisa - FR-108 建案取號現況（GET /api/cases/number-preview）
+interface NumberPreview {
+  caseNoCode: string
+  regionCode: string
+  year: string
+  nextAutoText: string
+  usedTo: number
+  gaps: number[]
+  gapCount: number
+}
+
 interface MetaData {
   departments: { id: number; name: string; code: string; regionId: number }[]
   insuranceCompanies: { id: number; code: string; name: string }[]
@@ -145,6 +156,8 @@ export default function DispatchListPage() {
 
   // 新增案件 modal（queue 取件）
   const [caseModalOpen, setCaseModalOpen] = useState(false)
+  // [2026/08/04] - Lisa - FR-108 取號現況提示（與建案頁同一支 API），依承辦部門查本年度流水號群組
+  const [numPreview, setNumPreview] = useState<NumberPreview | null>(null)
   const [caseForm] = Form.useForm()
   const [activeDispatch, setActiveDispatch] = useState<PoolItem | null>(null)
   const [assignees, setAssignees] = useState<Assignee[]>([])
@@ -372,6 +385,17 @@ export default function DispatchListPage() {
       })
       return
     }
+    // [2026/08/04] - Lisa - FR-108 人工填號撞到同群組既有流水號：警示後可確認沿用
+    if ((res as { code?: string }).code === 'DUPLICATE_SEQ') {
+      Modal.confirm({
+        title: '流水號重複',
+        content: res.error ?? '此流水號在本部門本年度已被使用，確定仍要使用？',
+        okText: '確認沿用此編號',
+        cancelText: '返回修改',
+        onOk: () => submitCase({ ...body, confirmDuplicateSeq: true }),
+      })
+      return
+    }
     message.error(res.error ?? '建案失敗')
   }
 
@@ -528,6 +552,34 @@ export default function DispatchListPage() {
 
   // FR-92 承辦部門（唯讀）：派案記錄 assignedDepartmentId 對應名稱，fallback 登入者部門
   const assignedDeptId = activeDispatch?.assignedDepartmentId ?? session?.departmentId ?? null
+
+  // [2026/08/04] - Lisa - FR-108 建案 Modal 開啟（或承辦部門變動）時查取號現況
+  const pad3 = (n: number) => String(n).padStart(3, '0')
+  useEffect(() => {
+    if (!caseModalOpen || !assignedDeptId) { setNumPreview(null); return }
+    api.get<NumberPreview>(`/api/cases/number-preview?departmentId=${assignedDeptId}`).then((res) => {
+      setNumPreview(res.success && res.data ? res.data : null)
+    })
+  }, [caseModalOpen, assignedDeptId])
+
+  const caseNumberHint = numPreview ? (
+    <span style={{ fontSize: 12, lineHeight: 1.7 }}>
+      留空則自動產生，本次將取流水號 <b>{numPreview.nextAutoText}</b>
+      <br />
+      {numPreview.usedTo > 0 ? (
+        <>
+          本部門 {numPreview.year} 年度已用至 {pad3(numPreview.usedTo)} 號
+          {numPreview.gapCount > 0
+            ? <>，空號 {numPreview.gapCount} 個：{numPreview.gaps.map(pad3).join('、')}{numPreview.gapCount > numPreview.gaps.length ? ' …' : ''}</>
+            : <>（無空號）</>}
+        </>
+      ) : (
+        <>本部門 {numPreview.year} 年度尚無案件</>
+      )}
+      <br />
+      紙本簿冊的下一號若與上方不同，請直接填入正確編號（可填空號回收）
+    </span>
+  ) : '留空則由系統自動產生'
   const assignedDeptName = (meta?.departments ?? []).find(d => d.id === assignedDeptId)?.name
     ?? session?.departmentName ?? '—'
 
@@ -620,7 +672,8 @@ export default function DispatchListPage() {
                 styles={{ header: { background: '#EBF4FC', borderLeft: '4px solid #1B4F8C' } }}>
                 <Row gutter={[12, 0]}>
                   <Col span={24}>
-                    <Form.Item label="公證編號" name="caseNumber" extra="留空則由系統自動產生">
+                    {/* [2026/08/04] - Lisa - FR-108：顯示本部門本年度取號現況（自動號／已用至／空號） */}
+                    <Form.Item label="公證編號" name="caseNumber" extra={caseNumberHint}>
                       <Input placeholder="留空＝自動產生" maxLength={30} />
                     </Form.Item>
                   </Col>
