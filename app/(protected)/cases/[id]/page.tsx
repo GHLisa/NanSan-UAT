@@ -234,7 +234,9 @@ export default function CaseDetailPage() {
   }, [isEditing, liveAdjAmt, liveInsType, liveIcId, fetchFeeCalc, editForm])
 
   // ── 衍生資料 ─────────────────────────────────────────────────────────
-  const reviews = caseData?.reviews ?? []
+  // [2026/08/05] - Lisa - reviews 用 useMemo 固定參考，避免每次 render 都產生新陣列
+  // 導致下游 useMemo（latestSubmittedByDoc 等）的 deps 失效（react-hooks/exhaustive-deps）
+  const reviews = useMemo(() => caseData?.reviews ?? [], [caseData])
   const assignments = caseData?.assignments ?? []
 
   const isAssignee = useMemo(() => {
