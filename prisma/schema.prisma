@@ -516,12 +516,12 @@ model CaseNumberSeq {
 // 於台北平日 08:00 / 16:00 依收件人彙整成單封信寄出並標記 sentAt，避免信件轟炸。
 model MailEventQueue {
   id           Int       @id @default(autoincrement())
-  eventType    String    // new_assignment / assignment_changed / review_submitted / review_cascade / review_rejected
+  eventType    String    // new_assignment / assignment_changed / review_submitted / review_cascade / review_rejected / review_approved
   caseId       Int?
   caseNumber   String
   insuredName  String?
   documentType String?
-  remarks      String?   // 文件退回原因
+  remarks      String?   // 文件退回原因 / 核准之審核意見
   mergedBilling Boolean  @default(false) // [2026/07/15] - Lisa - 合併送審旗標，供彙整信標示「合併送審 請款單DEBIT NOTE」
   recipient    String    // 收件人「姓名 <email>」，一事件對多收件人各一列
   createdAt    DateTime  @default(now())

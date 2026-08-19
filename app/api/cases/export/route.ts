@@ -123,21 +123,23 @@ export async function GET(req: NextRequest) {
   const wb = new ExcelJS.Workbook()
   const ws = wb.addWorksheet('案件查詢')
 
-  // 欄寬設定（A~V）
-  const widths = [6, 16, 14, 14, 22, 22, 14, 12, 18, 22, 12, 24, 16, 12, 16, 40, 12, 10, 8, 8, 14, 10]
+  // 欄寬設定（A~W）
+  // [2026/08/19] - Lisa - O 欄後插入「已決賠償額(已扣自負額)」欄（新 P 欄），原 P~V 欄依序後移一欄
+  const widths = [6, 16, 14, 14, 22, 22, 14, 12, 18, 22, 12, 24, 16, 12, 16, 16, 40, 12, 10, 8, 8, 14, 10]
   widths.forEach((w, i) => { ws.getColumn(i + 1).width = w })
 
-  // 表頭（合併儲存格：G:H 公證編號、S:T 已決/未決、U:V 公證費）
+  // 表頭（合併儲存格：G:H 公證編號、T:U 已決/未決、V:W 公證費）
   ws.mergeCells('G1:H1')
-  ws.mergeCells('S1:T1')
-  ws.mergeCells('U1:V1')
+  ws.mergeCells('T1:U1')
+  ws.mergeCells('V1:W1')
   const headers: Record<string, string> = {
     A: '項次', B: '保險公司', C: '保險公司承辦人', D: '委託聯繫/聯絡單',
     E: '保單號碼', F: '共保保單號碼/共保比例', G: '公證編號', I: '被保險人',
     J: '出險/查勘地點(效率整合)', K: '出險日期', L: '險種名稱/出險原因',
     M: '預估金額\n(未扣自負額)', N: '自負額', O: '預估賠償額\n(已扣自負額)',
-    P: '目前工作處理進度', Q: '委託日期', R: '承辦人', S: '已決/未決',
-    U: '公證費(已決/預估)',
+    P: '已決賠償額\n(已扣自負額)',
+    Q: '目前工作處理進度', R: '委託日期', S: '承辦人', T: '已決/未決',
+    V: '公證費(已決/預估)',
   }
   for (const [col, text] of Object.entries(headers)) {
     ws.getCell(`${col}1`).value = text
@@ -146,8 +148,8 @@ export async function GET(req: NextRequest) {
   headerRow.height = 32
   headerRow.font = { bold: true, size: 11 }
   headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
-  // 明確畫滿 A~V（22 欄）：合併表頭中留白的 H/T/V 欄也要上底色與框線
-  for (let col = 1; col <= 22; col++) {
+  // 明確畫滿 A~W（23 欄）：合併表頭中留白的 H/U/W 欄也要上底色與框線
+  for (let col = 1; col <= 23; col++) {
     const cell = headerRow.getCell(col)
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }
     cell.border = {
@@ -193,32 +195,34 @@ export async function GET(req: NextRequest) {
     ws.getCell(`M${r}`).value = est
     ws.getCell(`N${r}`).value = ded
     ws.getCell(`O${r}`).value = claim
-    ws.getCell(`P${r}`).value = c.caseNotes
+    // [2026/08/19] - Lisa - 已決賠償額(已扣自負額)：取「最終金額」
+    ws.getCell(`P${r}`).value = num(c.finalAmount)
+    ws.getCell(`Q${r}`).value = c.caseNotes
       .map((n) => `${rocDate(n.noteDate)} ${n.content}`.trim())
       .join('\n')
-    ws.getCell(`Q${r}`).value = rocDate(c.commissionDate)
-    ws.getCell(`R${r}`).value = primary?.employee.name ?? ''
+    ws.getCell(`R${r}`).value = rocDate(c.commissionDate)
+    ws.getCell(`S${r}`).value = primary?.employee.name ?? ''
     const isClosed = c.status === '已決'
-    // 已決/未決：已決放 S 欄，其餘（未決/銷案）放 T 欄
-    ws.getCell(`${isClosed ? 'S' : 'T'}${r}`).value = c.status
-    // 公證費：已決放「實際公證費」於 U 欄，未決放「預估公證費」於 V 欄
+    // 已決/未決：已決放 T 欄，其餘（未決/銷案）放 U 欄
+    ws.getCell(`${isClosed ? 'T' : 'U'}${r}`).value = c.status
+    // 公證費：已決放「實際公證費」於 V 欄，未決放「預估公證費」於 W 欄
     if (isClosed) {
-      ws.getCell(`U${r}`).value = c.actualFee ?? null
+      ws.getCell(`V${r}`).value = c.actualFee ?? null
     } else {
-      ws.getCell(`V${r}`).value = c.estimatedFee ?? null
+      ws.getCell(`W${r}`).value = c.estimatedFee ?? null
     }
 
     const row = ws.getRow(r)
     row.alignment = { vertical: 'top', wrapText: true }
-    // 明確畫滿 A~V（22 欄）框線：已決案件資料落在 S/U，若用 eachCell 會漏掉留白的 T/V 欄
-    for (let col = 1; col <= 22; col++) {
+    // 明確畫滿 A~W（23 欄）框線：已決案件資料落在 T/V，若用 eachCell 會漏掉留白的 U/W 欄
+    for (let col = 1; col <= 23; col++) {
       row.getCell(col).border = {
         top: { style: 'thin' }, left: { style: 'thin' },
         bottom: { style: 'thin' }, right: { style: 'thin' },
       }
     }
     // 金額欄位千分位格式
-    for (const col of ['M', 'N', 'O', 'U', 'V']) {
+    for (const col of ['M', 'N', 'O', 'P', 'V', 'W']) {
       ws.getCell(`${col}${r}`).numFmt = '#,##0'
     }
   })

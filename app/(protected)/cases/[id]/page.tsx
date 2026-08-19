@@ -267,6 +267,10 @@ export default function CaseDetailPage() {
     return false
   }, [caseData, isClosed, isAssignee, role, session])
 
+  // [2026/08/19] - Lisa - 已結案（已決／銷案）案件：系統管理員仍可開啟編輯（供更正歷史資料之用），
+  // 不含撤案／送審／結案等操作（仍受 canOperate 限制）。
+  const canEditClosed = isClosed && role === 'sysadmin'
+
   // [2026/07/28] - Lisa - 交辦事項修改權限：部門主管（本部門）／行政人員（有部門限本部門）／
   // 執行副總（全公司）／系統管理員（全公司），且案件未決。承辦人不可修改。
   const canEditAssignmentNotes = useMemo(() => {
@@ -1011,7 +1015,12 @@ export default function CaseDetailPage() {
                     {!hasPendingReviews && isCloseReportFullyApproved && (
                       <Button icon={<CheckCircleOutlined />} style={{ background: '#52c41a', borderColor: '#52c41a', color: '#fff' }} onClick={openCloseModal}>結案</Button>
                     )}
-                    {/* [2026/07/08] - Lisa - 全面開放編輯：審核中亦可編輯（改動皆留修改記錄，並於送審記錄標示「送審後已修改」提醒審核者）*/}
+                  </>
+                )}
+                {/* [2026/07/08] - Lisa - 全面開放編輯：審核中亦可編輯（改動皆留修改記錄，並於送審記錄標示「送審後已修改」提醒審核者）*/}
+                {/* [2026/08/19] - Lisa - 已結案案件另開放系統管理員編輯（canEditClosed），供更正歷史資料之用 */}
+                {!fromReviews && (canOperate || canEditClosed) && (
+                  <>
                     <Button icon={<EditOutlined />} onClick={openEdit}>編輯</Button>
                     {hasPendingReviews && (
                       <Tooltip title={`下列文件審核中，編輯後審核者將看到「送審後已修改」提醒：${pendingDocTypes.join('、')}`}>
@@ -1624,15 +1633,9 @@ export default function CaseDetailPage() {
                       {g.entries.map((log) => (
                         <div key={log.id} style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
                           <Text strong style={{ fontSize: 12 }}>{log.fieldName}</Text>
-                          {log.fieldName === '承辦人' ? (
-                            <Text type="secondary" style={{ marginLeft: 6 }}>承辦人已變更</Text>
-                          ) : (
-                            <>
-                              <Text delete style={{ color: '#aaa', margin: '0 4px' }}>{formatLogValue(log.fieldName, log.oldValue)}</Text>
-                              <Text style={{ color: '#888' }}>→</Text>
-                              <Text style={{ color: '#1B4F8C', marginLeft: 4 }}>{formatLogValue(log.fieldName, log.newValue)}</Text>
-                            </>
-                          )}
+                          <Text delete style={{ color: '#aaa', margin: '0 4px' }}>{formatLogValue(log.fieldName, log.oldValue)}</Text>
+                          <Text style={{ color: '#888' }}>→</Text>
+                          <Text style={{ color: '#1B4F8C', marginLeft: 4 }}>{formatLogValue(log.fieldName, log.newValue)}</Text>
                         </div>
                       ))}
                     </div>

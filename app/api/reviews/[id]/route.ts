@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
-import { mailReviewRejected, mailReviewCascade, emailsByIds, vpEmails } from '@/lib/caseMail'
+// [2026/08/05] - Lisa - 新增 mailReviewApproved：終審核准（走完全部關卡）通知承辦人
+import { mailReviewRejected, mailReviewCascade, mailReviewApproved, emailsByIds, vpEmails } from '@/lib/caseMail'
 import { reviewPendingNotification } from '@/lib/caseNotify'
 // [2026/08/05] - Lisa - 終審核准自動回填案件報告日期（節點2→初步報告日期、節點7→最終報告日期）
 import { reportDateFieldOf } from '@/lib/reportStage'
@@ -298,6 +299,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     await prisma.notification.create({
       data: reviewPendingNotification(review.case.id, review.case.caseNumber, review.documentType, { roles: 'vp' }, true),
     })
+  } else if (isTerminalApproval) {
+    // [2026/08/05] - Lisa - (4) 終審核准（走完全部關卡）→ 主承辦人＋協辦人
+    // 與上方 cascade 分支互斥：cascade 成立表示還有下一關（requiresMidApproval / requiresVP），
+    // 必不為終審；mid_approve 一律 cascade 至副總關卡亦非終審。站內通知（交易內 review_approved）
+    // 維持即時，本信走 mail_event_queue 於平日 08:00 / 16:00 彙整寄出。
+    await mailReviewApproved(review.case.id, review.case.caseNumber, review.documentType, body.remarks, review.mergedBilling)
   }
 
   return NextResponse.json({ success: true, data: { id } })

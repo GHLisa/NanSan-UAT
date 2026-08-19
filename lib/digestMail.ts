@@ -643,6 +643,15 @@ export function buildEventDigestHtml(events: QueuedEvent[]): string {
     body += section(`📄 待您審核的文件　${toReview.length} 件`, '#2E7D32', `${th('公證編號')}${th('被保險人')}${th('文件類型')}`, rows)
   }
 
+  // [2026/08/05] - Lisa - 終審核准（走完全部關卡）通知承辦人；中間關卡通過不入列，故此區塊只會出現終審結果
+  const approved = pick('review_approved')
+  if (approved.length) {
+    const rows = approved
+      .map(e => `<tr>${td(caseCell(e))}${td(e.insuredName ?? '—')}${td((e.documentType ?? '—') + (e.mergedBilling ? '（合併送審 請款單DEBIT NOTE）' : ''))}${td(e.remarks ?? '—')}</tr>`)
+      .join('')
+    body += section(`✅ 文件核准完成　${approved.length} 件`, '#1B4F8C', `${th('公證編號')}${th('被保險人')}${th('文件類型')}${th('審核意見')}`, rows)
+  }
+
   const rejected = pick('review_rejected')
   if (rejected.length) {
     const rows = rejected

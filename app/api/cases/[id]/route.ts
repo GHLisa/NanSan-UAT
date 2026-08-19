@@ -190,16 +190,19 @@ const AMOUNT_BIGINT_FIELDS = new Set([
 ])
 
 // FR-35/37/58：確認呼叫者可編輯本案
+// [2026/08/19] - Lisa - allowClosedForSysadmin：一般編輯（非撤案）開放系統管理員編輯已決／銷案案件，
+// 供更正歷史資料之用；撤案（action='cancel'）不適用，仍維持已結案不可撤案的既有防護。
 async function assertCanEdit(
   session: { sub: string; role: string; departmentId: number | null },
   caseId: number,
+  opts: { allowClosedForSysadmin?: boolean } = {},
 ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
   const c = await prisma.case.findUnique({
     where: { id: caseId },
     include: { assignments: { select: { employeeId: true } } },
   })
   if (!c) return { ok: false, status: 404, error: '找不到案件' }
-  if (c.status !== '未決') {
+  if (c.status !== '未決' && !(opts.allowClosedForSysadmin && session.role === 'sysadmin')) {
     return { ok: false, status: 409, error: '已決／銷案案件不可編輯' }
   }
   // [2026/07/08] - Lisa - 全面開放編輯政策：案件在文件審核中（待複核／待加簽審核／待執行副總閱）仍允許編輯欄位，
@@ -393,7 +396,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   }
 
   // ── 一般編輯（含承辦人整批覆寫 FR-45）─────────────────────────
-  const perm = await assertCanEdit(session, id)
+  const perm = await assertCanEdit(session, id, { allowClosedForSysadmin: true })
   if (!perm.ok) return NextResponse.json({ success: false, error: perm.error }, { status: perm.status })
 
   // 承辦人整批覆寫（FR-33/46/65）
@@ -402,6 +405,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     | undefined
 
   let assigneesChanged = false
+  // [2026/08/19] - Lisa - 承辦人修改記錄需顯示變更前後名單（含姓名／角色／比例），不再只顯示「已變更」
+  let assigneeLogValues: { oldValue: string; newValue: string } | null = null
   if (assignees) {
     const total = assignees.reduce((s, a) => s + (a.contributionRatio ?? 0), 0)
     if (Math.abs(total - 1.0) > 0.01) {
@@ -422,6 +427,19 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const normAssign = (list: { employeeId: number; role: string; contributionRatio: number }[]) =>
       list.map((a) => `${a.employeeId}|${a.role}|${a.contributionRatio}`).sort().join(';')
     assigneesChanged = normAssign(existingAssign) !== normAssign(assignees)
+
+    if (assigneesChanged) {
+      const empIds = [...new Set([...existingAssign.map((a) => a.employeeId), ...assignees.map((a) => a.employeeId)])]
+      const empRows = await prisma.employee.findMany({ where: { id: { in: empIds } }, select: { id: true, name: true } })
+      const nameMap = new Map(empRows.map((e) => [e.id, e.name]))
+      const formatList = (list: { employeeId: number; role: string; contributionRatio: number }[]) =>
+        list
+          .slice()
+          .sort((a, b) => (a.role === '主辦' ? 0 : 1) - (b.role === '主辦' ? 0 : 1))
+          .map((a) => `${nameMap.get(a.employeeId) ?? a.employeeId}(${a.role} ${Math.round(a.contributionRatio * 100)}%)`)
+          .join('、')
+      assigneeLogValues = { oldValue: formatList(existingAssign), newValue: formatList(assignees) }
+    }
   }
 
   // 共保資訊整批覆寫（與建案一致；主保人須保留比例，合計須 < 100%）
@@ -429,6 +447,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     | { companyId: number | null; policyNumber: string; ratio: number }[]
     | undefined
   let coInsurersChanged = false
+  // [2026/08/19] - Lisa - 共保資訊修改記錄需顯示變更前後名單，不再只顯示「已變更」
+  let coInsurerLogValues: { oldValue: string; newValue: string } | null = null
   if (coInsurers) {
     for (const ci of coInsurers) {
       if (!ci.policyNumber?.trim()) {
@@ -450,6 +470,21 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const normCo = (list: { companyId: number | null; policyNumber: string; ratio: number }[]) =>
       list.map((c) => `${c.companyId ?? ''}|${(c.policyNumber ?? '').trim()}|${c.ratio}`).sort().join(';')
     coInsurersChanged = normCo(existingCo) !== normCo(coInsurers)
+
+    if (coInsurersChanged) {
+      const companyIds = [...new Set(
+        [...existingCo, ...coInsurers].map((c) => c.companyId).filter((v): v is number => v != null),
+      )]
+      const companyRows = await prisma.insuranceCompany.findMany({ where: { id: { in: companyIds } }, select: { id: true, name: true } })
+      const nameMap = new Map(companyRows.map((c) => [c.id, c.name]))
+      const formatList = (list: { companyId: number | null; policyNumber: string; ratio: number }[]) =>
+        list.length === 0
+          ? '無'
+          : list
+              .map((c) => `${c.companyId != null ? nameMap.get(c.companyId) ?? c.companyId : '未指定'} ${c.policyNumber}(${c.ratio}%)`)
+              .join('、')
+      coInsurerLogValues = { oldValue: formatList(existingCo), newValue: formatList(coInsurers) }
+    }
   }
 
   // [2026/07/01] - Lisa - 保險公司承辦人改必填：編輯時若帶入此欄位不可為空
@@ -524,7 +559,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       await tx.caseLog.create({
         data: {
           caseId: id, employeeId: empId, fieldName: '承辦人',
-          newValue: '承辦人已變更', logType: 'edit',
+          oldValue: assigneeLogValues?.oldValue || null,
+          newValue: assigneeLogValues?.newValue || null,
+          logType: 'edit',
         },
       })
     }
@@ -543,7 +580,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       await tx.caseLog.create({
         data: {
           caseId: id, employeeId: empId, fieldName: '共保資訊',
-          newValue: '共保資訊已變更', logType: 'edit',
+          oldValue: coInsurerLogValues?.oldValue || null,
+          newValue: coInsurerLogValues?.newValue || null,
+          logType: 'edit',
         },
       })
     }

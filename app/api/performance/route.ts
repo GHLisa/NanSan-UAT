@@ -17,6 +17,11 @@ const COMPANY_WIDE_ROLES = ['vp', 'admin_staff', 'sysadmin']
 // 但不得設定；寫入角色改由本清單把關（不含 admin_staff／handler）
 const CAN_SET_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin']
 
+// [2026/08/19] - Lisa - 歷史年度目標查詢新增季目標統計：依累計季度換算目標與達成率
+// Q1～Q4 為累計（Q1~Q3＝1~9月），非單一季度
+const QUARTER_END_MONTH: Record<string, number> = { 'Q1': 3, 'Q1~Q2': 6, 'Q1~Q3': 9, 'Q1~Q4': 12 }
+const QUARTER_COUNT: Record<string, number> = { 'Q1': 1, 'Q1~Q2': 2, 'Q1~Q3': 3, 'Q1~Q4': 4 }
+
 async function getSubordinates(session: JWTPayload) {
   let roleWhere: Record<string, unknown> | null = null
   // [2026/07/28] - Lisa - 承辦人：僅本人一筆（唯讀查看自己的目標與達成；寫入由 POST 角色驗證擋掉）
@@ -72,7 +77,8 @@ async function getSubordinates(session: JWTPayload) {
 // ── 年度實績：closeDate 為該年度的案件，依貢獻比例分攤 actualFee ───────────
 // 對齊 demo calcActualFee / calcActualCaseCount
 // [2026/08/04] - Lisa - FR-110 fee＝依比例分攤的份額；count＝**只計主辦**的案件數
-async function calcActuals(empIds: number[], years: number[]) {
+// [2026/08/19] - Lisa - quarterEndMonth：限縮 closeDate 月份（1~該月），供歷史查詢季目標統計換算；預設 12（全年，Q1~Q4）
+async function calcActuals(empIds: number[], years: number[], quarterEndMonth = 12) {
   const map = new Map<string, { fee: number; count: number }>()
   if (empIds.length === 0 || years.length === 0) return map
 
@@ -92,6 +98,7 @@ async function calcActuals(empIds: number[], years: number[]) {
   for (const c of closedCases) {
     const year = dayjs(c.closeDate).year()
     if (!yearSet.has(year)) continue
+    if (dayjs(c.closeDate).month() + 1 > quarterEndMonth) continue
     // 依承辦比例分攤 actualFee（非主辦捨去、主辦吸收剩餘）
     const amts = c.actualFee
       ? splitFeeByRatio(c.actualFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
@@ -150,6 +157,13 @@ export async function GET(req: NextRequest) {
 
   // ── 歷史年度目標查詢 ───────────────────────────────────────────────────
   if (req.nextUrl.searchParams.get('mode') === 'history') {
+    // [2026/08/19] - Lisa - 季目標統計：quarter＝累計季度（Q1／Q1~Q2／Q1~Q3／Q1~Q4，預設全年）
+    // 目標與達成率換算＝原年度目標 / 4 * 季數；實績亦限縮至該累計月份區間，兩者口徑一致
+    const quarterParam = req.nextUrl.searchParams.get('quarter') ?? 'Q1~Q4'
+    const quarter = QUARTER_END_MONTH[quarterParam] ? quarterParam : 'Q1~Q4'
+    const quarterEndMonth = QUARTER_END_MONTH[quarter]
+    const quarterCount = QUARTER_COUNT[quarter]
+
     const targets = await prisma.feeTarget.findMany({
       where: { employeeId: { in: subIds } },
       include: {
@@ -158,7 +172,7 @@ export async function GET(req: NextRequest) {
       },
       orderBy: [{ year: 'desc' }, { employeeId: 'asc' }],
     })
-    const actuals = await calcActuals(subIds, [...new Set(targets.map((t) => t.year))])
+    const actuals = await calcActuals(subIds, [...new Set(targets.map((t) => t.year))], quarterEndMonth)
     // [2026/07/28] - Lisa - 歷史查詢亦顯示部門／組別，排序為年度（新→舊）→部門→組別→員工
     const empMap = new Map(subordinates.map((s) => [s.id, s]))
     const empOrder = new Map(subordinates.map((s, i) => [s.id, i]))
@@ -176,8 +190,8 @@ export async function GET(req: NextRequest) {
             departmentName: emp?.departmentName ?? '',
             teamGroup: emp?.teamGroup ?? null,
             year: t.year,
-            targetAmount: t.targetAmount,
-            targetCaseCount: t.targetCaseCount,
+            targetAmount: t.targetAmount != null ? Math.round((t.targetAmount / 4) * quarterCount) : null,
+            targetCaseCount: t.targetCaseCount != null ? Math.round((t.targetCaseCount / 4) * quarterCount) : null,
             actualFee: actual?.fee ?? 0,
             actualCaseCount: actual?.count ?? 0,
             setByName: t.setter.name,

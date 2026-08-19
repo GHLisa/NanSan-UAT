@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Table, Tabs, Card, Select, InputNumber, Button, Typography, Space, Tag, message, Row, Col, ConfigProvider,
 } from 'antd'
-import { SaveOutlined, ReloadOutlined } from '@ant-design/icons'
+import { SaveOutlined, ReloadOutlined, FileExcelOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
@@ -14,6 +14,14 @@ const { Title, Text } = Typography
 
 const CURRENT_YEAR = dayjs().year()
 const YEAR_OPTIONS = [CURRENT_YEAR - 2, CURRENT_YEAR - 1, CURRENT_YEAR].map((y) => ({ value: y, label: `${y} 年` }))
+
+// [2026/08/19] - Lisa - 歷史年度目標查詢新增季目標統計：累計季度（Q1~Q3＝1~9月累計，非單一季度）
+const QUARTER_OPTIONS = [
+  { value: 'Q1', label: 'Q1（1~3月）' },
+  { value: 'Q1~Q2', label: 'Q1~Q2（1~6月）' },
+  { value: 'Q1~Q3', label: 'Q1~Q3（1~9月）' },
+  { value: 'Q1~Q4', label: 'Q1~Q4（全年）' },
+]
 
 // [2026/07/28] - Lisa - 可檢視全公司的角色（範圍跨部門，故提供部門篩選）
 const COMPANY_WIDE_ROLES = ['vp', 'admin_staff', 'sysadmin']
@@ -91,6 +99,8 @@ export default function PerformancePage() {
   const [histLoading, setHistLoading] = useState(true)
   const [histYear, setHistYear] = useState<number | null>(null)
   const [histEmployee, setHistEmployee] = useState<number | null>(null)
+  const [histQuarter, setHistQuarter] = useState<string>('Q1~Q4')
+  const [exportingHist, setExportingHist] = useState(false)
   const [editFee, setEditFee] = useState<Record<number, number | null>>({})
   const [editCount, setEditCount] = useState<Record<number, number | null>>({})
 
@@ -106,17 +116,18 @@ export default function PerformancePage() {
     setLoading(false)
   }
 
-  const fetchHistory = async () => {
+  const fetchHistory = async (quarter: string) => {
     setHistLoading(true)
-    const res = await api.get<HistoryRow[]>('/api/performance?mode=history')
+    const res = await api.get<HistoryRow[]>(`/api/performance?mode=history&quarter=${quarter}`)
     if (res.success && res.data) setHistory(res.data)
     setHistLoading(false)
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchSetting(settingYear) }, [settingYear])
+  // [2026/08/19] - Lisa - 季目標統計：切換累計季度需重新向後端取得換算後的目標與實績
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { fetchHistory() }, [])
+  useEffect(() => { fetchHistory(histQuarter) }, [histQuarter])
 
   const rowMap = useMemo(() => new Map(rows.map((r) => [r.employeeId, r])), [rows])
 
@@ -174,7 +185,7 @@ export default function PerformancePage() {
       setEditFee({})
       setEditCount({})
       fetchSetting(settingYear)
-      fetchHistory()
+      fetchHistory(histQuarter)
     } else {
       message.error(res.error ?? '儲存失敗')
     }
@@ -183,6 +194,31 @@ export default function PerformancePage() {
   function handleReset() {
     setEditFee({})
     setEditCount({})
+  }
+
+  // [2026/08/19] - Lisa - 歷史年度目標查詢匯出 Excel：條件與畫面目前的年度／季度／員工篩選一致
+  async function handleExportHistory() {
+    setExportingHist(true)
+    try {
+      const p = new URLSearchParams({ quarter: histQuarter })
+      if (histYear) p.set('year', String(histYear))
+      if (histEmployee) p.set('employeeId', String(histEmployee))
+      const res = await fetch(`/api/performance/export?${p}`, { credentials: 'include' })
+      if (!res.ok) { message.error('匯出失敗，請稍後再試'); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `純公證費業績歷史目標_${histYear ?? '全部年度'}_${histQuarter}_${dayjs().format('YYYYMMDD')}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      message.error('匯出失敗，請稍後再試')
+    } finally {
+      setExportingHist(false)
+    }
   }
 
   const refYear = settingYear - 1
@@ -334,22 +370,23 @@ export default function PerformancePage() {
     { title: '員工', dataIndex: 'employeeName', key: 'emp', width: 100 },
     { title: '年度', dataIndex: 'year', key: 'year', width: 80, render: (v: number) => `${v} 年` },
     {
-      title: '公證費目標', dataIndex: 'targetAmount', key: 'targetAmount', width: 130, align: 'right',
+      // [2026/08/19] - Lisa - 季目標統計：目標值已依所選累計季度換算（原年度目標 / 4 * 季數），欄名標示換算範圍
+      title: `公證費目標${histQuarter !== 'Q1~Q4' ? `（${histQuarter}換算）` : ''}`, dataIndex: 'targetAmount', key: 'targetAmount', width: 150, align: 'right',
       render: (v: number | null) => (v != null ? `$${v.toLocaleString()}` : '—'),
     },
     {
-      title: '結案件數(主辦)目標', dataIndex: 'targetCaseCount', key: 'targetCaseCount', width: 130, align: 'right',
+      title: `結案件數(主辦)目標${histQuarter !== 'Q1~Q4' ? `（${histQuarter}換算）` : ''}`, dataIndex: 'targetCaseCount', key: 'targetCaseCount', width: 150, align: 'right',
       render: (v: number | null) => (v != null ? v : '—'),
     },
     {
-      title: '實際公證費/達成率', key: 'actual', width: 160, align: 'right',
+      title: `實際公證費/達成率${histQuarter !== 'Q1~Q4' ? `（${histQuarter}）` : ''}`, key: 'actual', width: 170, align: 'right',
       render: (_, r) => (
         <span>${r.actualFee.toLocaleString()}{r.targetAmount ? pctTag(r.actualFee, r.targetAmount) : null}</span>
       ),
     },
     {
       // [2026/08/04] - Lisa - FR-110 件數只計主辦
-      title: '實際結案數(主辦)/達成率', key: 'actualCount', width: 150, align: 'right',
+      title: `實際結案數(主辦)/達成率${histQuarter !== 'Q1~Q4' ? `（${histQuarter}）` : ''}`, key: 'actualCount', width: 160, align: 'right',
       render: (_, r) => (
         <span>{r.actualCaseCount}{r.targetCaseCount ? pctTag(r.actualCaseCount, r.targetCaseCount) : null}</span>
       ),
@@ -447,32 +484,51 @@ export default function PerformancePage() {
               children: (
                 <>
                   <Card size="small" style={{ marginBottom: 12 }}>
-                    <Row gutter={[8, 8]} align="middle">
+                    <Row gutter={[8, 8]} align="middle" justify="space-between">
                       <Col>
-                        <Select
-                          value={histYear}
-                          onChange={setHistYear}
-                          options={[{ value: null as unknown as number, label: '全部年度' }, ...YEAR_OPTIONS]}
-                          style={{ width: 120 }}
-                        />
+                        <Space wrap>
+                          <Select
+                            value={histYear}
+                            onChange={setHistYear}
+                            options={[{ value: null as unknown as number, label: '全部年度' }, ...YEAR_OPTIONS]}
+                            style={{ width: 120 }}
+                          />
+                          {/* [2026/08/19] - Lisa - 季目標統計：選完年度後再選累計季度，目標與達成率依所選季度換算 */}
+                          <Select
+                            value={histQuarter}
+                            onChange={setHistQuarter}
+                            options={QUARTER_OPTIONS}
+                            style={{ width: 150 }}
+                          />
+                          <Select
+                            value={histEmployee}
+                            onChange={setHistEmployee}
+                            options={[
+                              { value: null as unknown as number, label: '全部員工' },
+                              // [2026/07/28] - Lisa - 全公司範圍下同名員工難分辨，標示部門／組別
+                              ...employees.map((e) => ({
+                                value: e.id,
+                                label: `${e.name}（${e.departmentName}${e.teamGroup ? `／${e.teamGroup}` : ''}）`,
+                              })),
+                            ]}
+                            style={{ width: 220 }}
+                          />
+                          <Button onClick={() => { setHistYear(null); setHistEmployee(null); setHistQuarter('Q1~Q4') }}>重置</Button>
+                          <Text type="secondary">達成率依所選季度比例換算年度目標（原目標 ÷4×季數）</Text>
+                        </Space>
                       </Col>
                       <Col>
-                        <Select
-                          value={histEmployee}
-                          onChange={setHistEmployee}
-                          options={[
-                            { value: null as unknown as number, label: '全部員工' },
-                            // [2026/07/28] - Lisa - 全公司範圍下同名員工難分辨，標示部門／組別
-                            ...employees.map((e) => ({
-                              value: e.id,
-                              label: `${e.name}（${e.departmentName}${e.teamGroup ? `／${e.teamGroup}` : ''}）`,
-                            })),
-                          ]}
-                          style={{ width: 220 }}
-                        />
-                      </Col>
-                      <Col>
-                        <Button onClick={() => { setHistYear(null); setHistEmployee(null) }}>重置</Button>
+                        {/* [2026/08/19] - Lisa - 匯出條件＝當前年度／季度／員工篩選；樣式比照案件查詢（settlements）匯出鈕 */}
+                        <Button
+                          color="green"
+                          variant="solid"
+                          icon={<FileExcelOutlined />}
+                          onClick={handleExportHistory}
+                          loading={exportingHist}
+                          disabled={!histFiltered.length}
+                        >
+                          匯出 Excel
+                        </Button>
                       </Col>
                     </Row>
                   </Card>

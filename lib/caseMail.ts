@@ -4,6 +4,7 @@
 //   新派案 / 承辦人異動 → 主承辦人＋協辦人
 //   文件送審 / 進入下一關 → 當前關卡審核人 / 下一關審核人
 //   文件退回            → 主承辦人＋協辦人
+//   終審核准            → 主承辦人＋協辦人（[2026/08/05] 新增）
 // PS：站內即時通知（lib/caseNotify.ts 寫入 notification）維持即時，本檔僅改 email 節奏。
 // 對外函式簽名不變，呼叫端（送審 / 退回 / 指派 API）無需調整；入列失敗只記 log、不拋例外。
 
@@ -114,5 +115,23 @@ export async function mailReviewRejected(
 ): Promise<void> {
   await enqueueFor(await assigneeEmails(caseId), {
     eventType: 'review_rejected', caseId, caseNumber, documentType, remarks: remarks ?? null, insuredName: await caseInsuredName(caseId),
+  })
+}
+
+// ── (4) 終審核准 → 主承辦人＋協辦人 ─────────────────────────────────────
+// [2026/08/05] - Lisa - 原核准僅寫站內通知、不寄信，承辦人須自行回系統輪詢才知道可進下一節點；
+// 與「退回寄信」不對稱，易讓人誤以為沒收到信＝尚未審完。本函式僅供「終審核准」呼叫
+// （主管批稿決行且無後續關卡 / 執行副總核准），中間關卡通過維持只通知下一關審核人，
+// 避免每份文件每一關都寄一次而讓信件量倍增。remarks 為審核意見（可空）。
+export async function mailReviewApproved(
+  caseId: number,
+  caseNumber: string,
+  documentType: string,
+  remarks?: string | null,
+  mergedBilling = false, // 合併送審旗標，供彙整信標示「合併送審 請款單DEBIT NOTE」
+): Promise<void> {
+  await enqueueFor(await assigneeEmails(caseId), {
+    eventType: 'review_approved', caseId, caseNumber, documentType, mergedBilling,
+    remarks: remarks ?? null, insuredName: await caseInsuredName(caseId),
   })
 }

@@ -6,12 +6,12 @@
 import { prisma } from './prisma'
 
 export interface MailEventInput {
-  eventType: string          // new_assignment / assignment_changed / review_submitted / review_cascade / review_rejected
+  eventType: string          // new_assignment / assignment_changed / review_submitted / review_cascade / review_rejected / review_approved
   caseId?: number | null
   caseNumber: string
   insuredName?: string | null
   documentType?: string | null
-  remarks?: string | null    // 文件退回原因
+  remarks?: string | null    // 文件退回原因 / 核准之審核意見
   mergedBilling?: boolean     // [2026/07/15] - Lisa - 合併送審旗標，供彙整信標示「合併送審 請款單DEBIT NOTE」
   recipient: string          // 收件人「姓名 <email>」
 }

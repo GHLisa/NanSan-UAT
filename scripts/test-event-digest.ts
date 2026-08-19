@@ -20,14 +20,16 @@ async function main() {
   const email = process.argv[2] ?? 'lisa_chung@asiavista.com.tw'
   const to = `Lisa <${email}>`
 
-  // 涵蓋四個分區的樣本事件（caseId 設 null → 顯示案號文字，避免 sample 連到不存在的案件）
+  // 涵蓋各分區的樣本事件（caseId 設 null → 顯示案號文字，避免 sample 連到不存在的案件）
   const sample = [
     { id: 1, eventType: 'new_assignment', caseId: null, caseNumber: 'NLHT26K-125', insuredName: '安林工程股份有限公司', documentType: null, remarks: null },
     { id: 2, eventType: 'new_assignment', caseId: null, caseNumber: 'NLHT26K-131', insuredName: '大同倉儲', documentType: null, remarks: null },
     { id: 3, eventType: 'assignment_changed', caseId: null, caseNumber: 'NLHT26K-118', insuredName: '國泰世紀產物', documentType: null, remarks: null },
     { id: 4, eventType: 'review_submitted', caseId: null, caseNumber: 'NLTC26F-042', insuredName: '遠東新世紀', documentType: '初步報告', remarks: null },
     { id: 5, eventType: 'review_cascade', caseId: null, caseNumber: 'NLKH26A-007', insuredName: '台塑石化', documentType: '正式報告', remarks: null },
-    { id: 6, eventType: 'review_rejected', caseId: null, caseNumber: 'NLHT26K-090', insuredName: '中鋼運通', documentType: '正式報告', remarks: '出險原因描述不足，請補充現場照片與估價單。' },
+    // [2026/08/05] - Lisa - 終審核准（走完全部關卡）通知承辦人
+    { id: 6, eventType: 'review_approved', caseId: null, caseNumber: 'NLKH26A-011', insuredName: '長春石化', documentType: '結案報告書', remarks: '同意結案，請依核定金額製發請款單。', mergedBilling: true },
+    { id: 7, eventType: 'review_rejected', caseId: null, caseNumber: 'NLHT26K-090', insuredName: '中鋼運通', documentType: '正式報告', remarks: '出險原因描述不足，請補充現場照片與估價單。' },
   ]
 
   const html = buildEventDigestHtml(sample as Parameters<typeof buildEventDigestHtml>[0])
