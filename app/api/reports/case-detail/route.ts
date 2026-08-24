@@ -1,11 +1,118 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { splitFeeByRatio } from '@/lib/feeSplit'
+import { getPrepaidTotals, getPrepayEventsInRange, type PrepayEvent } from '@/lib/feeRecognition'
 import { prisma } from '@/lib/prisma'
 import dayjs from 'dayjs'
 
 const QUARTER_MONTHS: Record<string, number[]> = {
   Q1: [1,2,3], Q2: [4,5,6], Q3: [7,8,9], Q4: [10,11,12],
+}
+
+// ── 依主辦人分組 ──────────────────────────────────────────────────────────
+type CaseRow = {
+  id: number; caseNumber: string; insuredName: string
+  closeDate: string; actualFee: number; travelFee: number
+  subtotalFee: number; remarks: string
+}
+// [2026/08/04] - Lisa - FR-109 季統計件數改「只計主辦」：
+//   caseCount    ＝參與人次（同一案主辦＋協辦各計 1）→ 月統計明細小計／合計沿用
+//   primaryCount ＝主辦件數（協辦不計）→ 季統計（當季表／YTD 累計表）使用
+// 兩者並存而非改寫 caseCount，避免月統計小計與明細列數不符（明細是逐「人次」列）。
+type EmpGroup = { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; primaryCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
+
+type RowAssignment = { employeeId: number; role: string; contributionRatio: number | null; employee: { name: string } }
+
+// [2026/08/21] - Lisa - 公證費預付請款依出具日期認列：把「已決案結案淨額」與「預付請款認列」
+// 兩種來源的金額，用同一套依承辦比例分攤＋累計小計的邏輯併入同一份 empMap，供月/季/YTD 共用。
+function pushCaseRow(
+  map: Map<number, EmpGroup>,
+  input: {
+    id: number; caseNumber: string; insuredName: string
+    date: Date; amount: number; travelFee: number; remarks: string
+    assignments: RowAssignment[]
+  },
+  visibleEmpIds: Set<number> | null,
+  withCaseRows = true, // [2026/08/21] - Lisa - YTD 累計表僅需 totals 彙總，不列逐案明細（維持原行為）
+) {
+  const feeAmts = splitFeeByRatio(input.amount, input.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
+  input.assignments.forEach((a, ai) => {
+    if (visibleEmpIds && !visibleEmpIds.has(a.employeeId)) return // 組長：不列他組承辦人
+    const actualFee = feeAmts[ai]
+    const travelFee = a.role === '主辦' ? input.travelFee : 0
+    const subtotalFee = actualFee + travelFee
+
+    if (!map.has(a.employeeId)) {
+      map.set(a.employeeId, {
+        empId: a.employeeId,
+        empName: a.employee.name,
+        cases: [],
+        totals: { caseCount: 0, primaryCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
+      })
+    }
+    const group = map.get(a.employeeId)!
+    if (withCaseRows) {
+      group.cases.push({
+        id: input.id,
+        caseNumber: input.caseNumber,
+        insuredName: input.insuredName,
+        closeDate: input.date.toISOString(),
+        actualFee,
+        travelFee,
+        subtotalFee,
+        remarks: input.remarks,
+      })
+    }
+    group.totals.caseCount++
+    if (a.role === '主辦') group.totals.primaryCount++
+    group.totals.actualFee += actualFee
+    group.totals.travelFee += travelFee
+    group.totals.subtotalFee += subtotalFee
+  })
+}
+
+// 預付請款事件的備註（承辦部門標記＋分工比例）與案件顯示欄位，需另外查案件基本資料
+// （案件可能尚未結案，不在已決案件清單內）。
+async function pushPrepayEvents(
+  map: Map<number, EmpGroup>,
+  events: PrepayEvent[],
+  refDeptId: number | null,
+  visibleEmpIds: Set<number> | null,
+  withCaseRows = true,
+) {
+  const caseIds = [...new Set(events.map((e) => e.caseId))]
+  if (caseIds.length === 0) return
+  const caseInfos = await prisma.case.findMany({
+    where: { id: { in: caseIds } },
+    select: { id: true, caseNumber: true, insuredName: true, departmentId: true, department: { select: { name: true } } },
+  })
+  const caseInfoMap = new Map(caseInfos.map((c) => [c.id, c]))
+
+  for (const e of events) {
+    const info = caseInfoMap.get(e.caseId)
+    if (!info) continue
+    const ratioText = e.assignments.length > 1
+      ? e.assignments.map((a) => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
+      : ''
+    const deptTag = refDeptId && info.departmentId !== refDeptId ? `[${info.department.name}]` : ''
+    const remarks = [deptTag, '公證費預付請款', ratioText].filter(Boolean).join(' ')
+    pushCaseRow(
+      map,
+      {
+        id: info.id,
+        caseNumber: info.caseNumber,
+        insuredName: info.insuredName,
+        date: e.issuedAt,
+        amount: e.amount,
+        travelFee: 0,
+        remarks,
+        assignments: e.assignments,
+      },
+      visibleEmpIds,
+      withCaseRows,
+    )
+  }
 }
 
 export async function GET(req: NextRequest) {
@@ -45,17 +152,16 @@ export async function GET(req: NextRequest) {
   }
 
   // ── 角色可見範圍 WHERE ─────────────────────────────────────────────────
-  const scopeWhere: Record<string, unknown> = {
-    status: '已決',
-    closeDate: closeDateWhere,
-  }
+  // [2026/08/21] - Lisa - roleScopeWhere 不含 status/closeDate，供「公證費預付請款」查詢
+  // （不限案件是否已結案）沿用同一套角色可視範圍邏輯；scopeWhere 為已決案件查詢專用（疊加 status/closeDate）。
+  const roleScopeWhere: Record<string, unknown> = {}
   // [2026/07/28] - Lisa - 可顯示的承辦人（null = 不限）：組長僅列同組同事，
   // 他組承辦人的分攤列不顯示（分攤金額仍以案件全部承辦人為計算基準，個人份額不受影響）
   let visibleEmpIds: Set<number> | null = null
   if (role === 'handler') {
     // [2026/07/28] - Lisa - 承辦人不限部門：可能於他部門協辦，加部門條件會漏掉跨部門協辦案
     //（對齊 api/cases Issue #5 的處理）；且僅列自己的分攤列，不顯示共同承辦人的列
-    scopeWhere.assignments = { some: { employeeId: empId } }
+    roleScopeWhere.assignments = { some: { employeeId: empId } }
     visibleEmpIds = new Set([empId])
   } else if (canViewAllDepts(role) || role === 'admin_staff') {
     // [2026/07/07] - Lisa - 行政人員比照副總：全公司範圍，可依部門查詢條件篩選
@@ -68,11 +174,11 @@ export async function GET(req: NextRequest) {
           select: { employeeId: true },
         })
         const ids = [...new Set(roles.map((r) => r.employeeId))]
-        scopeWhere.assignments = { some: { employeeId: { in: ids } } }
+        roleScopeWhere.assignments = { some: { employeeId: { in: ids } } }
         visibleEmpIds = new Set(ids)
       } else {
         // 限案件承辦部門：維持原行為（案屬該部門、列全部承辦人，部門合計完整）
-        scopeWhere.departmentId = deptId
+        roleScopeWhere.departmentId = deptId
       }
     }
   } else if (role === 'team_lead' && departmentId && teamGroup) {
@@ -85,10 +191,10 @@ export async function GET(req: NextRequest) {
       select: { employeeId: true },
     })
     const groupEmpIds = [...new Set(roles.map((r) => r.employeeId))]
-    scopeWhere.assignments = { some: { employeeId: { in: groupEmpIds } } }
+    roleScopeWhere.assignments = { some: { employeeId: { in: groupEmpIds } } }
     visibleEmpIds = new Set(groupEmpIds)
     // [2026/08/04] - Lisa - FR-107：'dept' 模式再加上「案屬本部門」限制（顯示列仍僅同組人員）
-    if (scopeMode === 'dept') scopeWhere.departmentId = departmentId
+    if (scopeMode === 'dept') roleScopeWhere.departmentId = departmentId
   } else if (departmentId) {
     // 組長無組別 / 部門主管
     // [2026/07/28] - Lisa - 範圍改以「本部門人員的參與」為準（不再限案件承辦部門），
@@ -100,11 +206,13 @@ export async function GET(req: NextRequest) {
       select: { employeeId: true },
     })
     const deptEmpIds = [...new Set(roles.map((r) => r.employeeId))]
-    scopeWhere.assignments = { some: { employeeId: { in: deptEmpIds } } }
+    roleScopeWhere.assignments = { some: { employeeId: { in: deptEmpIds } } }
     visibleEmpIds = new Set(deptEmpIds)
     // [2026/08/04] - Lisa - FR-107：'dept' 模式再加上「案屬本部門」限制（顯示列仍僅本部門人員）
-    if (scopeMode === 'dept') scopeWhere.departmentId = departmentId
+    if (scopeMode === 'dept') roleScopeWhere.departmentId = departmentId
   }
+
+  const scopeWhere: Record<string, unknown> = { status: '已決', closeDate: closeDateWhere, ...roleScopeWhere }
 
   // ── 取得已決案件 ─────────────────────────────────────────────────────────
   const cases = await prisma.case.findMany({
@@ -132,24 +240,16 @@ export async function GET(req: NextRequest) {
     orderBy: { closeDate: 'asc' },
   })
 
-  // ── 依主辦人分組 ──────────────────────────────────────────────────────────
-  type CaseRow = {
-    id: number; caseNumber: string; insuredName: string
-    closeDate: string; actualFee: number; travelFee: number
-    subtotalFee: number; remarks: string
-  }
-  // [2026/08/04] - Lisa - FR-109 季統計件數改「只計主辦」：
-  //   caseCount    ＝參與人次（同一案主辦＋協辦各計 1）→ 月統計明細小計／合計沿用
-  //   primaryCount ＝主辦件數（協辦不計）→ 季統計（當季表／YTD 累計表）使用
-  // 兩者並存而非改寫 caseCount，避免月統計小計與明細列數不符（明細是逐「人次」列）。
-  type EmpGroup = { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; primaryCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
+  // [2026/08/21] - Lisa - 已決案結案月淨額＝actualFee − 該案累計已依出具日期認列的公證費預付請款，
+  // 避免預付金額在出具當月與結案月被重複計入（可能為負，代表多預付／結案下修）。
+  const prepaidTotals = await getPrepaidTotals(cases.map((c) => c.id))
 
   const empMap = new Map<number, EmpGroup>()
 
   // [2026/07/14] - Lisa - 純公證費/差旅其他費/小計依承辦比例分配；每位經辦人（主辦＋協辦）各列其份額，同一案分列各人，件數依參與人計
   for (const c of cases) {
     const travelFeeFull = c.travelOtherExpense ?? 0
-    const actualFeeFull = c.actualFee ?? 0
+    const actualFeeFull = (c.actualFee ?? 0) - (prepaidTotals.get(c.id) ?? 0)
 
     // 備註：非本單位案件標記其承辦部門＋多位承辦人時顯示分工比例
     // [2026/08/04] - Lisa - FR-107：僅「非本單位」之案件加 [承辦部門]，讓跨部門協辦案一眼可辨
@@ -159,41 +259,25 @@ export async function GET(req: NextRequest) {
     const deptTag = refDeptId && c.departmentId !== refDeptId ? `[${c.department.name}]` : ''
     const remarks = [deptTag, ratioText].filter(Boolean).join(' ')
 
-    // 純公證費依承辦比例分攤（非主辦捨去、主辦吸收剩餘）
-    const feeAmts = splitFeeByRatio(actualFeeFull, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
-    c.assignments.forEach((a, ai) => {
-      if (visibleEmpIds && !visibleEmpIds.has(a.employeeId)) return // 組長：不列他組承辦人
-      const actualFee = feeAmts[ai]
-      const travelFee = a.role === '主辦' ? travelFeeFull : 0
-      const subtotalFee = actualFee + travelFee
-
-      if (!empMap.has(a.employeeId)) {
-        empMap.set(a.employeeId, {
-          empId: a.employeeId,
-          empName: a.employee.name,
-          cases: [],
-          totals: { caseCount: 0, primaryCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 },
-        })
-      }
-      const group = empMap.get(a.employeeId)!
-      group.cases.push({
+    pushCaseRow(
+      empMap,
+      {
         id: c.id,
         caseNumber: c.caseNumber,
         insuredName: c.insuredName,
-        closeDate: c.closeDate!.toISOString(),
-        actualFee,
-        travelFee,
-        subtotalFee,
+        date: c.closeDate!,
+        amount: actualFeeFull,
+        travelFee: travelFeeFull,
         remarks,
-      })
-      group.totals.caseCount++
-      // [2026/08/04] - Lisa - FR-109 主辦件數（季統計用）
-      if (a.role === '主辦') group.totals.primaryCount++
-      group.totals.actualFee += actualFee
-      group.totals.travelFee += travelFee
-      group.totals.subtotalFee += subtotalFee
-    })
+        assignments: c.assignments,
+      },
+      visibleEmpIds,
+    )
   }
+
+  // [2026/08/21] - Lisa - 公證費預付請款：依出具日期併入同一期間的統計（不限案件是否已結案）
+  const prepayEvents = await getPrepayEventsInRange(roleScopeWhere as unknown as Prisma.CaseWhereInput, closeDateWhere)
+  await pushPrepayEvents(empMap, prepayEvents, refDeptId, visibleEmpIds)
 
   const groups = Array.from(empMap.values())
 
@@ -213,12 +297,14 @@ export async function GET(req: NextRequest) {
   if (type === 'quarterly') {
     const qMonths = QUARTER_MONTHS[quarter] ?? [1,2,3]
     const ytdEndMonth = qMonths[qMonths.length - 1]
+    const ytdStart = new Date(`${year}-01-01`)
     const ytdEnd = dayjs(`${year}-${String(ytdEndMonth).padStart(2,'0')}-01`).endOf('month')
+    const ytdRange = { gte: ytdStart, lte: ytdEnd.toDate() }
 
     const ytdCases = await prisma.case.findMany({
       where: {
         ...scopeWhere,
-        closeDate: { gte: new Date(`${year}-01-01`), lte: ytdEnd.toDate() },
+        closeDate: ytdRange,
       },
       select: {
         id: true,
@@ -227,33 +313,45 @@ export async function GET(req: NextRequest) {
         closeDate: true,
         actualFee: true,
         travelOtherExpense: true,
+        departmentId: true, // [2026/08/21] - Lisa - 與主查詢欄位一致（remarks 部門標記用）
+        department: { select: { name: true } },
         assignments: {
           select: { employeeId: true, role: true, contributionRatio: true, employee: { select: { name: true } } },
         },
       },
     })
 
+    const ytdPrepaidTotals = await getPrepaidTotals(ytdCases.map((c) => c.id))
+
     const ytdMap = new Map<number, EmpGroup>()
     for (const c of ytdCases) {
       const travelFeeFull = c.travelOtherExpense ?? 0
-      const actualFeeFull = c.actualFee ?? 0
-      const ytdFeeAmts = splitFeeByRatio(actualFeeFull, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
-      c.assignments.forEach((a, ai) => {
-        if (visibleEmpIds && !visibleEmpIds.has(a.employeeId)) return // 組長：不列他組承辦人
-        const actualFee = ytdFeeAmts[ai]
-        const travelFee = a.role === '主辦' ? travelFeeFull : 0
-        if (!ytdMap.has(a.employeeId)) {
-          ytdMap.set(a.employeeId, { empId: a.employeeId, empName: a.employee.name, cases: [], totals: { caseCount: 0, primaryCount: 0, actualFee: 0, travelFee: 0, subtotalFee: 0 } })
-        }
-        const g = ytdMap.get(a.employeeId)!
-        g.totals.caseCount++
-        // [2026/08/04] - Lisa - FR-109 YTD 累計表件數同樣只計主辦
-        if (a.role === '主辦') g.totals.primaryCount++
-        g.totals.actualFee += actualFee
-        g.totals.travelFee += travelFee
-        g.totals.subtotalFee += actualFee + travelFee
-      })
+      const actualFeeFull = (c.actualFee ?? 0) - (ytdPrepaidTotals.get(c.id) ?? 0)
+      const ratioText = c.assignments.length > 1
+        ? c.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
+        : ''
+      const deptTag = refDeptId && c.departmentId !== refDeptId ? `[${c.department.name}]` : ''
+      const remarks = [deptTag, ratioText].filter(Boolean).join(' ')
+      pushCaseRow(
+        ytdMap,
+        {
+          id: c.id,
+          caseNumber: c.caseNumber,
+          insuredName: c.insuredName,
+          date: c.closeDate!,
+          amount: actualFeeFull,
+          travelFee: travelFeeFull,
+          remarks,
+          assignments: c.assignments,
+        },
+        visibleEmpIds,
+        false, // YTD 累計表僅需彙總，不列逐案明細（維持原行為）
+      )
     }
+
+    const ytdPrepayEvents = await getPrepayEventsInRange(roleScopeWhere as unknown as Prisma.CaseWhereInput, ytdRange)
+    await pushPrepayEvents(ytdMap, ytdPrepayEvents, refDeptId, visibleEmpIds, false)
+
     ytdGroups = Array.from(ytdMap.values())
   }
 

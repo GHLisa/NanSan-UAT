@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { splitFeeByRatio } from '@/lib/feeSplit'
+import { getPrepaidTotals, getPrepayEventsInRange } from '@/lib/feeRecognition'
 import { buildCaseScopeWhere, getCaseScopeLabel, getScopeEmployeeIds } from '@/lib/caseScope'
 import { buildReviewWhere, defaultReviewTab } from '@/lib/reviewScope'
 import type { Prisma } from '@prisma/client'
@@ -342,20 +343,35 @@ export async function GET() {
   // 結案件數分母＝scope 內 closeDate 為今年的已決案件數（非 settlements.length）
   // [2026/08/04] - Lisa - FR-110 結案件數改「只計 scope 內人員擔任主辦」的案件（原為只要有人參與即計 1），
   // 與純公證費業績設定實績件數、已決案明細表季統計（FR-109）同一口徑；金額仍為份額加總不變。
+  // [2026/08/21] - Lisa - 公證費預付請款依出具日期認列：結案月改用 actualFee 扣除該案累計已認列的
+  // 預付金額（避免與出具當月重複計入，可能為負），並把預付事件依出具日期併入年度實際值（不影響結案件數）。
+  const prepaidTotals = await getPrepaidTotals(yearClosedCases.map((c) => c.id))
   let actualFeePure = 0
   let actualClosedCount = 0
   for (const c of yearClosedCases) {
     const inScope = c.assignments.some(a => scopeEmpIdSet.has(a.employeeId))
     if (!inScope) continue
     if (c.assignments.some(a => a.role === '主辦' && scopeEmpIdSet.has(a.employeeId))) actualClosedCount += 1
-    if (c.actualFee) {
+    const netFee = (c.actualFee ?? 0) - (prepaidTotals.get(c.id) ?? 0)
+    if (netFee) {
       // 依承辦比例分攤（非主辦捨去、主辦吸收剩餘），僅加總 scope 內承辦人份額
-      const amts = splitFeeByRatio(c.actualFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
+      const amts = splitFeeByRatio(netFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
       actualFeePure += c.assignments.reduce(
         (s, a, i) => (scopeEmpIdSet.has(a.employeeId) ? s + amts[i] : s),
         0,
       )
     }
+  }
+
+  const yearPrepayEvents = await getPrepayEventsInRange(caseWhere, { gte: yearStart, lte: new Date(yearEnd.getTime() - 1) })
+  for (const e of yearPrepayEvents) {
+    const inScope = e.assignments.some(a => scopeEmpIdSet.has(a.employeeId))
+    if (!inScope) continue
+    const amts = splitFeeByRatio(e.amount, e.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
+    actualFeePure += e.assignments.reduce(
+      (s, a, i) => (scopeEmpIdSet.has(a.employeeId) ? s + amts[i] : s),
+      0,
+    )
   }
 
   const feeAchieveRate = feeTarget ? Math.min(Math.round(actualFeePure / feeTarget * 100), 999) : null

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession, JWTPayload } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { splitFeeByRatio } from '@/lib/feeSplit'
+import { getPrepaidTotals, getPrepayEventsInRange } from '@/lib/feeRecognition'
 import dayjs from 'dayjs'
 import { taipeiNow } from '@/lib/sla'
 
@@ -84,14 +85,21 @@ async function calcActuals(empIds: number[], years: number[], quarterEndMonth = 
 
   const minYear = Math.min(...years)
   const maxYear = Math.max(...years)
+  const rangeStart = new Date(`${minYear}-01-01`)
+  const rangeEnd = new Date(`${maxYear + 1}-01-01`)
   const closedCases = await prisma.case.findMany({
-    where: { closeDate: { gte: new Date(`${minYear}-01-01`), lt: new Date(`${maxYear + 1}-01-01`) } },
+    where: { closeDate: { gte: rangeStart, lt: rangeEnd } },
     select: {
+      id: true,
       closeDate: true,
       actualFee: true,
       assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
     },
   })
+
+  // [2026/08/21] - Lisa - 公證費預付請款依出具日期認列：結案月改用 actualFee 扣除該案累計已認列的
+  // 預付金額（避免與出具當月重複計入，可能為負），並把預付事件依出具日期併入同一 year/quarterEndMonth 口徑。
+  const prepaidTotals = await getPrepaidTotals(closedCases.map((c) => c.id))
 
   const yearSet = new Set(years)
   const empSet = new Set(empIds)
@@ -99,10 +107,9 @@ async function calcActuals(empIds: number[], years: number[], quarterEndMonth = 
     const year = dayjs(c.closeDate).year()
     if (!yearSet.has(year)) continue
     if (dayjs(c.closeDate).month() + 1 > quarterEndMonth) continue
-    // 依承辦比例分攤 actualFee（非主辦捨去、主辦吸收剩餘）
-    const amts = c.actualFee
-      ? splitFeeByRatio(c.actualFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
-      : null
+    const netFee = (c.actualFee ?? 0) - (prepaidTotals.get(c.id) ?? 0)
+    // 依承辦比例分攤（非主辦捨去、主辦吸收剩餘）
+    const amts = splitFeeByRatio(netFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
     c.assignments.forEach((a, i) => {
       if (!empSet.has(a.employeeId)) return
       const key = `${a.employeeId}-${year}`
@@ -110,7 +117,23 @@ async function calcActuals(empIds: number[], years: number[], quarterEndMonth = 
       // [2026/08/04] - Lisa - FR-110 件數只計主辦（協辦不計件，惟金額份額仍計）。
       // 與已決案明細表季統計（FR-109）、儀表板結案件數達成率同一口徑。
       if (a.role === '主辦') entry.count += 1
-      if (amts) entry.fee += amts[i]
+      entry.fee += amts[i]
+      map.set(key, entry)
+    })
+  }
+
+  const prepayEvents = await getPrepayEventsInRange({}, { gte: rangeStart, lte: new Date(rangeEnd.getTime() - 1) })
+  for (const e of prepayEvents) {
+    const year = dayjs(e.issuedAt).year()
+    if (!yearSet.has(year)) continue
+    if (dayjs(e.issuedAt).month() + 1 > quarterEndMonth) continue
+    const amts = splitFeeByRatio(e.amount, e.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
+    e.assignments.forEach((a, i) => {
+      if (!empSet.has(a.employeeId)) return
+      const key = `${a.employeeId}-${year}`
+      const entry = map.get(key) ?? { fee: 0, count: 0 }
+      // 預付請款尚未結案，不計入件數，只計金額份額
+      entry.fee += amts[i]
       map.set(key, entry)
     })
   }

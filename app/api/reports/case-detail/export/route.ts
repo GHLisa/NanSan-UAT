@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { splitFeeByRatio } from '@/lib/feeSplit'
+import { getPrepaidTotals, getPrepayEventsInRange, type PrepayEvent } from '@/lib/feeRecognition'
 import { prisma } from '@/lib/prisma'
 import ExcelJS from 'exceljs'
 import dayjs from 'dayjs'
@@ -27,6 +29,53 @@ type CaseRow = {
 }
 // [2026/08/04] - Lisa - FR-109 caseCount＝參與人次（月明細小計用）／primaryCount＝主辦件數（季統計用）
 type EmpGroup = { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; primaryCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
+
+type RowAssignment = { employeeId: number; role: string; contributionRatio: number | null; employee: { name: string } }
+// [2026/08/21] - Lisa - 公證費預付請款依出具日期認列：已決案結案淨額列與預付請款認列列，
+// 統一轉成同一種列形狀後再交給 groupByHandler 分組小計，兩者共用同一套分攤邏輯。
+type Row = {
+  id: number; caseNumber: string; insuredName: string
+  date: Date; amount: number; travelFee: number; remarks: string
+  assignments: RowAssignment[]
+}
+
+function buildRemarks(refDeptId: number | null, caseDepartmentId: number, caseDepartmentName: string, assignments: RowAssignment[]) {
+  const ratioText = assignments.length > 1
+    ? assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
+    : ''
+  const deptTag = refDeptId && caseDepartmentId !== refDeptId ? `[${caseDepartmentName}]` : ''
+  return [deptTag, ratioText].filter(Boolean).join(' ')
+}
+
+async function toPrepayRows(events: PrepayEvent[], refDeptId: number | null): Promise<Row[]> {
+  const caseIds = [...new Set(events.map((e) => e.caseId))]
+  if (caseIds.length === 0) return []
+  const caseInfos = await prisma.case.findMany({
+    where: { id: { in: caseIds } },
+    select: { id: true, caseNumber: true, insuredName: true, departmentId: true, department: { select: { name: true } } },
+  })
+  const caseInfoMap = new Map(caseInfos.map((c) => [c.id, c]))
+  const rows: Row[] = []
+  for (const e of events) {
+    const info = caseInfoMap.get(e.caseId)
+    if (!info) continue
+    const ratioText = e.assignments.length > 1
+      ? e.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
+      : ''
+    const deptTag = refDeptId && info.departmentId !== refDeptId ? `[${info.department.name}]` : ''
+    rows.push({
+      id: info.id,
+      caseNumber: info.caseNumber,
+      insuredName: info.insuredName,
+      date: e.issuedAt,
+      amount: e.amount,
+      travelFee: 0,
+      remarks: [deptTag, '公證費預付請款', ratioText].filter(Boolean).join(' '),
+      assignments: e.assignments,
+    })
+  }
+  return rows
+}
 
 export async function GET(req: NextRequest) {
   const session = await getSession()
@@ -63,14 +112,16 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const scopeWhere: Record<string, unknown> = { status: '已決', closeDate: closeDateWhere }
+  // [2026/08/21] - Lisa - roleScopeWhere 不含 status/closeDate，供公證費預付請款查詢
+  // （不限案件是否已結案）沿用同一套角色可視範圍邏輯；scopeWhere 為已決案件查詢專用。
+  const roleScopeWhere: Record<string, unknown> = {}
   // [2026/07/28] - Lisa - 可顯示的承辦人（null = 不限）：組長僅列同組同事，
   // 他組承辦人的分攤列不顯示（分攤金額仍以案件全部承辦人為計算基準，個人份額不受影響）
   let visibleEmpIds: Set<number> | null = null
   if (role === 'handler') {
     // [2026/07/28] - Lisa - 承辦人不限部門：可能於他部門協辦，加部門條件會漏掉跨部門協辦案
     //（對齊 api/cases Issue #5 的處理）；且僅列自己的分攤列，不顯示共同承辦人的列
-    scopeWhere.assignments = { some: { employeeId: empId } }
+    roleScopeWhere.assignments = { some: { employeeId: empId } }
     visibleEmpIds = new Set([empId])
   } else if (canViewAllDepts(role) || role === 'admin_staff') {
     // [2026/07/07] - Lisa - 行政人員比照副總：全公司範圍，可依部門查詢條件篩選
@@ -82,10 +133,10 @@ export async function GET(req: NextRequest) {
           select: { employeeId: true },
         })
         const ids = [...new Set(roles.map((r) => r.employeeId))]
-        scopeWhere.assignments = { some: { employeeId: { in: ids } } }
+        roleScopeWhere.assignments = { some: { employeeId: { in: ids } } }
         visibleEmpIds = new Set(ids)
       } else {
-        scopeWhere.departmentId = deptId
+        roleScopeWhere.departmentId = deptId
       }
     }
   } else if (role === 'team_lead' && departmentId && teamGroup) {
@@ -98,10 +149,10 @@ export async function GET(req: NextRequest) {
       select: { employeeId: true },
     })
     const groupEmpIds = [...new Set(roles.map((r) => r.employeeId))]
-    scopeWhere.assignments = { some: { employeeId: { in: groupEmpIds } } }
+    roleScopeWhere.assignments = { some: { employeeId: { in: groupEmpIds } } }
     visibleEmpIds = new Set(groupEmpIds)
     // [2026/08/04] - Lisa - FR-107：'dept' 模式再加上「案屬本部門」限制（顯示列仍僅同組人員）
-    if (scopeMode === 'dept') scopeWhere.departmentId = departmentId
+    if (scopeMode === 'dept') roleScopeWhere.departmentId = departmentId
   } else if (departmentId) {
     // 組長無組別 / 部門主管
     // [2026/07/28] - Lisa - 範圍改以「本部門人員的參與」為準（不再限案件承辦部門），
@@ -113,11 +164,13 @@ export async function GET(req: NextRequest) {
       select: { employeeId: true },
     })
     const deptEmpIds = [...new Set(roles.map((r) => r.employeeId))]
-    scopeWhere.assignments = { some: { employeeId: { in: deptEmpIds } } }
+    roleScopeWhere.assignments = { some: { employeeId: { in: deptEmpIds } } }
     visibleEmpIds = new Set(deptEmpIds)
     // [2026/08/04] - Lisa - FR-107：'dept' 模式再加上「案屬本部門」限制（顯示列仍僅本部門人員）
-    if (scopeMode === 'dept') scopeWhere.departmentId = departmentId
+    if (scopeMode === 'dept') roleScopeWhere.departmentId = departmentId
   }
+
+  const scopeWhere: Record<string, unknown> = { status: '已決', closeDate: closeDateWhere, ...roleScopeWhere }
 
   const cases = await prisma.case.findMany({
     where: scopeWhere,
@@ -132,24 +185,29 @@ export async function GET(req: NextRequest) {
     orderBy: { closeDate: 'asc' },
   })
 
+  // [2026/08/21] - Lisa - 已決案結案月淨額＝actualFee − 該案累計已依出具日期認列的公證費預付請款
+  const prepaidTotals = await getPrepaidTotals(cases.map((c) => c.id))
+  const closedRows: Row[] = cases.map((c) => ({
+    id: c.id,
+    caseNumber: c.caseNumber,
+    insuredName: c.insuredName,
+    date: c.closeDate!,
+    amount: (c.actualFee ?? 0) - (prepaidTotals.get(c.id) ?? 0),
+    travelFee: c.travelOtherExpense ?? 0,
+    remarks: buildRemarks(refDeptId, c.departmentId, c.department.name, c.assignments),
+    assignments: c.assignments,
+  }))
+
   // [2026/07/14] - Lisa - 純公證費/差旅其他費/小計依承辦比例分配；每位經辦人（主辦＋協辦）各列其份額，同一案分列各人，件數依參與人計
-  function groupByHandler(list: typeof cases, withCaseRows: boolean): EmpGroup[] {
+  function groupByHandler(list: Row[], withCaseRows: boolean): EmpGroup[] {
     const map = new Map<number, EmpGroup>()
-    for (const c of list) {
-      const travelFeeFull = c.travelOtherExpense ?? 0
-      const actualFeeFull = c.actualFee ?? 0
-      // [2026/08/04] - Lisa - FR-107：備註＝（非本單位案件時）[案件承辦部門]＋（多人時）分工比例
-      const ratioText = c.assignments.length > 1
-        ? c.assignments.map(a => `${a.employee.name} ${Math.round((a.contributionRatio ?? 0) * 100)}%`).join('/')
-        : ''
-      const deptTag = refDeptId && c.departmentId !== refDeptId ? `[${c.department.name}]` : ''
-      const remarks = [deptTag, ratioText].filter(Boolean).join(' ')
+    for (const row of list) {
       // 純公證費依承辦比例分攤（非主辦捨去、主辦吸收剩餘）
-      const feeAmts = splitFeeByRatio(actualFeeFull, c.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
-      c.assignments.forEach((a, ai) => {
+      const feeAmts = splitFeeByRatio(row.amount, row.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
+      row.assignments.forEach((a, ai) => {
         if (visibleEmpIds && !visibleEmpIds.has(a.employeeId)) return // 組長：不列他組承辦人
         const actualFee = feeAmts[ai]
-        const travelFee = a.role === '主辦' ? travelFeeFull : 0
+        const travelFee = a.role === '主辦' ? row.travelFee : 0
         const subtotalFee = actualFee + travelFee
         if (!map.has(a.employeeId)) {
           map.set(a.employeeId, {
@@ -160,8 +218,8 @@ export async function GET(req: NextRequest) {
         const g = map.get(a.employeeId)!
         if (withCaseRows) {
           g.cases.push({
-            id: c.id, caseNumber: c.caseNumber, insuredName: c.insuredName,
-            closeDate: c.closeDate!.toISOString(), actualFee, travelFee, subtotalFee, remarks,
+            id: row.id, caseNumber: row.caseNumber, insuredName: row.insuredName,
+            closeDate: row.date.toISOString(), actualFee, travelFee, subtotalFee, remarks: row.remarks,
           })
         }
         g.totals.caseCount++
@@ -178,15 +236,22 @@ export async function GET(req: NextRequest) {
   const wb = new ExcelJS.Workbook()
 
   if (type === 'monthly') {
-    buildDetailSheet(wb, `${year}年${month}月 已決案明細`, groupByHandler(cases, true), scopeModeLabel)
+    // [2026/08/21] - Lisa - 公證費預付請款：依出具日期併入同一期間的統計（不限案件是否已結案）
+    const prepayEvents = await getPrepayEventsInRange(roleScopeWhere as unknown as Prisma.CaseWhereInput, closeDateWhere)
+    const prepayRows = await toPrepayRows(prepayEvents, refDeptId)
+    buildDetailSheet(wb, `${year}年${month}月 已決案明細`, groupByHandler([...closedRows, ...prepayRows], true), scopeModeLabel)
   } else {
-    buildQuarterSheet(wb, `${year}年${quarter}已決案統計`, groupByHandler(cases, false), scopeModeLabel)
+    const prepayEvents = await getPrepayEventsInRange(roleScopeWhere as unknown as Prisma.CaseWhereInput, closeDateWhere)
+    const prepayRows = await toPrepayRows(prepayEvents, refDeptId)
+    buildQuarterSheet(wb, `${year}年${quarter}已決案統計`, groupByHandler([...closedRows, ...prepayRows], false), scopeModeLabel)
 
     // YTD（Q1 ~ 當季）
     const qMonths = QUARTER_MONTHS[quarter] ?? [1, 2, 3]
+    const ytdStart = new Date(`${year}-01-01`)
     const ytdEnd = dayjs(`${year}-${String(qMonths[qMonths.length - 1]).padStart(2, '0')}-01`).endOf('month')
+    const ytdRange = { gte: ytdStart, lte: ytdEnd.toDate() }
     const ytdCases = await prisma.case.findMany({
-      where: { ...scopeWhere, closeDate: { gte: new Date(`${year}-01-01`), lte: ytdEnd.toDate() } },
+      where: { ...scopeWhere, closeDate: ytdRange },
       select: {
         id: true, caseNumber: true, insuredName: true, closeDate: true,
         actualFee: true, travelOtherExpense: true,
@@ -195,7 +260,20 @@ export async function GET(req: NextRequest) {
         assignments: { select: { employeeId: true, role: true, contributionRatio: true, employee: { select: { name: true } } } },
       },
     })
-    buildQuarterSheet(wb, `Q1~${quarter}累計`, groupByHandler(ytdCases, false), scopeModeLabel)
+    const ytdPrepaidTotals = await getPrepaidTotals(ytdCases.map((c) => c.id))
+    const ytdClosedRows: Row[] = ytdCases.map((c) => ({
+      id: c.id,
+      caseNumber: c.caseNumber,
+      insuredName: c.insuredName,
+      date: c.closeDate!,
+      amount: (c.actualFee ?? 0) - (ytdPrepaidTotals.get(c.id) ?? 0),
+      travelFee: c.travelOtherExpense ?? 0,
+      remarks: buildRemarks(refDeptId, c.departmentId, c.department.name, c.assignments),
+      assignments: c.assignments,
+    }))
+    const ytdPrepayEvents = await getPrepayEventsInRange(roleScopeWhere as unknown as Prisma.CaseWhereInput, ytdRange)
+    const ytdPrepayRows = await toPrepayRows(ytdPrepayEvents, refDeptId)
+    buildQuarterSheet(wb, `Q1~${quarter}累計`, groupByHandler([...ytdClosedRows, ...ytdPrepayRows], false), scopeModeLabel)
   }
 
   const buffer = await wb.xlsx.writeBuffer()
@@ -264,7 +342,7 @@ function buildDetailSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpGr
 
   // [2026/07/14] - Lisa - 表格下方加註
   // [2026/08/04] - Lisa - FR-107：加註本次統計範圍與備註欄部門標記說明（匯出檔可獨立判讀）
-  const note = ws.addRow([`註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；同一案分列於各經辦人，件數依參與人計。備註欄 [ ] 為非本單位之案件承辦部門。統計範圍：${scopeModeLabel}。`])
+  const note = ws.addRow([`註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；同一案分列於各經辦人，件數依參與人計。備註欄 [ ] 為非本單位之案件承辦部門；「公證費預付請款」列依出具日期認列，結案月已扣除累計預付金額（可能為負）。統計範圍：${scopeModeLabel}。`])
   ws.mergeCells(note.number, 1, note.number, 9)
   note.getCell(1).font = { size: 9, italic: true, color: { argb: 'FF888888' } }
   note.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }
@@ -310,7 +388,7 @@ function buildQuarterSheet(wb: ExcelJS.Workbook, sheetName: string, groups: EmpG
 
   // [2026/07/14] - Lisa - 表格下方加註
   // [2026/08/04] - Lisa - FR-107：加註本次統計範圍
-  const note = ws.addRow([`註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；件數僅計主辦案件（協辦不計件，惟仍計入其金額份額）。統計範圍：${scopeModeLabel}。`])
+  const note = ws.addRow([`註：純公證費依承辦比例分配至各經辦人、差旅其他費歸主辦；件數僅計主辦案件（協辦不計件，惟仍計入其金額份額）；公證費預付請款依出具日期認列，結案月已扣除累計預付金額。統計範圍：${scopeModeLabel}。`])
   ws.mergeCells(note.number, 1, note.number, 6)
   note.getCell(1).font = { size: 9, italic: true, color: { argb: 'FF888888' } }
   note.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }

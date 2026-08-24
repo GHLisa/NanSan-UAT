@@ -61,6 +61,7 @@ interface ReviewItem {
   requiresMidApproval: boolean; midApproverId: number | null; midApproverName: string | null
   midApprovalStatus: string | null; midApprovalRemarks: string | null; midApprovedAt: string | null
   interimTypes: string[]; interimAmount: number | null; feeReversed: boolean
+  reportIssuedAt: string | null
   recordStatus: string | null // [2026/06/18] - Lisa - 方案1/2 終結狀態（已重送/已放棄）
   mergedBilling: boolean // [2026/07/15] - Lisa - 合併送審旗標（結案報告書隨附 DEBIT NOTE）
 }
@@ -1419,12 +1420,18 @@ export default function CaseDetailPage() {
                   <div key={r.id} style={{ padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
                     <Row justify="space-between" align="middle">
                       <Space size={4} wrap>{getDocTypes(r).map((t) => <Tag key={t} style={{ fontSize: 11 }}>{t}</Tag>)}</Space>
-                      <Text type="secondary" style={{ fontSize: 11 }}>{dayjs(r.submittedAt).format('YYYY/MM/DD')}</Text>
+                      <Text type="secondary" style={{ fontSize: 11 }}>送審：{dayjs(r.submittedAt).format('YYYY/MM/DD')}</Text>
                     </Row>
                     <div style={{ marginTop: 6 }}>
                       {/* [2026/06/18] - Lisa - Issue #8 內部值維持「追加預估公證費」，顯示改為「追加實際公證費」 */}
                       {(r.interimTypes ?? []).map((t) => <Tag key={t} color={t === '追加預估公證費' ? 'orange' : 'blue'} style={{ fontSize: 11 }}>{t === '追加預估公證費' ? '追加實際公證費' : t}</Tag>)}
                       {(r.interimAmount ?? 0) > 0 && <Text strong style={{ fontSize: 12, marginLeft: 4 }}>${r.interimAmount!.toLocaleString()}</Text>}
+                    </div>
+                    {/* [2026/08/21] - Lisa - 出具日期：沿用既有「出具報告」登錄流程回填的歷史日期，供補登舊案使用 */}
+                    <div style={{ marginTop: 4 }}>
+                      <Text type="secondary" style={{ fontSize: 11 }}>
+                        出具日期：{r.reportIssuedAt ? dayjs(r.reportIssuedAt).format('YYYY/MM/DD') : '尚未出具'}
+                      </Text>
                     </div>
                   </div>
                 ))
