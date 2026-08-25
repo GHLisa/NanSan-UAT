@@ -54,6 +54,7 @@ interface CaseItem {
   finalAmount: number | null
   travelOtherExpenseTotal: number
   primaryHandlerName: string
+  prelimNoteStuckAtIntake: boolean // [2026/08/25] - Lisa - 備註提及初步報告但階段仍卡在進件，疑似未落實送審流程
 }
 
 export default function CaseQueryPage() {
@@ -473,6 +474,7 @@ export default function CaseQueryPage() {
         loading={loading}
         scroll={{ x: 1300 }}
         sticky={{ offsetHeader }}
+        rowClassName={(r: CaseItem) => r.prelimNoteStuckAtIntake ? 'row-prelim-stuck' : ''}
         pagination={{
           current: page, pageSize: PAGE_SIZE,
           total,
@@ -481,6 +483,17 @@ export default function CaseQueryPage() {
           showTotal: t => `共 ${t} 筆`,
         }}
       />
+
+      {/* [2026/08/25] - Lisa - 紅字列圖例說明 */}
+      {cases.some(c => c.prelimNoteStuckAtIntake) && (
+        <div style={{ marginTop: 8, fontSize: 12, color: '#ff4d4f' }}>
+          ● 紅字：備註曾提到「初步報告」，但流程階段仍卡在「進件/建檔」，可能未落實案件送審流程
+        </div>
+      )}
+
+      <style>{`
+        .row-prelim-stuck td { color: #ff4d4f !important; }
+      `}</style>
 
       {/* ── [2026/07/31] - Lisa - 銷案案件刪除確認（原因必填）── */}
       <Modal

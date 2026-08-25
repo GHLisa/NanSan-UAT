@@ -134,6 +134,8 @@ export async function GET() {
   // [2026/08/05] - Lisa - P1 視窗：委託日 D+0 ~ D+14（期限內）。逾期即離開待辦，
   // 改由 SLA 預警的「初報逾期」段接手，同一案件不同時出現在兩張卡片
   const prelimWindowStart = today.startOf('day').subtract(PRELIM_REMINDER_DAYS, 'day').toDate()
+  // [2026/08/25] - Lisa - 「案件紀錄填寫」門檻：初報逾期（滿 14 天，與 SLA 初報逾期段同一台北日界）
+  const prelimOverdueThreshold = today.startOf('day').subtract(PRELIM_REMINDER_DAYS - 1, 'day').toDate()
 
   // ── [效能] Wave 2：依賴 caseWhere / scopeEmpIds / reviewWhere 的查詢全部平行 ──
   const [
@@ -152,6 +154,8 @@ export async function GET() {
     prelimReminderRows,
     closingCandidates,
     closingReportCandidates,
+    prelimNoteStuckRows,
+    noteMissingRows,
   ] = await Promise.all([
     // Open case count (scoped)
     prisma.case.count({ where: { ...caseWhere, status: '未決' } }),
@@ -310,6 +314,34 @@ export async function GET() {
           },
         },
       },
+    }),
+    // [2026/08/25] - Lisa - 未落實流程送審：「案件紀錄」提到「初步報告」，但流程階段仍卡在進件/建檔
+    // （承辦人可能只在案件紀錄手動記事，忘了同步推進階段／走送審流程）
+    prisma.case.findMany({
+      where: {
+        ...caseWhere, status: '未決', currentStage: '進件/建檔',
+        caseNotes: { some: { content: { contains: '初步報告' } } },
+      },
+      select: {
+        id: true, caseNumber: true, insuredName: true, commissionDate: true, currentStage: true,
+        assignments: { where: { role: '主辦' }, include: { employee: { select: { name: true } } }, take: 1 },
+      },
+      orderBy: { commissionDate: 'asc' },
+    }),
+    // [2026/08/25] - Lisa - 案件紀錄填寫：初報已逾期（D+14 以上，與 SLA 初報逾期段同一判定）
+    // 且完全未填任何「案件紀錄」——比單純逾期更嚴重，連過程記錄都沒有
+    prisma.case.findMany({
+      where: {
+        ...caseWhere, status: '未決',
+        ...prelimPendingWhere(),
+        commissionDate: { lt: prelimOverdueThreshold },
+        caseNotes: { none: {} },
+      },
+      select: {
+        id: true, caseNumber: true, insuredName: true, commissionDate: true, currentStage: true,
+        assignments: { where: { role: '主辦' }, include: { employee: { select: { name: true } } }, take: 1 },
+      },
+      orderBy: { commissionDate: 'asc' },
     }),
   ])
 
@@ -478,6 +510,31 @@ export async function GET() {
     }
   })
 
+  // ── [2026/08/25] - Lisa - 案件紀錄填寫 & 未落實流程送審 提醒 ──────────────
+  const PROCESS_REMINDER_PREVIEW = 3
+  const prelimNoteStuckItems = prelimNoteStuckRows.map(c => ({
+    id: c.id,
+    caseNumber: c.caseNumber,
+    insuredName: c.insuredName,
+    handlerName: c.assignments[0]?.employee.name ?? '—',
+    commissionDate: c.commissionDate.toISOString(),
+    currentStage: c.currentStage,
+    daysSince: daysSinceCommission(c.commissionDate, today),
+  }))
+  const noteMissingItems = noteMissingRows.map(c => ({
+    id: c.id,
+    caseNumber: c.caseNumber,
+    insuredName: c.insuredName,
+    handlerName: c.assignments[0]?.employee.name ?? '—',
+    commissionDate: c.commissionDate.toISOString(),
+    currentStage: c.currentStage,
+    daysSince: daysSinceCommission(c.commissionDate, today),
+  }))
+  const processReminders = {
+    prelimNoteStuck: { total: prelimNoteStuckItems.length, items: prelimNoteStuckItems.slice(0, PROCESS_REMINDER_PREVIEW) },
+    noteMissing: { total: noteMissingItems.length, items: noteMissingItems.slice(0, PROCESS_REMINDER_PREVIEW) },
+  }
+
   // ── [2026/08/05] - Lisa - 待辦提醒 P1／P2 ────────────────────────────────
   // 卡片只顯示前 3 筆，故一併回傳 total 供「還有 N 件」與「查看全部」
   const REMINDER_PREVIEW = 3
@@ -543,6 +600,8 @@ export async function GET() {
       // [2026/08/05] - Lisa - SLA 預警改四段（停泊／初報逾期／結報期限／長期未決）
       slaSections,
       statuteWarnings: statuteRows,
+      // [2026/08/25] - Lisa - 案件紀錄填寫 & 未落實流程送審 提醒
+      processReminders,
       monthlyData,
       stageDistribution: stageDistribution.map(s => ({ stage: s.currentStage, count: s._count.id })),
     },

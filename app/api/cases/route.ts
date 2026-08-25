@@ -227,6 +227,23 @@ export async function GET(req: NextRequest) {
     where.reviews = { some: finalApprovedReviewWhere(FINAL_REPORT_DOC_TYPES) }
   }
 
+  // [2026/08/25] - Lisa - 未落實流程送審：「案件紀錄」提到「初步報告」，但流程階段仍卡在進件/建檔
+  // （與儀表板「案件紀錄填寫 & 未落實流程送審 提醒」同一判定；即案件管理清單紅字標記的規則）
+  if (alert === 'prelimNoteStuck') {
+    where.status = '未決'
+    where.currentStage = '進件/建檔'
+    where.caseNotes = { some: { content: { contains: '初步報告' } } }
+  }
+
+  // [2026/08/25] - Lisa - 案件紀錄填寫：初報已逾期（D+14 以上，與 SLA 初報逾期段同一判定）
+  // 且完全未填任何「案件紀錄」
+  if (alert === 'noteMissing') {
+    where.status = '未決'
+    const d14 = taipeiNow().startOf('day').subtract(PRELIM_REMINDER_DAYS - 1, 'day').toDate()
+    where.AND = [prelimPendingWhere(), { commissionDate: { lt: d14 } }]
+    where.caseNotes = { none: {} }
+  }
+
   // [2026/07/14] - Lisa - 案件查詢統計卡需「全量」件數與費用合計，不受分頁上限影響；
   // withSummary=1 時另跑一次聚合，回傳整個 where 範圍的 公證費/差旅其他費 總額（件數沿用 total）
   const wantSummary = searchParams.get('withSummary') === '1'
@@ -321,6 +338,9 @@ export async function GET(req: NextRequest) {
         },
       },
       // [2026/06/18] - Lisa - Issue #9/#10 - end
+      // [2026/08/25] - Lisa - 「初步報告」字樣曾出現於備註/進度/異動紀錄，但流程階段仍卡在進件：
+      // 疑似未落實送審流程，清單需標紅提醒（僅取 1 筆即可判斷是否存在，不需完整內容）
+      caseNotes: { where: { content: { contains: '初步報告' } }, select: { id: true }, take: 1 },
     },
   })
   // in 查詢不保證順序，依全域排序結果還原「當頁」順序
@@ -359,6 +379,9 @@ export async function GET(req: NextRequest) {
     // [2026/06/18] - Lisa - Issue #9/#10 - end
     // [2026/07/15] - Lisa - 合併送審：本案是否有 active 的「結案報告書 && mergedBilling」review（清單 (併DN) 標註）
     const hasMergedBilling = c.reviews.some(r => r.documentType === '結案報告書' && r.mergedBilling && r.recordStatus === null)
+    // [2026/08/25] - Lisa - 備註曾提到「初步報告」（已擬/已出具/寄出等），但流程階段從未離開「進件/建檔」，
+    // 疑似只在備註手動記事、忘了同步推進階段 → 清單整列標紅提醒
+    const prelimNoteStuckAtIntake = c.currentStage === '進件/建檔' && c.caseNotes.length > 0
 
     return {
       id: c.id,
@@ -395,6 +418,7 @@ export async function GET(req: NextRequest) {
       rejectedReviews: rejectedReviews.map(r => ({ documentType: r.documentType, gate: r.gate, reviewRemarks: r.remark })),
       hasPendingReview: hasPending,
       hasMergedBilling, // [2026/07/15] - Lisa - 合併送審 (併DN) 標註
+      prelimNoteStuckAtIntake, // [2026/08/25] - Lisa - 備註提及初步報告但階段仍卡在進件（疑似未落實送審流程）
     }
   })
 

@@ -35,6 +35,9 @@ const ALERT_OPTIONS = [
   { value: 'closing60', label: '📐 結報期限（節點6核定後60天）' },
   { value: 'open90', label: '🕰 長期未決（D+90 以上）' },
   { value: 'parked', label: '⏸ 停泊案件' },
+  // [2026/08/25] - Lisa - 儀表板「案件紀錄填寫 & 未落實流程送審 提醒」的完整清單
+  { value: 'prelimNoteStuck', label: '🚩 未落實流程送審' },
+  { value: 'noteMissing', label: '📝 案件紀錄填寫（初報逾期未填）' },
 ]
 // URL ?alert= 可接受的值（由儀表板卡片帶入）
 const ALERT_VALUES = ALERT_OPTIONS.map(o => o.value).filter(Boolean)
@@ -75,6 +78,7 @@ interface CaseItem {
   rejectedReviews: { documentType: string; gate: string; reviewRemarks: string | null }[]
   hasPendingReview: boolean
   hasMergedBilling: boolean // [2026/07/15] - Lisa - 合併送審旗標（結案報告書隨附 DEBIT NOTE）
+  prelimNoteStuckAtIntake: boolean // [2026/08/25] - Lisa - 備註提及初步報告但階段仍卡在進件，疑似未落實送審流程
 }
 
 interface MetaData {
@@ -467,7 +471,10 @@ export default function CasesPage() {
           loading={loading}
           scroll={{ x: showDeptColumn ? 1830 : 1730 }}
           sticky={{ offsetHeader }}
-          rowClassName={(r: CaseItem) => r.hasRejectedReview ? 'row-rejected' : ''}
+          rowClassName={(r: CaseItem) => [
+            r.hasRejectedReview ? 'row-rejected' : '',
+            r.prelimNoteStuckAtIntake ? 'row-prelim-stuck' : '',
+          ].filter(Boolean).join(' ')}
           pagination={{
             current: filters.page,
             pageSize: filters.pageSize,
@@ -478,9 +485,17 @@ export default function CasesPage() {
         />
       </div>
 
+      {/* [2026/08/25] - Lisa - 紅字列圖例說明 */}
+      {cases.some(c => c.prelimNoteStuckAtIntake) && (
+        <div style={{ marginTop: 8, fontSize: 12, color: '#ff4d4f' }}>
+          ● 紅字：備註曾提到「初步報告」，但流程階段仍卡在「進件/建檔」，可能未落實案件送審流程
+        </div>
+      )}
+
       <style>{`
         .row-rejected td { background: #fff7e6 !important; }
         .row-rejected:hover td { background: #ffefd6 !important; }
+        .row-prelim-stuck td { color: #ff4d4f !important; }
       `}</style>
     </div>
   )

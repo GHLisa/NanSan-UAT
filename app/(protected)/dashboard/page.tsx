@@ -71,6 +71,17 @@ interface StatuteWarning {
   commissionDate: string; expiryDate: string; daysLeft: number
 }
 
+// [2026/08/25] - Lisa - 案件紀錄填寫 & 未落實流程送審 提醒
+interface ProcessReminderItem {
+  id: number; caseNumber: string; insuredName: string; handlerName: string
+  commissionDate: string; currentStage: string; daysSince: number
+}
+
+interface ProcessReminders {
+  prelimNoteStuck: { total: number; items: ProcessReminderItem[] }
+  noteMissing: { total: number; items: ProcessReminderItem[] }
+}
+
 // [2026/08/05] - Lisa - 待辦提醒（P1 初報期限 / P2 待結案）
 interface PrelimReminder {
   id: number; caseNumber: string; insuredName: string; handlerName: string
@@ -96,6 +107,7 @@ interface DashboardData {
   reminders: Reminders
   slaSections: SlaSections
   statuteWarnings: StatuteWarning[]
+  processReminders: ProcessReminders
   monthlyData: MonthlyData[]
   stageDistribution: StageItem[]
 }
@@ -208,6 +220,12 @@ export default function DashboardPage() {
   // [2026/06/18] - Lisa - Issue #4 審核角色待辦點公證編號導向文件審核明細（?from=reviews）- end
   // [2026/06/24] - Lisa - 兩年時效預警改為比照 SLA 預警：無案件時仍顯示卡片（空狀態），原 FR-83「不渲染」改為中性樣式空卡
   const hasStatuteWarnings = data.statuteWarnings.length > 0
+  // [2026/08/25] - Lisa - 案件紀錄填寫 & 未落實流程送審 提醒（舊快取／舊部署回傳無此欄位時的防呆）
+  const emptyProcessSection = { total: 0, items: [] as ProcessReminderItem[] }
+  const processReminders: ProcessReminders = data.processReminders ?? {
+    prelimNoteStuck: emptyProcessSection, noteMissing: emptyProcessSection,
+  }
+  const processReminderTotal = processReminders.prelimNoteStuck.total + processReminders.noteMissing.total
 
   // ── Table columns ─────────────────────────────────────────────────────
   const reviewColumns = [
@@ -223,7 +241,7 @@ export default function DashboardPage() {
       title: '被保險人', dataIndex: 'insuredName', key: 'insuredName',
     },
     {
-      title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName',
+      title: '主承辦人', dataIndex: 'handlerName', key: 'handlerName',
     },
     { title: '文件類型', dataIndex: 'documentType', key: 'documentType', width: 120 },
     {
@@ -253,7 +271,7 @@ export default function DashboardPage() {
   const slaBaseCols = [
     slaCaseNoCol,
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
-    { title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName' },
+    { title: '主承辦人', dataIndex: 'handlerName', key: 'handlerName' },
     {
       title: '委託日', dataIndex: 'commissionDate', key: 'commissionDate', width: 75,
       render: (v: string) => dayjs(v).format('MM/DD'),
@@ -283,7 +301,7 @@ export default function DashboardPage() {
   const slaClosingColumns = [
     slaCaseNoCol,
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
-    { title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName' },
+    { title: '主承辦人', dataIndex: 'handlerName', key: 'handlerName' },
     {
       title: '節點6核定日', dataIndex: 'approvedAt', key: 'approvedAt', width: 95,
       render: (v: string) => (v ? dayjs(v).format('MM/DD') : '—'),
@@ -302,7 +320,7 @@ export default function DashboardPage() {
   const slaParkedColumns = [
     slaCaseNoCol,
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
-    { title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName' },
+    { title: '主承辦人', dataIndex: 'handlerName', key: 'handlerName' },
     {
       title: '停泊狀態', dataIndex: 'parkingStatus', key: 'parkingStatus', width: 100,
       render: (v: string) => <Tag color={PARKING_COLOR[v] ?? 'default'} style={{ fontSize: 11 }}>{v}</Tag>,
@@ -326,7 +344,7 @@ export default function DashboardPage() {
       ),
     },
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
-    { title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName' },
+    { title: '主承辦人', dataIndex: 'handlerName', key: 'handlerName' },
     {
       title: '委託日', dataIndex: 'commissionDate', key: 'commissionDate', width: 75,
       render: (v: string) => dayjs(v).format('MM/DD'),
@@ -347,7 +365,7 @@ export default function DashboardPage() {
       ),
     },
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
-    { title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName' },
+    { title: '主承辦人', dataIndex: 'handlerName', key: 'handlerName' },
     {
       title: '核准日', dataIndex: 'approvedAt', key: 'approvedAt', width: 75,
       render: (v: string) => dayjs(v).format('MM/DD'),
@@ -372,10 +390,39 @@ export default function DashboardPage() {
       ),
     },
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
-    { title: '承辦人(主辦)', dataIndex: 'handlerName', key: 'handlerName' },
+    { title: '主承辦人', dataIndex: 'handlerName', key: 'handlerName' },
     {
       title: '委託日', dataIndex: 'commissionDate', key: 'commissionDate', width: 95,
       render: (v: string) => dayjs(v).format('YYYY/MM/DD'),
+    },
+  ]
+
+  // [2026/08/25] - Lisa - 案件紀錄填寫 & 未落實流程送審 提醒（兩段共用欄位積木）
+  const processReminderBaseCols = [
+    {
+      title: '公證編號', dataIndex: 'caseNumber', key: 'caseNumber',
+      render: (v: string, r: ProcessReminderItem) => (
+        <a onClick={() => router.push(`/cases/${r.id}?from=dashboard`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
+      ),
+    },
+    { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName' },
+    { title: '主承辦人', dataIndex: 'handlerName', key: 'handlerName' },
+    {
+      title: '委託日', dataIndex: 'commissionDate', key: 'commissionDate', width: 75,
+      render: (v: string) => dayjs(v).format('MM/DD'),
+    },
+  ]
+  const prelimNoteStuckColumns = [
+    ...processReminderBaseCols,
+    { title: '目前階段', dataIndex: 'currentStage', key: 'currentStage', width: 100 },
+  ]
+  const noteMissingColumns = [
+    ...processReminderBaseCols,
+    {
+      title: '未決天數', key: 'daysSince', width: 80,
+      render: (_: unknown, r: ProcessReminderItem) => (
+        <Text style={{ fontSize: 12, color: '#ff4d4f', fontWeight: 600 }}>D+{r.daysSince}</Text>
+      ),
     },
   ]
 
@@ -661,6 +708,68 @@ export default function DashboardPage() {
               />
             ) : (
               <Text type="secondary" style={{ display: 'block', padding: '8px 0' }}>目前無兩年時效預警案件 ✅</Text>
+            )}
+          </Card>
+
+          {/* [2026/08/25] - Lisa - 案件紀錄填寫 & 未落實流程送審 提醒：比照 SLA/時效預警，一律渲染卡片，
+              無案件時顯示空狀態；兩段各自「查看全部」導向案件管理並套用對應預警篩選 */}
+          <Card
+            title={
+              <Space>
+                <WarningOutlined style={{ color: processReminderTotal > 0 ? '#fa8c16' : '#bfbfbf' }} />
+                <span style={{ color: processReminderTotal > 0 ? '#fa8c16' : undefined, fontWeight: 600 }}>
+                  案件紀錄填寫 & 未落實流程送審 提醒
+                </span>
+              </Space>
+            }
+            size="small"
+            style={{ marginBottom: 16 }}
+            styles={processReminderTotal > 0 ? { header: { borderBottom: '2px solid #fa8c16', background: '#fff7e6' } } : undefined}
+          >
+            {processReminderTotal === 0 ? (
+              <Text type="secondary" style={{ display: 'block', padding: '8px 0' }}>目前無相關提醒案件 ✅</Text>
+            ) : (
+              <>
+                {processReminders.prelimNoteStuck.items.length > 0 && (
+                  <TodoSection
+                    color="#ff4d4f"
+                    title="🚩 未落實流程送審"
+                    note="案件紀錄提到「初步報告」，但流程階段仍卡在進件/建檔"
+                    total={processReminders.prelimNoteStuck.total}
+                    shown={processReminders.prelimNoteStuck.items.length}
+                    onViewAll={() => router.push('/cases?alert=prelimNoteStuck')}
+                  >
+                    <Table
+                      dataSource={processReminders.prelimNoteStuck.items}
+                      columns={prelimNoteStuckColumns}
+                      rowKey="id"
+                      size="small"
+                      pagination={false}
+                      scroll={{ x: 460 }}
+                    />
+                  </TodoSection>
+                )}
+
+                {processReminders.noteMissing.items.length > 0 && (
+                  <TodoSection
+                    color="#fa8c16"
+                    title="📝 案件紀錄填寫"
+                    note="初步報告已逾期（D+14 以上）且尚未填寫任何案件紀錄"
+                    total={processReminders.noteMissing.total}
+                    shown={processReminders.noteMissing.items.length}
+                    onViewAll={() => router.push('/cases?alert=noteMissing')}
+                  >
+                    <Table
+                      dataSource={processReminders.noteMissing.items}
+                      columns={noteMissingColumns}
+                      rowKey="id"
+                      size="small"
+                      pagination={false}
+                      scroll={{ x: 460 }}
+                    />
+                  </TodoSection>
+                )}
+              </>
             )}
           </Card>
 

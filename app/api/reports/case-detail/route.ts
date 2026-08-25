@@ -182,12 +182,18 @@ export async function GET(req: NextRequest) {
       }
     }
   } else if (role === 'team_lead' && departmentId && teamGroup) {
-    // [2026/07/28] - Lisa - 組長：以「同組人員（同部門＋同組別，主要角色）的參與」為準，不限案件承辦部門，
+    // [2026/07/28] - Lisa - 組長：以「同組人員（同部門＋同組別）的參與」為準，不限案件承辦部門，
     // 使同組人員在他部門協辦的份額也納入（與部門主管同一套邏輯）；顯示列僅限同組人員。
     // 註：案件管理清單（api/cases buildCaseScope，FR-34）仍維持「案屬本部門」的限制，兩者定義不同——
     // 本報表算的是「本組人員的份額」，非「本部門的案件」。
+    // [2026/08/25] - Lisa - 人員認定是否卡 isPrimary 依統計範圍而定：
+    //   'dept'（限案件承辦部門）：案件本身的 departmentId 已把每筆案子鎖定到唯一部門，
+    //     不會重複計入，故不卡 isPrimary，讓兼職（isPrimary 掛他部門）的同組人員也算入本組，
+    //     解決「部門主管/組長看不到自己在兼任部門承辦、已結案案件」的問題。
+    //   'share'（含他部門協辦份額）：不限案件承辦部門，若不卡 isPrimary，兼職者會同時被
+    //     算進兩個部門的 share 報表（重複計入業績），故仍以 isPrimary 認定唯一歸屬部門。
     const roles = await prisma.employeeRole.findMany({
-      where: { departmentId, teamGroup, isPrimary: true },
+      where: { departmentId, teamGroup, ...(scopeMode === 'dept' ? {} : { isPrimary: true }) },
       select: { employeeId: true },
     })
     const groupEmpIds = [...new Set(roles.map((r) => r.employeeId))]
@@ -199,10 +205,13 @@ export async function GET(req: NextRequest) {
     // 組長無組別 / 部門主管
     // [2026/07/28] - Lisa - 範圍改以「本部門人員的參與」為準（不再限案件承辦部門），
     // 使本部門人員在他部門協辦的份額也納入；顯示列仍僅限本部門人員（跨部門協辦者不顯示）。
-    // 人員認定採「主要角色（isPrimary）所屬部門」：兼任他部門主管者（如同時掛兩部門主管）
-    // 其本職案件應歸主要部門，否則會被重複計入兩個部門的報表。
+    // [2026/08/25] - Lisa - 人員認定是否卡 isPrimary 依統計範圍而定（理由同上組長分支）：
+    //   'dept'：案件的 departmentId 已鎖定唯一部門，不卡 isPrimary，兼任本部門主管/組長者
+    //     也算入本部門人員，其本職（isPrimary 在他部門）已結案的本部門案件才會顯示。
+    //   'share'：仍採「主要角色（isPrimary）所屬部門」認定唯一歸屬，避免兼任他部門主管者
+    //     的份額被重複計入兩個部門的報表。
     const roles = await prisma.employeeRole.findMany({
-      where: { departmentId, isPrimary: true },
+      where: { departmentId, ...(scopeMode === 'dept' ? {} : { isPrimary: true }) },
       select: { employeeId: true },
     })
     const deptEmpIds = [...new Set(roles.map((r) => r.employeeId))]
