@@ -154,6 +154,7 @@ const FIELD_LABELS: Record<string, string> = {
   actualFee: '實際公證費',
   isSpecialCase: '特殊案件',
   notes: '備註', // [2026/07/28] - Lisa - 修正標籤：Case.notes 對應畫面「備註」（交辦事項另存 assignmentNotes）
+  insuredSubjectMatter: '出險保險標的(工程述要)',
   assignmentNotes: '交辦事項',
   status: '狀態',
 }

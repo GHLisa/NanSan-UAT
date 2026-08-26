@@ -53,6 +53,9 @@ export async function GET(req: NextRequest) {
   const assigneeId = searchParams.get('assigneeId')
   const incidentDateFrom = searchParams.get('incidentDateFrom')
   const incidentDateTo = searchParams.get('incidentDateTo')
+  // [2026/08/26] - Lisa - 預估金額區間搜尋，與 GET /api/cases 一致（萬元換算為元）
+  const estimatedAmountMin = searchParams.get('estimatedAmountMin')
+  const estimatedAmountMax = searchParams.get('estimatedAmountMax')
   const filterYear = searchParams.get('year')
   const filterQuarter = searchParams.get('quarter')
   const icId = searchParams.get('insuranceCompanyId')
@@ -79,6 +82,13 @@ export async function GET(req: NextRequest) {
     where.incidentDate = {
       ...(incidentDateFrom ? { gte: new Date(incidentDateFrom) } : {}),
       ...(incidentDateTo ? { lte: new Date(incidentDateTo) } : {}),
+    }
+  }
+  // [2026/08/26] - Lisa - 預估金額區間搜尋：只填前格 >=、只填後格 <=、兩格皆填 between；萬元換算為元
+  if (estimatedAmountMin || estimatedAmountMax) {
+    where.estimatedAmount = {
+      ...(estimatedAmountMin ? { gte: BigInt(Math.round(parseFloat(estimatedAmountMin) * 10000)) } : {}),
+      ...(estimatedAmountMax ? { lte: BigInt(Math.round(parseFloat(estimatedAmountMax) * 10000)) } : {}),
     }
   }
   // [2026/07/16] - Lisa - 年度改依委託日 commissionDate（與列表 API 一致，原為結案日 closeDate）

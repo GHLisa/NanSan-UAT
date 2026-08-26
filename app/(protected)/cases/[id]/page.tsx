@@ -77,6 +77,7 @@ interface CaseDetail {
   preliminaryReportDate: string | null; finalReportDate: string | null; closeDate: string | null
   prelimDone: boolean // [2026/08/05] - Lisa - 初報完成（日期／初報文件終審核准／階段已越過）
   nasFolder: string | null; isSpecialCase: boolean; notes: string | null
+  insuredSubjectMatter: string | null
   estimatedAmount: number | null; coverageLimit: number | null; deductible: number | null; adjustmentAmount: number | null
   salvageValue: number | null
   finalAmount: number | null; estimatedFee: number | null; actualFee: number | null
@@ -386,6 +387,7 @@ export default function CaseDetailPage() {
       travelOtherExpense: caseData.travelOtherExpense,
       isSpecialCase: caseData.isSpecialCase ?? false,
       notes: caseData.notes ?? '',
+      insuredSubjectMatter: caseData.insuredSubjectMatter ?? '',
       assignmentNotes: caseData.assignmentNotes ?? '',
     })
     setEditAssignments(caseData.assignments.map((a) => ({ ...a })))
@@ -455,6 +457,7 @@ export default function CaseDetailPage() {
       travelOtherExpense: values.travelOtherExpense ?? null,
       isSpecialCase: values.isSpecialCase ?? false,
       notes: values.notes || null,
+      insuredSubjectMatter: values.insuredSubjectMatter || null,
       // [2026/07/28] - Lisa - 交辦事項僅特定角色可改；無權者不送出此欄位，避免 API 403
       ...(canEditAssignmentNotes ? { assignmentNotes: (values.assignmentNotes as string) ?? '' } : {}),
       assignees: editAssignments.map((a) => ({
@@ -1099,6 +1102,15 @@ export default function CaseDetailPage() {
                       <Select allowClear placeholder="無" options={PARKING_STATUSES.map((s) => ({ value: s, label: s }))} />
                     </Form.Item>
                   </Col>
+                  <Col span={24}>
+                    <Form.Item
+                      name="insuredSubjectMatter"
+                      label="出險保險標的(工程述要)"
+                      style={{ marginBottom: 4 }}
+                    >
+                      <Input.TextArea placeholder="請輸入出險保險標的(工程述要)" autoSize={{ minRows: 1, maxRows: 3 }} />
+                    </Form.Item>
+                  </Col>
                   {/* [2026/07/28] - Lisa - 交辦事項原為派案時填寫且不可修改，現開放部門主管／行政人員／
                       執行副總／系統管理員修改；無權限者仍顯示但唯讀 */}
                   <Col span={24}>
@@ -1205,6 +1217,9 @@ export default function CaseDetailPage() {
                     {caseData.parkingStatus
                       ? <Tag color={caseData.parkingStatus === '訴訟中' ? 'red' : caseData.parkingStatus === '申訴中' ? 'orange' : 'blue'}>{caseData.parkingStatus}</Tag>
                       : '—'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="出險保險標的(工程述要)" span={2}>
+                    {caseData.insuredSubjectMatter || '—'}
                   </Descriptions.Item>
                   <Descriptions.Item label="交辦事項" span={2}>
                     <Space size={6}>

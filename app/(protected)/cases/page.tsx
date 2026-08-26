@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  Table, Button, Input, Select, DatePicker, Tag, Typography, Row, Col, Card, Tooltip, Space,
+  Table, Button, Input, InputNumber, Select, DatePicker, Tag, Typography, Row, Col, Card, Tooltip, Space,
 } from 'antd'
 import { PlusOutlined, WarningOutlined, ClockCircleOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
@@ -125,6 +125,9 @@ export default function CasesPage() {
     incidentDateFrom: '',
     incidentDateTo: '',
     alert: '', // [2026/08/04] - Lisa - 預警篩選：'' | 'sla' | 'statute' | 'returned'
+    // [2026/08/26] - Lisa - 預估金額區間搜尋（單位:萬元），只填前格 >=、只填後格 <=、兩格皆填 between
+    estimatedAmountMin: '',
+    estimatedAmountMax: '',
     page: 1,
     pageSize: 15,
   })
@@ -167,7 +170,8 @@ export default function CasesPage() {
     if (alertParam && ALERT_VALUES.includes(alertParam)) {
       setFilters(f => ({
         ...f, alert: alertParam, q: '', stage: '', assigneeId: '',
-        incidentDateFrom: '', incidentDateTo: '', page: 1,
+        incidentDateFrom: '', incidentDateTo: '',
+        estimatedAmountMin: '', estimatedAmountMax: '', page: 1,
       }))
       setDateRange(null)
       setRestored(true)
@@ -178,7 +182,15 @@ export default function CasesPage() {
       if (saved) {
         const parsed = JSON.parse(saved) as { filters?: typeof filters; dateRange?: [string | null, string | null] | null }
         // [2026/08/04] - Lisa - 舊版快取無 alert 欄位，補預設值避免 undefined
-        if (parsed.filters) setFilters({ ...parsed.filters, alert: parsed.filters.alert ?? '' })
+        // [2026/08/26] - Lisa - 舊版快取無預估金額欄位，補預設值避免 undefined
+        if (parsed.filters) {
+          setFilters({
+            ...parsed.filters,
+            alert: parsed.filters.alert ?? '',
+            estimatedAmountMin: parsed.filters.estimatedAmountMin ?? '',
+            estimatedAmountMax: parsed.filters.estimatedAmountMax ?? '',
+          })
+        }
         if (parsed.dateRange && parsed.dateRange[0]) {
           setDateRange([dayjs(parsed.dateRange[0]), dayjs(parsed.dateRange[1] ?? parsed.dateRange[0])])
         }
@@ -210,6 +222,9 @@ export default function CasesPage() {
     if (filters.incidentDateFrom) params.set('incidentDateFrom', filters.incidentDateFrom)
     if (filters.incidentDateTo) params.set('incidentDateTo', filters.incidentDateTo)
     if (filters.alert) params.set('alert', filters.alert) // [2026/08/04] - Lisa - 預警篩選（SLA／兩年時效）
+    // [2026/08/26] - Lisa - 預估金額區間搜尋（單位:萬元）
+    if (filters.estimatedAmountMin) params.set('estimatedAmountMin', String(filters.estimatedAmountMin))
+    if (filters.estimatedAmountMax) params.set('estimatedAmountMax', String(filters.estimatedAmountMax))
     params.set('page', String(filters.page))
     params.set('pageSize', String(filters.pageSize))
     const res = await api.get<CaseItem[]>(`/api/cases?${params.toString()}`)
@@ -223,7 +238,11 @@ export default function CasesPage() {
   useEffect(() => { if (restored) loadCases() }, [loadCases, restored])
 
   function resetFilters() {
-    setFilters({ q: '', stage: '', deptId: defaults.deptId, assigneeId: defaults.assigneeId, incidentDateFrom: '', incidentDateTo: '', alert: '', page: 1, pageSize: 15 })
+    setFilters({
+      q: '', stage: '', deptId: defaults.deptId, assigneeId: defaults.assigneeId,
+      incidentDateFrom: '', incidentDateTo: '', alert: '',
+      estimatedAmountMin: '', estimatedAmountMax: '', page: 1, pageSize: 15,
+    })
     setDateRange(null)
   }
 
@@ -414,16 +433,25 @@ export default function CasesPage() {
                 allowClear
               />
             </Col>
+            {/* [2026/08/26] - Lisa - 預估金額區間搜尋（單位:萬元）：只填最小 >=、只填最大 <=、皆填 between */}
             <Col>
-              <Select
-                value={filters.stage} onChange={v => setFilters(f => ({ ...f, stage: v, page: 1 }))}
-                options={STAGE_OPTIONS} style={{ width: 145 }} />
-            </Col>
-            {/* [2026/08/04] - Lisa - 預警篩選（儀表板「查看全部」帶入，亦可自行切換／清除） */}
-            <Col>
-              <Select
-                value={filters.alert} onChange={v => setFilters(f => ({ ...f, alert: v, page: 1 }))}
-                options={ALERT_OPTIONS} style={{ width: 165 }} />
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>預估金額（單位:萬元）</div>
+              <Space.Compact>
+                <InputNumber
+                  placeholder="最小"
+                  min={0}
+                  value={filters.estimatedAmountMin === '' ? undefined : Number(filters.estimatedAmountMin)}
+                  onChange={v => setFilters(f => ({ ...f, estimatedAmountMin: v == null ? '' : String(v), page: 1 }))}
+                  style={{ width: 90 }}
+                />
+                <InputNumber
+                  placeholder="最大"
+                  min={0}
+                  value={filters.estimatedAmountMax === '' ? undefined : Number(filters.estimatedAmountMax)}
+                  onChange={v => setFilters(f => ({ ...f, estimatedAmountMax: v == null ? '' : String(v), page: 1 }))}
+                  style={{ width: 90 }}
+                />
+              </Space.Compact>
             </Col>
             <Col>
               <DatePicker.RangePicker
@@ -436,28 +464,39 @@ export default function CasesPage() {
               />
             </Col>
             <Col>
-              <Button onClick={resetFilters}>重置</Button>
+              <Select
+                value={filters.stage} onChange={v => setFilters(f => ({ ...f, stage: v, page: 1 }))}
+                options={STAGE_OPTIONS} style={{ width: 145 }} />
+            </Col>
+            {/* [2026/08/04] - Lisa - 預警篩選（儀表板「查看全部」帶入，亦可自行切換／清除） */}
+            <Col>
+              <Select
+                value={filters.alert} onChange={v => setFilters(f => ({ ...f, alert: v, page: 1 }))}
+                options={ALERT_OPTIONS} style={{ width: 165 }} />
+            </Col>
+            {/* [2026/08/26] - Lisa - 部門/承辦人併入同一列（原獨立第二列），承辦人角色無此查詢條件僅隱藏這兩欄，不隱藏整列 */}
+            {!isHandler && (
+              <>
+                <Col>
+                  {/* [2026/08/04] - Lisa - FR-111 切換部門時清掉已選承辦人：該人員可能不屬新部門，
+                      留著會讓下拉顯示不存在的選項值、且查出 0 筆 */}
+                  <Select
+                    value={filters.deptId}
+                    onChange={v => setFilters(f => ({ ...f, deptId: v, assigneeId: '', page: 1 }))}
+                    options={deptOptions} style={{ width: 145 }} />
+                </Col>
+                <Col>
+                  <Select
+                    value={filters.assigneeId} onChange={v => setFilters(f => ({ ...f, assigneeId: v, page: 1 }))}
+                    options={assigneeOptions} style={{ width: 135 }}
+                    showSearch optionFilterProp="label" />
+                </Col>
+              </>
+            )}
+            <Col>
+              <Button type="primary" style={{ background: '#1B4F8C' }} onClick={resetFilters}>重置</Button>
             </Col>
           </Row>
-          {/* 第二列（承辦人角色不顯示） */}
-          {!isHandler && (
-            <Row gutter={[8, 8]} align="middle">
-              <Col>
-                {/* [2026/08/04] - Lisa - FR-111 切換部門時清掉已選承辦人：該人員可能不屬新部門，
-                    留著會讓下拉顯示不存在的選項值、且查出 0 筆 */}
-                <Select
-                  value={filters.deptId}
-                  onChange={v => setFilters(f => ({ ...f, deptId: v, assigneeId: '', page: 1 }))}
-                  options={deptOptions} style={{ width: 145 }} />
-              </Col>
-              <Col>
-                <Select
-                  value={filters.assigneeId} onChange={v => setFilters(f => ({ ...f, assigneeId: v, page: 1 }))}
-                  options={assigneeOptions} style={{ width: 135 }}
-                  showSearch optionFilterProp="label" />
-              </Col>
-            </Row>
-          )}
         </Card>
       </div>
 

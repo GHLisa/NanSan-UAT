@@ -86,6 +86,9 @@ export async function GET(req: NextRequest) {
   const assigneeId = searchParams.get('assigneeId')
   const incidentDateFrom = searchParams.get('incidentDateFrom')
   const incidentDateTo = searchParams.get('incidentDateTo')
+  // [2026/08/26] - Lisa - 預估金額區間搜尋，前端輸入單位為「萬元」，DB 欄位單位為「元」
+  const estimatedAmountMin = searchParams.get('estimatedAmountMin')
+  const estimatedAmountMax = searchParams.get('estimatedAmountMax')
   const filterYear = searchParams.get('year')       // 依結案日年份
   const filterQuarter = searchParams.get('quarter') // Q1~Q4
   const icId = searchParams.get('insuranceCompanyId')  // 保險公司（第一層篩選）
@@ -120,6 +123,13 @@ export async function GET(req: NextRequest) {
     where.incidentDate = {
       ...(incidentDateFrom ? { gte: new Date(incidentDateFrom) } : {}),
       ...(incidentDateTo ? { lte: new Date(incidentDateTo) } : {}),
+    }
+  }
+  // [2026/08/26] - Lisa - 預估金額區間搜尋：只填前格 >=、只填後格 <=、兩格皆填 between；萬元換算為元
+  if (estimatedAmountMin || estimatedAmountMax) {
+    where.estimatedAmount = {
+      ...(estimatedAmountMin ? { gte: BigInt(Math.round(parseFloat(estimatedAmountMin) * 10000)) } : {}),
+      ...(estimatedAmountMax ? { lte: BigInt(Math.round(parseFloat(estimatedAmountMax) * 10000)) } : {}),
     }
   }
   // 年份/季度篩選（依委託日）

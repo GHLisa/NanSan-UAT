@@ -165,6 +165,8 @@ model Case {
   parkingStatus         String?
   isSpecialCase         Boolean   @default(false)
   notes                 String?
+  // [2026/08/26] - Lisa - 案件明細基本資訊新增欄位：出險保險標的(工程述要)
+  insuredSubjectMatter  String?
   // [2026/07/28] - Lisa - 交辦事項欄位化：原僅存於派案池（DispatchQueue.assignmentNotes）且成案後無法修改，
   // 改開放部門主管／行政人員／執行副總／系統管理員修改。null 表示沿用派案池原值（直接建案則為無）；
   // 空字串表示已被明確清空，不再回退派案池原值。
