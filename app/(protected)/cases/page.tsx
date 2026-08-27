@@ -69,6 +69,8 @@ interface CaseItem {
   currentStage: string
   parkingStatus: string | null
   estimatedAmount: number | null
+  // [2026/08/27] - Lisa - 案件管理清單改顯示「預估賠償額」（＝預估金額－自負額）
+  estimatedClaimAmount: number | null
   daysSince: number
   slaStatus: 'green' | 'yellow' | 'red'
   primaryHandlerName: string
@@ -112,6 +114,10 @@ export default function CasesPage() {
   const { session } = useAuth()
   const filterBarRef = useRef<HTMLDivElement>(null)
   const [offsetHeader, setOffsetHeader] = useState(185)
+  // [2026/08/27] - Lisa - 預估賠償額區間輸入為逐字觸發（InputNumber onChange 無 debounce），
+  // 連續輸入（如「100」→ 1/10/100 三次請求）可能因網路延遲不同而「先送後到」，
+  // 若不比對序號直接覆寫，畫面可能顯示到中間某次（如 filter=1）的未過濾結果
+  const requestSeqRef = useRef(0)
 
   const defaults = session
     ? getDefaultFilters(session.role, parseInt(session.sub), session.departmentId)
@@ -125,9 +131,10 @@ export default function CasesPage() {
     incidentDateFrom: '',
     incidentDateTo: '',
     alert: '', // [2026/08/04] - Lisa - 預警篩選：'' | 'sla' | 'statute' | 'returned'
-    // [2026/08/26] - Lisa - 預估金額區間搜尋（單位:萬元），只填前格 >=、只填後格 <=、兩格皆填 between
-    estimatedAmountMin: '',
-    estimatedAmountMax: '',
+    // [2026/08/26] - Lisa - 預估賠償額區間搜尋（單位:萬元），只填前格 >=、只填後格 <=、兩格皆填 between
+    // [2026/08/27] - Lisa - 由「預估金額」改為「預估賠償額」
+    estimatedClaimAmountMin: '',
+    estimatedClaimAmountMax: '',
     page: 1,
     pageSize: 15,
   })
@@ -171,7 +178,7 @@ export default function CasesPage() {
       setFilters(f => ({
         ...f, alert: alertParam, q: '', stage: '', assigneeId: '',
         incidentDateFrom: '', incidentDateTo: '',
-        estimatedAmountMin: '', estimatedAmountMax: '', page: 1,
+        estimatedClaimAmountMin: '', estimatedClaimAmountMax: '', page: 1,
       }))
       setDateRange(null)
       setRestored(true)
@@ -182,13 +189,15 @@ export default function CasesPage() {
       if (saved) {
         const parsed = JSON.parse(saved) as { filters?: typeof filters; dateRange?: [string | null, string | null] | null }
         // [2026/08/04] - Lisa - 舊版快取無 alert 欄位，補預設值避免 undefined
-        // [2026/08/26] - Lisa - 舊版快取無預估金額欄位，補預設值避免 undefined
+        // [2026/08/26] - Lisa - 舊版快取無預估賠償額欄位，補預設值避免 undefined
+        // [2026/08/27] - Lisa - 舊版快取（更名前）為 estimatedAmountMin/Max，一併相容讀取
         if (parsed.filters) {
+          const legacy = parsed.filters as unknown as { estimatedAmountMin?: string; estimatedAmountMax?: string }
           setFilters({
             ...parsed.filters,
             alert: parsed.filters.alert ?? '',
-            estimatedAmountMin: parsed.filters.estimatedAmountMin ?? '',
-            estimatedAmountMax: parsed.filters.estimatedAmountMax ?? '',
+            estimatedClaimAmountMin: parsed.filters.estimatedClaimAmountMin ?? legacy.estimatedAmountMin ?? '',
+            estimatedClaimAmountMax: parsed.filters.estimatedClaimAmountMax ?? legacy.estimatedAmountMax ?? '',
           })
         }
         if (parsed.dateRange && parsed.dateRange[0]) {
@@ -211,6 +220,8 @@ export default function CasesPage() {
   }, [filters, dateRange, restored, listStateKey])
 
   const loadCases = useCallback(async () => {
+    // [2026/08/27] - Lisa - 每次呼叫取一個遞增序號，回應時若已非最新序號即為過時回應，捨棄不套用
+    const requestSeq = ++requestSeqRef.current
     setLoading(true)
     // [2026/08/04] - Lisa - 退回待修不限案件狀態：退回文件可能落在已決/銷案案件上（仍需修正重送），
     // 若沿用預設的「未決」會讓儀表板待辦有數字、點進來卻 0 筆
@@ -222,12 +233,13 @@ export default function CasesPage() {
     if (filters.incidentDateFrom) params.set('incidentDateFrom', filters.incidentDateFrom)
     if (filters.incidentDateTo) params.set('incidentDateTo', filters.incidentDateTo)
     if (filters.alert) params.set('alert', filters.alert) // [2026/08/04] - Lisa - 預警篩選（SLA／兩年時效）
-    // [2026/08/26] - Lisa - 預估金額區間搜尋（單位:萬元）
-    if (filters.estimatedAmountMin) params.set('estimatedAmountMin', String(filters.estimatedAmountMin))
-    if (filters.estimatedAmountMax) params.set('estimatedAmountMax', String(filters.estimatedAmountMax))
+    // [2026/08/26] - Lisa - 預估賠償額區間搜尋（單位:萬元）
+    if (filters.estimatedClaimAmountMin) params.set('estimatedClaimAmountMin', String(filters.estimatedClaimAmountMin))
+    if (filters.estimatedClaimAmountMax) params.set('estimatedClaimAmountMax', String(filters.estimatedClaimAmountMax))
     params.set('page', String(filters.page))
     params.set('pageSize', String(filters.pageSize))
     const res = await api.get<CaseItem[]>(`/api/cases?${params.toString()}`)
+    if (requestSeq !== requestSeqRef.current) return // 已有更新的請求送出，此筆回應過時，忽略
     if (res.success && res.data) {
       setCases(res.data)
       setTotal((res as { total?: number }).total ?? res.data.length)
@@ -241,7 +253,7 @@ export default function CasesPage() {
     setFilters({
       q: '', stage: '', deptId: defaults.deptId, assigneeId: defaults.assigneeId,
       incidentDateFrom: '', incidentDateTo: '', alert: '',
-      estimatedAmountMin: '', estimatedAmountMax: '', page: 1, pageSize: 15,
+      estimatedClaimAmountMin: '', estimatedClaimAmountMax: '', page: 1, pageSize: 15,
     })
     setDateRange(null)
   }
@@ -367,7 +379,8 @@ export default function CasesPage() {
       ),
     },
     {
-      title: '預估金額', dataIndex: 'estimatedAmount', key: 'estimatedAmount', width: 120, align: 'right' as const,
+      // [2026/08/27] - Lisa - 清單欄位由「預估金額」改顯示「預估賠償額」（＝預估金額－自負額）
+      title: '預估賠償額', dataIndex: 'estimatedClaimAmount', key: 'estimatedClaimAmount', width: 120, align: 'right' as const,
       render: (v: number | null) => (
         <span style={{ whiteSpace: 'nowrap' }}>{v ? `$${v.toLocaleString()}` : '—'}</span>
       ),
@@ -433,22 +446,23 @@ export default function CasesPage() {
                 allowClear
               />
             </Col>
-            {/* [2026/08/26] - Lisa - 預估金額區間搜尋（單位:萬元）：只填最小 >=、只填最大 <=、皆填 between */}
+            {/* [2026/08/26] - Lisa - 預估賠償額區間搜尋（單位:萬元）：只填最小 >=、只填最大 <=、皆填 between */}
+            {/* [2026/08/27] - Lisa - 由「預估金額」改為「預估賠償額」（＝預估金額－自負額） */}
             <Col>
-              <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>預估金額（單位:萬元）</div>
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>預估賠償額（單位:萬元）</div>
               <Space.Compact>
                 <InputNumber
                   placeholder="最小"
                   min={0}
-                  value={filters.estimatedAmountMin === '' ? undefined : Number(filters.estimatedAmountMin)}
-                  onChange={v => setFilters(f => ({ ...f, estimatedAmountMin: v == null ? '' : String(v), page: 1 }))}
+                  value={filters.estimatedClaimAmountMin === '' ? undefined : Number(filters.estimatedClaimAmountMin)}
+                  onChange={v => setFilters(f => ({ ...f, estimatedClaimAmountMin: v == null ? '' : String(v), page: 1 }))}
                   style={{ width: 90 }}
                 />
                 <InputNumber
                   placeholder="最大"
                   min={0}
-                  value={filters.estimatedAmountMax === '' ? undefined : Number(filters.estimatedAmountMax)}
-                  onChange={v => setFilters(f => ({ ...f, estimatedAmountMax: v == null ? '' : String(v), page: 1 }))}
+                  value={filters.estimatedClaimAmountMax === '' ? undefined : Number(filters.estimatedClaimAmountMax)}
+                  onChange={v => setFilters(f => ({ ...f, estimatedClaimAmountMax: v == null ? '' : String(v), page: 1 }))}
                   style={{ width: 90 }}
                 />
               </Space.Compact>

@@ -15,6 +15,8 @@ import {
 // [2026/08/05] - Lisa - 「今天」改取台北時間，與排程彙整信（lib/digestMail）同一基準；
 // 伺服器為 UTC，台北 00:00~08:00 用 dayjs() 會算成前一日，造成同一案件燈號差一天
 import { getSlaStatus, taipeiNow, daysSinceCommission } from '@/lib/sla'
+// [2026/08/27] - Lisa - 案件管理清單欄位／區間搜尋改用「預估賠償額」（＝預估金額－自負額），與副總門檻同一算法
+import { getClaimAmount } from '@/lib/approvalFlow'
 
 // [2026/07/27] - Lisa - 公證編號排序鍵：取「年度(前2碼)＋後三碼」，公證前綴與區域碼不列入排序
 // 例：NFNS-26K-024 → { year: 26, serial: 24 }；無法解析者以 -1 排在最後
@@ -86,9 +88,10 @@ export async function GET(req: NextRequest) {
   const assigneeId = searchParams.get('assigneeId')
   const incidentDateFrom = searchParams.get('incidentDateFrom')
   const incidentDateTo = searchParams.get('incidentDateTo')
-  // [2026/08/26] - Lisa - 預估金額區間搜尋，前端輸入單位為「萬元」，DB 欄位單位為「元」
-  const estimatedAmountMin = searchParams.get('estimatedAmountMin')
-  const estimatedAmountMax = searchParams.get('estimatedAmountMax')
+  // [2026/08/26] - Lisa - 預估賠償額區間搜尋，前端輸入單位為「萬元」，換算後與預估賠償額（元）比較
+  // [2026/08/27] - Lisa - 由「預估金額」改為「預估賠償額」（＝預估金額－自負額），欄位/參數同步更名
+  const estimatedClaimAmountMin = searchParams.get('estimatedClaimAmountMin')
+  const estimatedClaimAmountMax = searchParams.get('estimatedClaimAmountMax')
   const filterYear = searchParams.get('year')       // 依結案日年份
   const filterQuarter = searchParams.get('quarter') // Q1~Q4
   const icId = searchParams.get('insuranceCompanyId')  // 保險公司（第一層篩選）
@@ -125,13 +128,9 @@ export async function GET(req: NextRequest) {
       ...(incidentDateTo ? { lte: new Date(incidentDateTo) } : {}),
     }
   }
-  // [2026/08/26] - Lisa - 預估金額區間搜尋：只填前格 >=、只填後格 <=、兩格皆填 between；萬元換算為元
-  if (estimatedAmountMin || estimatedAmountMax) {
-    where.estimatedAmount = {
-      ...(estimatedAmountMin ? { gte: BigInt(Math.round(parseFloat(estimatedAmountMin) * 10000)) } : {}),
-      ...(estimatedAmountMax ? { lte: BigInt(Math.round(parseFloat(estimatedAmountMax) * 10000)) } : {}),
-    }
-  }
+  // [2026/08/27] - Lisa - 預估賠償額（＝預估金額－自負額）為計算欄位，Prisma 無法直接下 where 篩選，
+  // 改於下方 allMatched 取回 estimatedAmount/deductible 後於程式端計算、過濾（只填前格 >=、只填後格 <=、兩格皆填 between；萬元換算為元）
+
   // 年份/季度篩選（依委託日）
   // [2026/07/14] - Lisa - 年度改依委託日 commissionDate（原為結案日 closeDate）；
   // 因結案日僅已決案件有值，改用委託日後預設當年度仍能涵蓋未決/銷案案件
@@ -255,27 +254,37 @@ export async function GET(req: NextRequest) {
   }
 
   // [2026/07/14] - Lisa - 案件查詢統計卡需「全量」件數與費用合計，不受分頁上限影響；
-  // withSummary=1 時另跑一次聚合，回傳整個 where 範圍的 公證費/差旅其他費 總額（件數沿用 total）
+  // withSummary=1 時另跑一次聚合，回傳整個篩選範圍的 公證費/差旅其他費 總額（件數沿用 total）
   const wantSummary = searchParams.get('withSummary') === '1'
-  const summaryPromise = wantSummary
-    ? prisma.case.aggregate({
-        where,
-        _sum: { actualFee: true, travelOtherExpense: true },
-      })
-    : Promise.resolve(null)
 
   // [2026/07/27] - Lisa - 排序改依公證編號「年度+後三碼」由大到小；因需跨全體排序後再分頁，
   // 先輕量取回符合條件的 id/caseNumber 做全域排序，再只針對「當頁」id 撈完整資料（含關聯）
-  const [allMatched, summaryAgg] = await Promise.all([
-    prisma.case.findMany({ where, select: { id: true, caseNumber: true } }),
-    summaryPromise,
-  ])
+  // [2026/08/27] - Lisa - 一併取回 estimatedAmount/deductible，供下方計算「預估賠償額」區間篩選
+  const allMatched = await prisma.case.findMany({
+    where,
+    select: { id: true, caseNumber: true, estimatedAmount: true, deductible: true },
+  })
+  let matched = allMatched
+  // [2026/08/27] - Lisa - 預估賠償額（＝預估金額－自負額）區間篩選：計算欄位無法下 Prisma where，
+  // 於程式端以 getClaimAmount 計算後過濾（只填前格 >=、只填後格 <=、兩格皆填 between；萬元換算為元）
+  if (estimatedClaimAmountMin || estimatedClaimAmountMax) {
+    const minV = estimatedClaimAmountMin ? Math.round(parseFloat(estimatedClaimAmountMin) * 10000) : null
+    const maxV = estimatedClaimAmountMax ? Math.round(parseFloat(estimatedClaimAmountMax) * 10000) : null
+    matched = matched.filter((c) => {
+      const claim = getClaimAmount(
+        c.estimatedAmount != null ? Number(c.estimatedAmount) : null,
+        c.deductible != null ? Number(c.deductible) : null,
+      )
+      if (minV != null && claim < minV) return false
+      if (maxV != null && claim > maxV) return false
+      return true
+    })
+  }
   // [2026/08/04] - Lisa - 退回待修精確過濾：每個 documentType 只看最新一次送審，且該筆未終結並為退回，
   // 與下方列資料的 hasRejectedReview（橘色「退件」標記）同一判定，確保件數與標記一致
-  let matched = allMatched
-  if (returnedOnly && allMatched.length > 0) {
+  if (returnedOnly && matched.length > 0) {
     const reviewRows = await prisma.caseReview.findMany({
-      where: { caseId: { in: allMatched.map((c) => c.id) } },
+      where: { caseId: { in: matched.map((c) => c.id) } },
       select: {
         caseId: true, documentType: true, submittedAt: true, recordStatus: true,
         reviewStatus: true, midApprovalStatus: true, approvalStatus: true,
@@ -294,14 +303,14 @@ export async function GET(req: NextRequest) {
         keep.add(r.caseId)
       }
     }
-    matched = allMatched.filter((c) => keep.has(c.id))
+    matched = matched.filter((c) => keep.has(c.id))
   }
   // [2026/08/05] - Lisa - 待結案精確過濾：候選已確定節點7 核准，此處再確認節點8（請款單／合併送審）
   // 亦已終審核准，與儀表板「待結案」提醒同一判定（closingApprovedAt）
-  if (closingOnly && allMatched.length > 0) {
+  if (closingOnly && matched.length > 0) {
     const reviewRows = await prisma.caseReview.findMany({
       where: {
-        caseId: { in: allMatched.map((c) => c.id) },
+        caseId: { in: matched.map((c) => c.id) },
         documentType: { in: [...FINAL_REPORT_DOC_TYPES, ...BILLING_DOC_TYPES] },
       },
       select: {
@@ -326,33 +335,43 @@ export async function GET(req: NextRequest) {
   })
   const total = matched.length
   const pageIds = matched.slice((page - 1) * pageSize, page * pageSize).map((c) => c.id)
-  const pageCases = await prisma.case.findMany({
-    where: { id: { in: pageIds } },
-    include: {
-      department: { select: { name: true } },
-      insuranceCompany: { select: { name: true } },
-      brokerCompany: { select: { name: true } },
-      assignments: { select: { employeeId: true, role: true, employee: { select: { name: true } } } },
-      // [2026/06/18] - Lisa - Issue #9/#10 退件涵蓋全關卡 + 只看每個文件類型最新一次送審 - Start
-      // 撈該案全部送審（含已核准），以便依 submittedAt 取每個 documentType 的最新一筆判定狀態
-      reviews: {
-        select: {
-          reviewStatus: true, reviewRemarks: true,
-          midApprovalStatus: true, midApprovalRemarks: true,
-          approvalStatus: true, approvalRemarks: true,
-          documentType: true, submittedAt: true,
-          recordStatus: true, // [2026/06/18] - Lisa - 方案1/2 終結狀態（已重送/已放棄）
-          mergedBilling: true, // [2026/07/15] - Lisa - 合併送審旗標（清單 (併DN) 標註用）
-          // [2026/08/05] - Lisa - 判定「終審核准」需知該筆是否有加簽／副總關卡（初報完成判定用）
-          requiresVP: true, requiresMidApproval: true,
+  // [2026/08/27] - Lisa - 統計卡聚合改以「最終篩選後」的 id 清單為範圍（原本沿用 where 聚合，
+  // 未含預估賠償額此類程式端計算篩選，會與畫面清單件數對不起來）
+  const [pageCases, summaryAgg] = await Promise.all([
+    prisma.case.findMany({
+      where: { id: { in: pageIds } },
+      include: {
+        department: { select: { name: true } },
+        insuranceCompany: { select: { name: true } },
+        brokerCompany: { select: { name: true } },
+        assignments: { select: { employeeId: true, role: true, employee: { select: { name: true } } } },
+        // [2026/06/18] - Lisa - Issue #9/#10 退件涵蓋全關卡 + 只看每個文件類型最新一次送審 - Start
+        // 撈該案全部送審（含已核准），以便依 submittedAt 取每個 documentType 的最新一筆判定狀態
+        reviews: {
+          select: {
+            reviewStatus: true, reviewRemarks: true,
+            midApprovalStatus: true, midApprovalRemarks: true,
+            approvalStatus: true, approvalRemarks: true,
+            documentType: true, submittedAt: true,
+            recordStatus: true, // [2026/06/18] - Lisa - 方案1/2 終結狀態（已重送/已放棄）
+            mergedBilling: true, // [2026/07/15] - Lisa - 合併送審旗標（清單 (併DN) 標註用）
+            // [2026/08/05] - Lisa - 判定「終審核准」需知該筆是否有加簽／副總關卡（初報完成判定用）
+            requiresVP: true, requiresMidApproval: true,
+          },
         },
+        // [2026/06/18] - Lisa - Issue #9/#10 - end
+        // [2026/08/25] - Lisa - 「初步報告」字樣曾出現於備註/進度/異動紀錄，但流程階段仍卡在進件：
+        // 疑似未落實送審流程，清單需標紅提醒（僅取 1 筆即可判斷是否存在，不需完整內容）
+        caseNotes: { where: { content: { contains: '初步報告' } }, select: { id: true }, take: 1 },
       },
-      // [2026/06/18] - Lisa - Issue #9/#10 - end
-      // [2026/08/25] - Lisa - 「初步報告」字樣曾出現於備註/進度/異動紀錄，但流程階段仍卡在進件：
-      // 疑似未落實送審流程，清單需標紅提醒（僅取 1 筆即可判斷是否存在，不需完整內容）
-      caseNotes: { where: { content: { contains: '初步報告' } }, select: { id: true }, take: 1 },
-    },
-  })
+    }),
+    wantSummary
+      ? prisma.case.aggregate({
+          where: { id: { in: matched.map((c) => c.id) } },
+          _sum: { actualFee: true, travelOtherExpense: true },
+        })
+      : Promise.resolve(null),
+  ])
   // in 查詢不保證順序，依全域排序結果還原「當頁」順序
   const caseById = new Map(pageCases.map((c) => [c.id, c]))
   const cases = pageIds.map((id) => caseById.get(id)).filter((c): c is typeof pageCases[number] => !!c)
@@ -412,6 +431,11 @@ export async function GET(req: NextRequest) {
       currentStage: c.currentStage,
       parkingStatus: c.parkingStatus,
       estimatedAmount: c.estimatedAmount,
+      // [2026/08/27] - Lisa - 預估賠償額（＝預估金額－自負額，負值以 0 計）：案件管理清單改顯示此欄位；
+      // 無預估金額者維持顯示「—」，與案件詳情頁金額資訊卡同一算法
+      estimatedClaimAmount: c.estimatedAmount != null
+        ? getClaimAmount(Number(c.estimatedAmount), c.deductible != null ? Number(c.deductible) : null)
+        : null,
       estimatedFee: c.estimatedFee,
       actualFee: c.actualFee,
       finalAmount: c.finalAmount,
