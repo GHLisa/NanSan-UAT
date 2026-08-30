@@ -81,6 +81,7 @@ interface CaseItem {
   hasPendingReview: boolean
   hasMergedBilling: boolean // [2026/07/15] - Lisa - 合併送審旗標（結案報告書隨附 DEBIT NOTE）
   prelimNoteStuckAtIntake: boolean // [2026/08/25] - Lisa - 備註提及初步報告但階段仍卡在進件，疑似未落實送審流程
+  assignmentNotes: string | null // [2026/08/28] - Lisa - 交辦事項（清單欄位用；無則顯示「—」，有則滑鼠移至顯示全文）
 }
 
 interface MetaData {
@@ -320,7 +321,8 @@ export default function CasesPage() {
       },
     },
     {
-      title: '公證編號', dataIndex: 'caseNumber', key: 'caseNumber', width: 155, fixed: 'left' as const,
+      // [2026/08/29] - Lisa - 依實際資料常見長度（11~12碼佔93%）縮短欄寬，極少數15碼長編號交由 ellipsis 截斷
+      title: '公證編號', dataIndex: 'caseNumber', key: 'caseNumber', width: 135, fixed: 'left' as const, ellipsis: true,
       render: (v: string, r: CaseItem) => (
         <a onClick={() => router.push(`/cases/${r.id}`)} style={{ color: '#1B4F8C', fontWeight: 600 }}>{v}</a>
       ),
@@ -344,12 +346,25 @@ export default function CasesPage() {
       render: (v: string) => v || '—',
     },
     {
-      title: '保代/保經', dataIndex: 'brokerCompanyName', key: 'broker', width: 120, ellipsis: true,
+      // [2026/08/29] - Lisa - 依實際資料常見長度微調欄寬（保代/保經名稱多為4~5字，讓出空間給承辦人欄）
+      title: '保代/保經', dataIndex: 'brokerCompanyName', key: 'broker', width: 110, ellipsis: true,
       render: (v: string | null) => v ?? '—',
+    },
+    {
+      // [2026/08/28] - Lisa - 交辦事項欄位：無顯示「—」，有則字數多改以滑鼠移至顯示全文（Tooltip）
+      title: '交辦事項', key: 'assignmentNotes', width: 90, align: 'center' as const,
+      render: (_: unknown, r: CaseItem) => (
+        r.assignmentNotes ? (
+          <Tooltip title={<span style={{ whiteSpace: 'pre-line' }}>{r.assignmentNotes}</span>}>
+            <Tag color="gold" style={{ cursor: 'default' }}>有</Tag>
+          </Tooltip>
+        ) : '—'
+      ),
     },
     ...(showDeptColumn ? [{ title: '部門', dataIndex: 'departmentName', key: 'dept', width: 100, ellipsis: true }] : []),
     {
-      title: '承辦人', key: 'handler', width: 130, ellipsis: true,
+      // [2026/08/29] - Lisa - 欄寬以顯示5個字為準，多位承辦人時交由 ellipsis + 滑鼠移入顯示全文
+      title: '承辦人', key: 'handler', width: 100, ellipsis: true,
       render: (_: unknown, r: CaseItem) => {
         const co = r.handlers.filter(h => h.role !== '主辦').map(h => h.name)
         return [r.primaryHandlerName, ...co].join(' / ')
@@ -364,7 +379,8 @@ export default function CasesPage() {
       render: (v: string) => dayjs(v).format('YYYY/MM/DD'),
     },
     {
-      title: '目前階段', dataIndex: 'currentStage', key: 'stage', width: 180, ellipsis: true,
+      // [2026/08/29] - Lisa - 依實際資料常見長度縮短欄寬，最長階段名稱＋「併DN」標籤時交由 ellipsis + Tooltip 顯示全文
+      title: '目前階段', dataIndex: 'currentStage', key: 'stage', width: 150, ellipsis: true,
       // [2026/07/16] - Lisa - 合併送審：「併DN」改標於「目前階段」欄，與文件審核清單一致
       render: (v: string, r: CaseItem) => (
         <span style={{ whiteSpace: 'nowrap' }}>
@@ -380,35 +396,45 @@ export default function CasesPage() {
     },
     {
       // [2026/08/27] - Lisa - 清單欄位由「預估金額」改顯示「預估賠償額」（＝預估金額－自負額）
-      title: '預估賠償額', dataIndex: 'estimatedClaimAmount', key: 'estimatedClaimAmount', width: 120, align: 'right' as const,
+      // [2026/08/29] - Lisa - 依實際資料常見長度縮短欄寬（99%案件金額字串≤11碼），極端大額交由 ellipsis 截斷
+      title: '預估賠償額', dataIndex: 'estimatedClaimAmount', key: 'estimatedClaimAmount', width: 100, align: 'right' as const, ellipsis: true,
       render: (v: number | null) => (
         <span style={{ whiteSpace: 'nowrap' }}>{v ? `$${v.toLocaleString()}` : '—'}</span>
       ),
     },
     {
-      title: '狀態', key: 'status', width: 180,
-      render: (_: unknown, r: CaseItem) => (
-        <Space size={4} wrap>
-          <Tag color={r.status === '已決' ? 'green' : r.status === '銷案' ? 'default' : 'blue'}>{r.status}</Tag>
-          {r.parkingStatus && (
-            <Tag color={PARKING_COLOR[r.parkingStatus] ?? 'default'}>{r.parkingStatus}</Tag>
-          )}
-          {r.hasRejectedReview && (
-            <Tooltip title={
-              <span style={{ whiteSpace: 'pre-line' }}>
-                {/* [2026/06/18] - Lisa - Issue #9 標示退回關卡別 */}
-                {r.rejectedReviews.map(rj => `【${rj.documentType}・${rj.gate}退回】${rj.reviewRemarks ?? ''}`).join('\n')}
-              </span>
-            }>
-              <Tag color="orange" icon={<WarningOutlined />} style={{ cursor: 'default' }}>退件</Tag>
-            </Tooltip>
-          )}
-          {r.hasPendingReview && (
-            <Tag color="blue" icon={<ClockCircleOutlined />} style={{ cursor: 'default' }}>審核中</Tag>
-          )}
-          {/* [2026/07/16] - Lisa - 合併送審：「併DN」已移至「目前階段」欄呈現 */}
-        </Space>
+      // [2026/08/31] - Lisa - 原「狀態」單欄拆為三欄，避免無停泊狀態/送審標記時欄位大片空白
+      title: '案件狀態', dataIndex: 'status', key: 'status', width: 80,
+      render: (v: string) => (
+        <Tag color={v === '已決' ? 'green' : v === '銷案' ? 'default' : 'blue'}>{v}</Tag>
       ),
+    },
+    {
+      title: '停泊案件狀態', dataIndex: 'parkingStatus', key: 'parkingStatus', width: 110,
+      render: (v: string | null) => v ? <Tag color={PARKING_COLOR[v] ?? 'default'}>{v}</Tag> : '—',
+    },
+    {
+      title: '送審標記', key: 'reviewFlag', width: 110,
+      render: (_: unknown, r: CaseItem) => {
+        if (!r.hasRejectedReview && !r.hasPendingReview) return '—'
+        return (
+          <Space size={4} wrap>
+            {r.hasRejectedReview && (
+              <Tooltip title={
+                <span style={{ whiteSpace: 'pre-line' }}>
+                  {/* [2026/06/18] - Lisa - Issue #9 標示退回關卡別 */}
+                  {r.rejectedReviews.map(rj => `【${rj.documentType}・${rj.gate}退回】${rj.reviewRemarks ?? ''}`).join('\n')}
+                </span>
+              }>
+                <Tag color="orange" icon={<WarningOutlined />} style={{ cursor: 'default' }}>退件</Tag>
+              </Tooltip>
+            )}
+            {r.hasPendingReview && (
+              <Tag color="blue" icon={<ClockCircleOutlined />} style={{ cursor: 'default' }}>審核中</Tag>
+            )}
+          </Space>
+        )
+      },
     },
   ]
 
@@ -522,7 +548,7 @@ export default function CasesPage() {
           rowKey="id"
           size="small"
           loading={loading}
-          scroll={{ x: showDeptColumn ? 1830 : 1730 }}
+          scroll={{ x: showDeptColumn ? 1840 : 1740 }}
           sticky={{ offsetHeader }}
           rowClassName={(r: CaseItem) => [
             r.hasRejectedReview ? 'row-rejected' : '',

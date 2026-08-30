@@ -453,6 +453,7 @@ export async function GET(req: NextRequest) {
       hasPendingReview: hasPending,
       hasMergedBilling, // [2026/07/15] - Lisa - 合併送審 (併DN) 標註
       prelimNoteStuckAtIntake, // [2026/08/25] - Lisa - 備註提及初步報告但階段仍卡在進件（疑似未落實送審流程）
+      assignmentNotes: c.assignmentNotes, // [2026/08/28] - Lisa - 案件管理/案件查詢清單「交辦事項」欄位
     }
   })
 

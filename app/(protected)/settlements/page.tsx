@@ -55,6 +55,7 @@ interface CaseItem {
   travelOtherExpenseTotal: number
   primaryHandlerName: string
   prelimNoteStuckAtIntake: boolean // [2026/08/25] - Lisa - 備註提及初步報告但階段仍卡在進件，疑似未落實送審流程
+  assignmentNotes: string | null // [2026/08/28] - Lisa - 交辦事項（清單欄位用；無則顯示「—」，有則滑鼠移至顯示全文）
 }
 
 export default function CaseQueryPage() {
@@ -259,6 +260,17 @@ export default function CaseQueryPage() {
     {
       title: '保單號碼', dataIndex: 'policyNumber', key: 'policyNumber', width: 140, ellipsis: true,
       render: (v: string) => v || '—',
+    },
+    {
+      // [2026/08/28] - Lisa - 交辦事項欄位：無顯示「—」，有則字數多改以滑鼠移至顯示全文（Tooltip）
+      title: '交辦事項', key: 'assignmentNotes', width: 90, align: 'center' as const,
+      render: (_: unknown, r: CaseItem) => (
+        r.assignmentNotes ? (
+          <Tooltip title={<span style={{ whiteSpace: 'pre-line' }}>{r.assignmentNotes}</span>}>
+            <Tag color="gold" style={{ cursor: 'default' }}>有</Tag>
+          </Tooltip>
+        ) : '—'
+      ),
     },
     { title: '部門', dataIndex: 'departmentName', key: 'dept', width: 110, ellipsis: true },
     { title: '承辦人', dataIndex: 'primaryHandlerName', key: 'handler', width: 80 },
