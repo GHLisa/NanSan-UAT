@@ -234,6 +234,7 @@ export default function CaseNewPage() {
       estimatedFee: values.estimatedFee ?? undefined,
       isSpecialCase,
       notes: values.notes,
+      insuredSubjectMatter: values.insuredSubjectMatter || null,
       parkingStatus: values.parkingStatus ?? null,
       contactFormStatus: values.contactFormStatus,
       contactReturnDate: values.contactReturnDate
@@ -559,6 +560,11 @@ export default function CaseNewPage() {
                 <Select allowClear placeholder="無">
                   {PARKING_STATUS.map((s) => <Option key={s} value={s}>{s}</Option>)}
                 </Select>
+              </Form.Item>
+            </Col>
+            <Col xs={24}>
+              <Form.Item label="出險保險標的(工程述要)" name="insuredSubjectMatter">
+                <TextArea placeholder="請輸入出險保險標的(工程述要)" autoSize={{ minRows: 1, maxRows: 3 }} />
               </Form.Item>
             </Col>
           </Row>

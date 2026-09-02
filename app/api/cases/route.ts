@@ -486,6 +486,7 @@ const CaseSchema = z.object({
   deductible: z.number().optional(),
   isSpecialCase: z.boolean().optional(),
   notes: z.string().optional(),
+  insuredSubjectMatter: z.string().nullable().optional(),
   coInsurers: z.array(z.object({
     companyId: z.number().nullable().optional(),
     policyNumber: z.string(),
@@ -710,6 +711,7 @@ export async function POST(req: NextRequest) {
           deductible: BigInt(Math.trunc(Number.isFinite(body.deductible) ? (body.deductible as number) : 0)),
           isSpecialCase: body.isSpecialCase ?? false,
           notes: body.notes,
+          insuredSubjectMatter: body.insuredSubjectMatter ?? null,
           contactFormStatus: body.contactFormStatus,
           contactReturnDate: body.contactReturnDate ? new Date(body.contactReturnDate) : undefined,
           nasFolder: body.nasFolder,
