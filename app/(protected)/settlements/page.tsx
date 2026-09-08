@@ -90,6 +90,10 @@ export default function CaseQueryPage() {
   const [total, setTotal] = useState(0)
   const [summary, setSummary] = useState({ count: 0, totalFee: 0, totalTravel: 0 })
   const [exporting, setExporting] = useState(false)
+  // [2026/09/08] - Lisa - 查詢條件以 sessionStorage 保存，從案件明細返回列表可重現篩選後狀態
+  // （比照 /cases 案件管理清單的做法，見該檔 listStateKey 註解）
+  const [restored, setRestored] = useState(false)
+  const listStateKey = session ? `nansan_settlements_list:${session.sub}:${session.role}:${session.departmentId ?? ''}` : ''
 
   // [2026/07/31] - Lisa - 銷案案件刪除：刪除後資料移入封存表（deleted_cases），查詢／報表統計不再計入
   const canDeleteCancelled = !!session && DELETE_CANCELLED_ROLES.includes(session.role)
@@ -132,6 +136,53 @@ export default function CaseQueryPage() {
     })
   }, [filterIcId])
 
+  // [2026/09/08] - Lisa - 掛載時還原 sessionStorage 保存的查詢條件（僅還原一次）
+  useEffect(() => {
+    if (!listStateKey) return
+    try {
+      const saved = sessionStorage.getItem(listStateKey)
+      if (saved) {
+        const parsed = JSON.parse(saved) as {
+          search?: string
+          filterStatus?: string
+          filterDept?: string
+          filterYear?: string
+          filterPeriod?: string
+          incidentDateFrom?: string
+          incidentDateTo?: string
+          filterIcId?: string
+          filterContacts?: string[]
+          page?: number
+        }
+        if (parsed.search !== undefined) { setSearch(parsed.search); setSearchInput(parsed.search) }
+        if (parsed.filterStatus !== undefined) setFilterStatus(parsed.filterStatus)
+        if (parsed.filterDept !== undefined) setFilterDept(parsed.filterDept)
+        if (parsed.filterYear !== undefined) setFilterYear(parsed.filterYear)
+        if (parsed.filterPeriod !== undefined) setFilterPeriod(parsed.filterPeriod)
+        if (parsed.incidentDateFrom) {
+          setIncidentDateFrom(parsed.incidentDateFrom)
+          setIncidentDateTo(parsed.incidentDateTo ?? parsed.incidentDateFrom)
+          setDateRange([dayjs(parsed.incidentDateFrom), dayjs(parsed.incidentDateTo ?? parsed.incidentDateFrom)])
+        }
+        if (parsed.filterIcId !== undefined) setFilterIcId(parsed.filterIcId)
+        if (parsed.filterContacts) setFilterContacts(parsed.filterContacts)
+        if (parsed.page) setPage(parsed.page)
+      }
+    } catch { /* 忽略毀損的快取 */ }
+    setRestored(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listStateKey])
+
+  // [2026/09/08] - Lisa - 狀態變動即寫回 sessionStorage（還原完成後才寫，避免以預設值覆蓋既有快取）
+  useEffect(() => {
+    if (!restored || !listStateKey) return
+    const payload = {
+      search, filterStatus, filterDept, filterYear, filterPeriod,
+      incidentDateFrom, incidentDateTo, filterIcId, filterContacts, page,
+    }
+    sessionStorage.setItem(listStateKey, JSON.stringify(payload))
+  }, [search, filterStatus, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo, filterIcId, filterContacts, page, restored, listStateKey])
+
   const loadCases = useCallback(async () => {
     setLoading(true)
     // [2026/07/14] - Lisa - 改伺服器端分頁：只取當頁 15 筆；withSummary=1 讓後端回傳整個查詢範圍的
@@ -162,7 +213,7 @@ export default function CaseQueryPage() {
     setLoading(false)
   }, [search, filterStatus, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo, filterIcId, filterContacts, page])
 
-  useEffect(() => { loadCases() }, [loadCases])
+  useEffect(() => { if (restored) loadCases() }, [loadCases, restored])
 
   function handleDateChange(dates: [Dayjs | null, Dayjs | null] | null) {
     setPage(1)
@@ -193,6 +244,7 @@ export default function CaseQueryPage() {
     setFilterContacts([])
     setContactOptions([])
     setPage(1)
+    if (listStateKey) sessionStorage.removeItem(listStateKey)
   }
 
   // 匯出 Excel（彷照「工程113(24K)」格式，欄位 A~V；匯出整個查詢結果）

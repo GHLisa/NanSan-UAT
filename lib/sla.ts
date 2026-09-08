@@ -24,6 +24,13 @@ export function taipeiNow(base: Dayjs = dayjs()): Dayjs {
   return base.add(TAIPEI_UTC_OFFSET_HOURS, 'hour')
 }
 
+// [2026/09/08] - Lisa - 案件查詢匯出 Excel 的民國日期換算用：讀取已存入 DB 的日期欄位
+// （commissionDate/incidentDate…）要取年/月/日時須換算台北時間，不可直接 dayjs(d)——這些欄位
+// 實際存成「台北午夜」(=前一日 16:00Z)，伺服器時鐘為 UTC，直接 dayjs(d) 取年/月/日會少算一天。
+export function taipeiDay(d: Date | string): Dayjs {
+  return dayjs(d).add(TAIPEI_UTC_OFFSET_HOURS, 'hour')
+}
+
 // 委辦日至今的「日曆天數」（去除時分秒，純以日為單位）
 // [2026/08/05] - Lisa - 兩端一律換算成台北曆日再相減。實測 DB 內 93% 的 commissionDate 存成
 // 「台北午夜」(=前一日 16:00Z)，若直接取 UTC 曆日會比實際多算一天，且會與資料庫端的日期門檻

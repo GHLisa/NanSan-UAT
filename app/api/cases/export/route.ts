@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import ExcelJS from 'exceljs'
-import dayjs from 'dayjs'
 // [2026/08/27] - Lisa - 新增「案件流程進度」欄，判斷是否有送審中文件需用 isFinalApproved
 import { isFinalApproved } from '@/lib/reportStage'
 // [2026/08/05] - Lisa - 檔名日期取台北時間（伺服器 UTC 於台北 00:00~08:00 會標成前一日）
-import { taipeiNow } from '@/lib/sla'
+// [2026/09/08] - Lisa - 委託日/出險日等欄位換算台北時間改用 taipeiDay，見該函式註解
+import { taipeiNow, taipeiDay } from '@/lib/sla'
 // [2026/08/27] - Lisa - 匯出的「預估賠償額」區間搜尋改用與 GET /api/cases 相同算法
 import { getClaimAmount } from '@/lib/approvalFlow'
 
@@ -35,7 +35,7 @@ async function buildCaseScope(session: Awaited<ReturnType<typeof getSession>>) {
 // 西元日期 → 民國日期字串（例：112.08.29.）
 function rocDate(d: Date | null | undefined): string {
   if (!d) return ''
-  const day = dayjs(d)
+  const day = taipeiDay(d)
   return `${day.year() - 1911}.${day.format('MM')}.${day.format('DD')}.`
 }
 
