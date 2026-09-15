@@ -9,6 +9,8 @@ import { isFinalApproved } from '@/lib/reportStage'
 import { taipeiNow, taipeiDay } from '@/lib/sla'
 // [2026/08/27] - Lisa - 匯出的「預估賠償額」區間搜尋改用與 GET /api/cases 相同算法
 import { getClaimAmount } from '@/lib/approvalFlow'
+// [2026/09/15] - Lisa - 高雄工程部主管另可見台北/台中工程部特殊案件，與 GET /api/cases 範圍一致
+import { getCrossDeptSpecialCaseWhere, addAndCondition } from '@/lib/caseScope'
 
 export const runtime = 'nodejs'
 
@@ -29,7 +31,9 @@ async function buildCaseScope(session: Awaited<ReturnType<typeof getSession>>) {
     }
   }
 
-  return { departmentId: session.departmentId }
+  const deptScope = { departmentId: session.departmentId }
+  const crossDeptWhere = await getCrossDeptSpecialCaseWhere(session)
+  return crossDeptWhere ? { OR: [deptScope, crossDeptWhere] } : deptScope
 }
 
 // 西元日期 → 民國日期字串（例：112.08.29.）
@@ -81,8 +85,17 @@ export async function GET(req: NextRequest) {
 
   const scopeFilter = await buildCaseScope(session)
 
-  const where: Record<string, unknown> = { ...scopeFilter }
+  const where: Record<string, unknown> = {}
+  // [2026/09/15] - Lisa - scopeFilter 若含 OR（高雄工程部主管跨部門特殊案件範圍），不可直接展開到
+  // where 頂層——下方關鍵字搜尋會覆寫 where.OR，見 lib/caseScope.ts addAndCondition() 註解
+  if ('OR' in scopeFilter) {
+    addAndCondition(where, scopeFilter as Record<string, unknown>)
+  } else {
+    Object.assign(where, scopeFilter)
+  }
   if (status && status !== 'all') where.status = status
+  // [2026/09/15] - Lisa - 與 GET /api/cases 相同：deptId 留空（下拉「全部」）維持 scopeFilter 的 OR
+  // 範圍；選了「高雄工程部」則直接疊加 departmentId，收斂成只顯示本部門案件
   if (deptId) where.departmentId = parseInt(deptId)
   if (icId) where.insuranceCompanyId = parseInt(icId)
   if (contactsParam) {

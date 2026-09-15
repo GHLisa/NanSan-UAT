@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import type { JWTPayload } from '@/lib/auth'
 import type { Prisma } from '@prisma/client'
+import { ENG_TAIPEI_DEPT_CODES, KHH_ENG_DEPT_CODES } from '@/lib/approvalFlow'
 
 /**
  * 依登入者角色建立案件可視範圍的 Prisma where 條件（FR-19 v2.1/v2.3）。
@@ -56,6 +57,47 @@ export async function buildCaseScopeWhere(
 
   // dept_manager（及其他部門級角色）：所屬部門全部案件
   return { departmentId }
+}
+
+/**
+ * [2026/09/15] - Lisa - 高雄工程部部門主管為台北/台中工程部特殊案件（isSpecialCase）三關卡加簽
+ * 審核者（FR-90），客戶希望其在「案件管理清單」也能一併看到這些案件（併入本部門範圍，唯讀）。
+ *
+ * 僅限 role='dept_manager' 且其所屬部門為高雄工程部時回傳額外的 OR 條件；其餘情況回傳 null，
+ * 呼叫端應維持原本部門範圍不變。刻意不併入 buildCaseScopeWhere()——該函式同時供儀表板 KPI、
+ * 通知未讀數、達成率等統計共用，若一併套用會讓高雄工程部的案件量/業績被台北案件污染；
+ * 僅供「案件管理清單」與其 Excel 匯出（兩者資料範圍本應一致）呼叫。
+ *
+ * 唯讀：本函式只放寬「查得到」的範圍，編輯/刪除/交辦事項等操作仍由各自 API 既有的
+ * `session.departmentId === case.departmentId` 嚴格比對把關，不受此處影響。
+ */
+export async function getCrossDeptSpecialCaseWhere(
+  session: { role: string; departmentId: number | null } | null,
+): Promise<Prisma.CaseWhereInput | null> {
+  if (!session || session.role !== 'dept_manager' || !session.departmentId) return null
+  const dept = await prisma.department.findUnique({
+    where: { id: session.departmentId },
+    select: { code: true },
+  })
+  if (!dept || !KHH_ENG_DEPT_CODES.includes(dept.code)) return null
+  return { department: { code: { in: ENG_TAIPEI_DEPT_CODES } }, isSpecialCase: true }
+}
+
+/**
+ * [2026/09/15] - Lisa - 安全併入以 OR 表示的範圍條件（例如上面 getCrossDeptSpecialCaseWhere() 的
+ * 回傳值）到既有的可變 where 物件。
+ *
+ * 背景：案件清單／匯出 API 慣例上把 where.OR 留給關鍵字搜尋、where.AND 留給各種 alert 篩選，兩者
+ * 都用「直接覆寫」（where.OR = [...] / where.AND = [...]），因為過去只有它們會用到這兩個鍵。
+ * 若把部門範圍條件直接展開成 where.OR，會被關鍵字搜尋的 where.OR 覆寫掉，等同該次查詢不限部門
+ * ——這正是「李國鈞（高雄工程部主管）能查到非本部門、非特殊案件」的成因。
+ *
+ * 因此範圍條件一律改包進 where.AND（此函式），呼叫端所有原本「where.AND = [...]」的地方也要
+ * 一併改成呼叫本函式疊加，而非覆寫，兩邊都做才不會有一邊蓋掉另一邊。
+ */
+export function addAndCondition(where: Record<string, unknown>, ...conditions: Record<string, unknown>[]) {
+  const existing = Array.isArray(where.AND) ? (where.AND as Record<string, unknown>[]) : []
+  where.AND = [...existing, ...conditions]
 }
 
 /**

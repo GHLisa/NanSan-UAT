@@ -65,6 +65,13 @@ const DEPT_CATEGORY: Record<string, string> = {
   KF: '火險_高雄',
 }
 
+// [2026/09/15] - Lisa - FR-90 三關卡加簽審核所涉部門代碼，供文件審核（app/api/reviews）與
+// 案件管理清單跨部門分享（lib/caseScope）共用，避免各處重複硬編碼、彼此漂移。
+// 台北/台中工程部（isSpecialCase 特殊案件觸發三關卡加簽審核的來源部門），含資料庫舊代碼
+export const ENG_TAIPEI_DEPT_CODES = ['NL', 'CL', 'TPE-ENG', 'TXG-ENG']
+// 高雄工程部（三關卡加簽審核者）DB 代碼，含資料庫舊代碼
+export const KHH_ENG_DEPT_CODES = ['KL', 'KHH-ENG']
+
 // ── 副總審閱規則查表 ─────────────────────────────────────────────────
 // alwaysVP: true  → 不論金額一律呈送副總
 // threshold: N    → 預估賠償額 ≥ N 才須呈送副總

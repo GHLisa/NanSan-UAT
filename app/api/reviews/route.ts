@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
-import { getApprovalFlow, getClaimAmount, INTERIM_DOC_TYPES, STAGE_DOC_TYPES, laterStage } from '@/lib/approvalFlow'
+import { getApprovalFlow, getClaimAmount, INTERIM_DOC_TYPES, STAGE_DOC_TYPES, laterStage, KHH_ENG_DEPT_CODES } from '@/lib/approvalFlow'
 import { buildReviewWhere, type ReviewTab } from '@/lib/reviewScope'
 import { mailReviewSubmitted } from '@/lib/caseMail'
 import { reviewPendingNotification } from '@/lib/caseNotify'
@@ -17,9 +17,6 @@ const DEPT_CODE_MAP: Record<string, string> = {
   'KHH-LIA': 'KB',
   'TXG-ENG': 'CL',
 }
-
-// 高雄工程部（三關卡加簽審核）DB 部門代碼（seed v3.0 起為 KL，保留舊代碼相容）
-const KHH_ENG_DEPT_CODES = ['KL', 'KHH-ENG']
 
 const INTERIM_FEE_TYPE = '追加預估公證費'
 // [2026/07/15] - Lisa - 合併送審相關文件類型常數

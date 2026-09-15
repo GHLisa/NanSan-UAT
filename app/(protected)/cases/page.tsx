@@ -10,6 +10,9 @@ import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
+// [2026/09/15] - Lisa - 高雄工程部主管的部門下拉另加台北/台中工程部選項（僅能查得到該部門特殊案件，
+// 範圍與 lib/caseScope.ts getCrossDeptSpecialCaseWhere 一致）
+import { ENG_TAIPEI_DEPT_CODES, KHH_ENG_DEPT_CODES } from '@/lib/approvalFlow'
 
 const { Title } = Typography
 const { Search } = Input
@@ -85,12 +88,12 @@ interface CaseItem {
 }
 
 interface MetaData {
-  departments: { id: number; name: string }[]
+  departments: { id: number; name: string; code: string }[]
   // [2026/08/04] - Lisa - FR-111 roles 供「承辦人」下拉依部門（組長再依組別）限縮
   employees: { id: number; name: string; roles?: { departmentId: number | null; teamGroup: string | null; isPrimary: boolean }[] }[]
 }
 
-function getDefaultFilters(role: string, empId: number, deptId: number | null) {
+function getDefaultFilters(role: string, empId: number, deptId: number | null, departmentName: string | null) {
   // [2026/06/18] - Lisa - Issue #5 承辦人不限部門（可能於他部門協辦），不帶 deptId 預設 - Start
   // FR-34：承辦人預設「自己承辦未決」；不限部門以與導覽 badge myCaseCount 一致
   if (role === 'handler') {
@@ -104,6 +107,11 @@ function getDefaultFilters(role: string, empId: number, deptId: number | null) {
   // [2026/06/18] - Lisa - 行政人員代為：不預設承辦人；有部門限本部門、無部門全公司
   // 部門主管 / 行政人員 預設「本部門全部」（行政人員無部門→全公司，deptId 空字串不送）
   if (role === 'dept_manager' || role === 'admin_staff') {
+    // [2026/09/15] - Lisa - 高雄工程部主管部門下拉預設改「全部」（本部門＋台北/台中工程部特殊案件
+    // 合併顯示，見 getCrossDeptSpecialCaseWhere）；選「高雄工程部」才收斂成只看本部門、不含特殊案件
+    if (role === 'dept_manager' && departmentName === '高雄工程部') {
+      return { assigneeId: '', deptId: '' }
+    }
     return { assigneeId: '', deptId: deptId ? String(deptId) : '' }
   }
   // 執行副總 / 系統管理員 預設「全公司」
@@ -121,7 +129,7 @@ export default function CasesPage() {
   const requestSeqRef = useRef(0)
 
   const defaults = session
-    ? getDefaultFilters(session.role, parseInt(session.sub), session.departmentId)
+    ? getDefaultFilters(session.role, parseInt(session.sub), session.departmentId, session.departmentName)
     : { assigneeId: '', deptId: '' }
 
   const [filters, setFilters] = useState({
@@ -277,12 +285,27 @@ export default function CasesPage() {
   }
 
   // Dept options: wide roles see all, others see own dept
+  // [2026/09/15] - Lisa - 高雄工程部主管另加台北/台中工程部選項（僅能查得到該部門的特殊案件，範圍見
+  // lib/caseScope.ts getCrossDeptSpecialCaseWhere）；下拉預設「全部」＝本部門＋特殊案件合併顯示
+  // （deptId 留空，見 getDefaultFilters），選了「高雄工程部」才收斂成只看本部門、不含特殊案件——
+  // 注意這裡要用 session.departmentId 找本部門選項，不能用 defaults.deptId（該值現在預設是空字串）
+  const ownDeptId = session?.departmentId != null ? String(session.departmentId) : ''
+  const ownDept = meta.departments.find(d => String(d.id) === ownDeptId)
+  const isKhhEngManager = session?.role === 'dept_manager' && !!ownDept && KHH_ENG_DEPT_CODES.includes(ownDept.code)
   const deptOptions = isWide
     ? [{ value: '', label: '全部部門' }, ...meta.departments.map(d => ({ value: String(d.id), label: d.name }))]
-    : meta.departments.filter(d => String(d.id) === defaults.deptId).map(d => ({ value: String(d.id), label: d.name }))
+    : isKhhEngManager
+      ? [
+          { value: '', label: '全部' },
+          ...(ownDept ? [{ value: ownDeptId, label: ownDept.name }] : []),
+          ...meta.departments
+            .filter(d => ENG_TAIPEI_DEPT_CODES.includes(d.code))
+            .map(d => ({ value: String(d.id), label: `${d.name}（特殊案件）` })),
+        ]
+      : meta.departments.filter(d => String(d.id) === defaults.deptId).map(d => ({ value: String(d.id), label: d.name }))
 
-  // 部門篩選被限制在單一部門（僅一個選項）時，清單毋需再顯示部門欄；多選項（如執行副總）才保留
-  const showDeptColumn = deptOptions.length > 1
+  // 部門篩選被限制在單一部門（僅一個選項）時，清單毋需再顯示部門欄；多選項（如執行副總、高雄工程部主管）才保留
+  const showDeptColumn = deptOptions.length > 1 || cases.some(c => c.departmentId !== session?.departmentId)
 
   // [2026/08/04] - Lisa - FR-111 承辦人下拉限縮於「當前部門範圍」的人員（原為全公司在職員工）：
   //   - 可跨部門角色（副總／系統管理員／無部門行政人員）：跟隨「部門」篩選；選「全部部門」時才列全公司
@@ -304,6 +327,9 @@ export default function CasesPage() {
     ? [{ value: '', label: '全部承辦人' }, ...scopedEmployees.map(e => ({ value: String(e.id), label: e.name }))]
     : [{ value: '', label: '全部' }, ...scopedEmployees.map(e => ({ value: String(e.id), label: e.name }))]
 
+  // [2026/09/15] - Lisa - 欄位順序調整為：SLA、公證編號、被保險人、預估賠償額、險種、出險地點、
+  // 交辦事項、部門、承辦人、委託日、保險公司(承辦人)、保單號碼、出險日期、目前階段、保代/保經、
+  // 案件狀態、停泊案件狀態、送審標記
   const columns = [
     {
       title: 'SLA', key: 'sla', width: 70, align: 'center' as const, fixed: 'left' as const,
@@ -329,13 +355,12 @@ export default function CasesPage() {
     },
     { title: '被保險人', dataIndex: 'insuredName', key: 'insuredName', width: 150, ellipsis: true },
     {
-      title: '保險公司 (承辦人)', key: 'ic', width: 170, ellipsis: true,
-      render: (_: unknown, r: CaseItem) =>
-        r.insuranceContact ? `${r.insuranceCompanyName} (${r.insuranceContact})` : r.insuranceCompanyName,
-    },
-    {
-      title: '保單號碼', dataIndex: 'policyNumber', key: 'policyNumber', width: 140, ellipsis: true,
-      render: (v: string) => v || '—',
+      // [2026/08/27] - Lisa - 清單欄位由「預估金額」改顯示「預估賠償額」（＝預估金額－自負額）
+      // [2026/08/29] - Lisa - 依實際資料常見長度縮短欄寬（99%案件金額字串≤11碼），極端大額交由 ellipsis 截斷
+      title: '預估賠償額', dataIndex: 'estimatedClaimAmount', key: 'estimatedClaimAmount', width: 100, align: 'right' as const, ellipsis: true,
+      render: (v: number | null) => (
+        <span style={{ whiteSpace: 'nowrap' }}>{v ? `$${v.toLocaleString()}` : '—'}</span>
+      ),
     },
     {
       title: '險種', dataIndex: 'insuranceType', key: 'insuranceType', width: 120, ellipsis: true,
@@ -344,11 +369,6 @@ export default function CasesPage() {
     {
       title: '出險地點', dataIndex: 'incidentLocation', key: 'incidentLocation', width: 140, ellipsis: true,
       render: (v: string) => v || '—',
-    },
-    {
-      // [2026/08/29] - Lisa - 依實際資料常見長度微調欄寬（保代/保經名稱多為4~5字，讓出空間給承辦人欄）
-      title: '保代/保經', dataIndex: 'brokerCompanyName', key: 'broker', width: 110, ellipsis: true,
-      render: (v: string | null) => v ?? '—',
     },
     {
       // [2026/08/28] - Lisa - 交辦事項欄位：無顯示「—」，有則字數多改以滑鼠移至顯示全文（Tooltip）
@@ -361,7 +381,19 @@ export default function CasesPage() {
         ) : '—'
       ),
     },
-    ...(showDeptColumn ? [{ title: '部門', dataIndex: 'departmentName', key: 'dept', width: 100, ellipsis: true }] : []),
+    // [2026/09/15] - Lisa - 高雄工程部主管清單併入台北/台中工程部特殊案件後，非本部門案件另加紅色
+    // 「特殊案件」Tag（沿用案件詳情頁 FR-89 同款樣式），與部門名稱一起提醒這不是自己部門的案件
+    ...(showDeptColumn ? [{
+      title: '部門', dataIndex: 'departmentName', key: 'dept', width: 120, ellipsis: true,
+      render: (v: string, r: CaseItem) => (
+        <Space direction="vertical" size={0}>
+          <span>{v}</span>
+          {r.departmentId !== session?.departmentId && (
+            <Tag color="red" style={{ margin: 0, fontSize: 11, lineHeight: '16px', padding: '0 4px' }}>特殊案件</Tag>
+          )}
+        </Space>
+      ),
+    }] : []),
     {
       // [2026/08/29] - Lisa - 欄寬以顯示5個字為準，多位承辦人時交由 ellipsis + 滑鼠移入顯示全文
       title: '承辦人', key: 'handler', width: 100, ellipsis: true,
@@ -373,6 +405,15 @@ export default function CasesPage() {
     {
       title: '委託日', dataIndex: 'commissionDate', key: 'commissionDate', width: 100,
       render: (v: string) => dayjs(v).format('YYYY/MM/DD'),
+    },
+    {
+      title: '保險公司 (承辦人)', key: 'ic', width: 170, ellipsis: true,
+      render: (_: unknown, r: CaseItem) =>
+        r.insuranceContact ? `${r.insuranceCompanyName} (${r.insuranceContact})` : r.insuranceCompanyName,
+    },
+    {
+      title: '保單號碼', dataIndex: 'policyNumber', key: 'policyNumber', width: 140, ellipsis: true,
+      render: (v: string) => v || '—',
     },
     {
       title: '出險日期', dataIndex: 'incidentDate', key: 'incidentDate', width: 100,
@@ -395,12 +436,9 @@ export default function CasesPage() {
       ),
     },
     {
-      // [2026/08/27] - Lisa - 清單欄位由「預估金額」改顯示「預估賠償額」（＝預估金額－自負額）
-      // [2026/08/29] - Lisa - 依實際資料常見長度縮短欄寬（99%案件金額字串≤11碼），極端大額交由 ellipsis 截斷
-      title: '預估賠償額', dataIndex: 'estimatedClaimAmount', key: 'estimatedClaimAmount', width: 100, align: 'right' as const, ellipsis: true,
-      render: (v: number | null) => (
-        <span style={{ whiteSpace: 'nowrap' }}>{v ? `$${v.toLocaleString()}` : '—'}</span>
-      ),
+      // [2026/08/29] - Lisa - 依實際資料常見長度微調欄寬（保代/保經名稱多為4~5字，讓出空間給承辦人欄）
+      title: '保代/保經', dataIndex: 'brokerCompanyName', key: 'broker', width: 110, ellipsis: true,
+      render: (v: string | null) => v ?? '—',
     },
     {
       // [2026/08/31] - Lisa - 原「狀態」單欄拆為三欄，避免無停泊狀態/送審標記時欄位大片空白
@@ -465,7 +503,14 @@ export default function CasesPage() {
               <div style={{ fontSize: 11, color: '#888', marginBottom: 2, whiteSpace: 'nowrap' }}>
                 可搜尋：公證編號 / 被保險人 / 保險公司 / 保單號碼 / 保代保經
               </div>
+              {/* [2026/09/15] - Lisa - 修正搜尋框「顯示」與 filters.q 不同步的問題：此為不受控（uncontrolled）
+                  元件，sessionStorage 還原篩選狀態時只更新了 filters.q，框內文字沒有跟著變，導致清單被
+                  還原的舊關鍵字悄悄篩選、畫面卻看起來像沒有任何關鍵字（曾造成清單筆數對不起來的誤會）。
+                  用 key 讓還原完成（restored 由 false→true）那一刻強制重新掛載，以 defaultValue 帶入
+                  還原後的值，之後打字仍維持原本不受控行為（僅在 onSearch/清空時才更新 filters.q）。 */}
               <Search
+                key={restored ? 'q-restored' : 'q-initial'}
+                defaultValue={filters.q}
                 placeholder="關鍵字搜尋"
                 onSearch={v => setFilters(f => ({ ...f, q: v, page: 1 }))}
                 onChange={e => !e.target.value && setFilters(f => ({ ...f, q: '', page: 1 }))}
@@ -548,7 +593,7 @@ export default function CasesPage() {
           rowKey="id"
           size="small"
           loading={loading}
-          scroll={{ x: showDeptColumn ? 1840 : 1740 }}
+          scroll={{ x: showDeptColumn ? 1860 : 1740 }}
           sticky={{ offsetHeader }}
           rowClassName={(r: CaseItem) => [
             r.hasRejectedReview ? 'row-rejected' : '',

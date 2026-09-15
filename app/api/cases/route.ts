@@ -17,6 +17,8 @@ import {
 import { getSlaStatus, taipeiNow, daysSinceCommission } from '@/lib/sla'
 // [2026/08/27] - Lisa - 案件管理清單欄位／區間搜尋改用「預估賠償額」（＝預估金額－自負額），與副總門檻同一算法
 import { getClaimAmount } from '@/lib/approvalFlow'
+// [2026/09/15] - Lisa - 高雄工程部主管另可見台北/台中工程部特殊案件（案件清單/匯出比照文件審核 FR-90 範圍）
+import { getCrossDeptSpecialCaseWhere, addAndCondition } from '@/lib/caseScope'
 
 // [2026/07/27] - Lisa - 公證編號排序鍵：取「年度(前2碼)＋後三碼」，公證前綴與區域碼不列入排序
 // 例：NFNS-26K-024 → { year: 26, serial: 24 }；無法解析者以 -1 排在最後
@@ -47,7 +49,9 @@ async function buildCaseScope(session: Awaited<ReturnType<typeof getSession>>) {
   }
 
   // 組長無組別 / 部門主管 / 行政人員：本部門範圍
-  return { departmentId: session.departmentId }
+  const deptScope = { departmentId: session.departmentId }
+  const crossDeptWhere = await getCrossDeptSpecialCaseWhere(session)
+  return crossDeptWhere ? { OR: [deptScope, crossDeptWhere] } : deptScope
 }
 
 export async function GET(req: NextRequest) {
@@ -102,8 +106,18 @@ export async function GET(req: NextRequest) {
 
   const scopeFilter = await buildCaseScope(session)
 
-  const where: Record<string, unknown> = { ...scopeFilter }
+  const where: Record<string, unknown> = {}
+  // [2026/09/15] - Lisa - scopeFilter 若含 OR（高雄工程部主管跨部門特殊案件範圍），不可直接展開到
+  // where 頂層——下方關鍵字搜尋／alert 篩選會覆寫 where.OR / where.AND，見 addAndCondition() 註解
+  if ('OR' in scopeFilter) {
+    addAndCondition(where, scopeFilter as Record<string, unknown>)
+  } else {
+    Object.assign(where, scopeFilter)
+  }
   if (status && status !== 'all') where.status = status
+  // [2026/09/15] - Lisa - 高雄工程部主管下拉預設「全部」（deptId 留空，維持 scopeFilter 的 OR 範圍
+  // 不變）；一旦明確選了「高雄工程部」，此處直接疊加 departmentId，AND 掉 OR 裡的特殊案件分支，
+  // 使清單收斂成只顯示本部門案件——不再需要「own-dept no-op」例外
   if (deptId) where.departmentId = parseInt(deptId)
   if (icId) where.insuranceCompanyId = parseInt(icId)
   if (contactsParam) {
@@ -159,11 +173,13 @@ export async function GET(req: NextRequest) {
 
   // [2026/08/04] - Lisa - 預警篩選（僅未決案件）；以 AND 疊加而非直接指定欄位條件，
   // 因 where.OR 已被關鍵字搜尋佔用、where.commissionDate 可能已被年度/季度篩選佔用
+  // [2026/09/15] - Lisa - 改用 addAndCondition() 疊加而非覆寫 where.AND，避免蓋掉 scopeFilter
+  // 併入的跨部門特殊案件範圍（見 addAndCondition() 註解）
   if (alert === 'sla' || alert === 'statute') {
     where.status = '未決'
     // 以台北曆日為界（startOf('day')），使門檻與清單列的 D+N 判定完全一致
     const now = taipeiNow().startOf('day')
-    where.AND = [
+    addAndCondition(where,
       alert === 'sla'
         // SLA 預警：未完成初步報告且委託滿 14 天（黃/紅燈），或委託已滿 90 天（紅燈）
         // [2026/08/05] - Lisa - 「未完成初報」改用 prelimPendingWhere()（日期／終審核准／案件階段三來源）
@@ -177,7 +193,7 @@ export async function GET(req: NextRequest) {
           }
         // 兩年時效預警：請求權到期日（委託日 +2 年）在 30 天內到期或已逾期
         : { commissionDate: { lte: now.subtract(2, 'year').add(30, 'day').toDate() } },
-    ]
+    )
   }
 
   // [2026/08/04] - Lisa - 退回待修：案件有「未終結(recordStatus=null)且任一關卡退回」的送審紀錄。
@@ -198,10 +214,10 @@ export async function GET(req: NextRequest) {
   // prelim14：委託後 14 天內（期限內）且初報未完成；逾期者屬 SLA 預警的「初報逾期」段
   if (alert === 'prelim14') {
     where.status = '未決'
-    where.AND = [
+    addAndCondition(where,
       prelimPendingWhere(),
       { commissionDate: { gte: taipeiNow().startOf('day').subtract(PRELIM_REMINDER_DAYS, 'day').toDate() } },
-    ]
+    )
   }
 
   // [2026/08/05] - Lisa - SLA 預警四段的完整清單；與儀表板同樣採「每案只歸一段」的優先序
@@ -219,12 +235,12 @@ export async function GET(req: NextRequest) {
     } else {
       where.parkingStatus = null // 停泊案件另段呈現，不計逾期
       if (alert === 'prelim_overdue') {
-        where.AND = [prelimPendingWhere(), { commissionDate: { lt: d14 } }]
+        addAndCondition(where, prelimPendingWhere(), { commissionDate: { lt: d14 } })
       } else if (alert === 'closing60') {
-        where.AND = [closingReportPendingWhere()]
+        addAndCondition(where, closingReportPendingWhere())
         where.NOT = [prelimOverdue]
       } else {
-        where.AND = [{ commissionDate: { lt: d90 } }]
+        addAndCondition(where, { commissionDate: { lt: d90 } })
         where.NOT = [prelimOverdue, closingReportPendingWhere()]
       }
     }
@@ -249,7 +265,7 @@ export async function GET(req: NextRequest) {
   if (alert === 'noteMissing') {
     where.status = '未決'
     const d14 = taipeiNow().startOf('day').subtract(PRELIM_REMINDER_DAYS - 1, 'day').toDate()
-    where.AND = [prelimPendingWhere(), { commissionDate: { lt: d14 } }]
+    addAndCondition(where, prelimPendingWhere(), { commissionDate: { lt: d14 } })
     where.caseNotes = { none: {} }
   }
 
