@@ -36,7 +36,8 @@ export async function GET(req: NextRequest) {
   const reviews = await prisma.caseReview.findMany({
     where,
     include: {
-      case: { select: { caseNumber: true, insuredName: true, departmentId: true } },
+      // [2026/09/16] - Lisa - 文件審核清單新增「預估賠償額」「最終金額」欄位需要 estimatedAmount/deductible/finalAmount
+      case: { select: { caseNumber: true, insuredName: true, departmentId: true, estimatedAmount: true, deductible: true, finalAmount: true } },
       submitter: { select: { name: true } },
       reviewer: { select: { name: true } },
       approver: { select: { name: true } },
@@ -53,6 +54,11 @@ export async function GET(req: NextRequest) {
       caseId: r.caseId,
       caseNumber: r.case.caseNumber,
       insuredName: r.case.insuredName,
+      // [2026/09/16] - Lisa - 文件審核清單新增「預估賠償額」「最終金額」欄位，算法與案件管理清單一致
+      estimatedClaimAmount: r.case.estimatedAmount != null
+        ? getClaimAmount(Number(r.case.estimatedAmount), r.case.deductible != null ? Number(r.case.deductible) : null)
+        : null,
+      finalAmount: r.case.finalAmount != null ? Number(r.case.finalAmount) : null,
       documentType: r.documentType,
       checkedDocuments: r.checkedDocuments ? tryParseJson(r.checkedDocuments) : [],
       submittedBy: r.submittedBy,

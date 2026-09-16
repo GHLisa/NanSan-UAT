@@ -87,6 +87,8 @@ interface ReviewItem {
   caseId: number
   caseNumber: string
   insuredName: string
+  estimatedClaimAmount: number | null // [2026/09/16] - Lisa - 文件審核清單新增「預估賠償額」欄位
+  finalAmount: number | null // [2026/09/16] - Lisa - 文件審核清單新增「最終金額」欄位
   documentType: string
   checkedDocuments: string[]
   submittedBy: number
@@ -265,6 +267,16 @@ export default function ReviewsPage() {
           : <Text type="secondary">—</Text>,
     },
     {
+      // [2026/09/16] - Lisa - 文件審核清單新增「預估賠償額」欄位，算法與案件管理清單一致
+      title: '預估賠償額', dataIndex: 'estimatedClaimAmount', key: 'estimatedClaimAmount', width: 100, align: 'right' as const,
+      render: (v: number | null) => v != null ? `$${v.toLocaleString()}` : '—',
+    },
+    {
+      // [2026/09/16] - Lisa - 文件審核清單新增「最終金額」欄位
+      title: '最終金額', dataIndex: 'finalAmount', key: 'finalAmount', width: 100, align: 'right' as const,
+      render: (v: number | null) => v != null ? `$${v.toLocaleString()}` : '—',
+    },
+    {
       title: '審核關卡', key: 'gate', width: 260,
       render: (_: unknown, r: ReviewItem) => <ReviewGate r={r} />,
     },
@@ -290,7 +302,7 @@ export default function ReviewsPage() {
           rowKey="id"
           size="small"
           loading={loading && activeTab === 'pending'}
-          scroll={{ x: 970 }}
+          scroll={{ x: 1170 }}
           sticky={{ offsetHeader: 168 }}
           pagination={{ pageSize: 15, showTotal: n => `共 ${n} 筆` }}
         />
@@ -306,7 +318,7 @@ export default function ReviewsPage() {
           rowKey="id"
           size="small"
           loading={loading && activeTab === 'pendingVP'}
-          scroll={{ x: 970 }}
+          scroll={{ x: 1170 }}
           sticky={{ offsetHeader: 168 }}
           pagination={{ pageSize: 15, showTotal: n => `共 ${n} 筆` }}
         />
