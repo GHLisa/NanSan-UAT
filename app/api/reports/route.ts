@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
-import { splitFeeByRatio } from '@/lib/feeSplit'
+import { getFeeSplit } from '@/lib/feeSplit'
 import { prisma } from '@/lib/prisma'
 import dayjs from 'dayjs'
 
@@ -68,7 +68,8 @@ export async function GET(req: NextRequest) {
       status: true,
       actualFee: true,
       estimatedFee: true,
-      assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
+      feeAllocationMode: true,
+      assignments: { select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true } },
     },
   })
 
@@ -83,7 +84,10 @@ export async function GET(req: NextRequest) {
   for (const c of cases) {
     // 公證費依承辦比例分攤（非主辦捨去、主辦吸收剩餘）：先算全案份額，再分配給各承辦人
     const feeForCase = c.status === '未決' ? (c.estimatedFee ?? 0) : c.status === '已決' ? (c.actualFee ?? 0) : 0
-    const amts = splitFeeByRatio(feeForCase, c.assignments, a => a.contributionRatio ?? 0, a => a.role === '主辦')
+    // [2026/09/18] - Lisa - FR-119：已決案 feeAllocationMode='AMOUNT' 者改直接加總 fixedAmount；
+    // 未決案 estimatedFee 一律仍依比例分攤（分配方式僅在結案時才會決定）
+    const effMode = c.status === '已決' ? c.feeAllocationMode : 'RATIO'
+    const amts = getFeeSplit(feeForCase, c.assignments, a => a.contributionRatio ?? 0, a => a.role === '主辦', effMode, a => a.fixedAmount)
     c.assignments.forEach((a, i) => {
       if (!scopedEmpIds.has(a.employeeId)) return
       let row = perfMap.get(a.employeeId)

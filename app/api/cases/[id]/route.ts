@@ -77,6 +77,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       assignments: c.assignments.map((a) => ({
         id: a.id, employeeId: a.employeeId, employeeName: a.employee.name,
         role: a.role, contributionRatio: a.contributionRatio,
+        fixedAmount: a.fixedAmount, // [2026/09/18] - Lisa - FR-119：分配方式為 AMOUNT 時的分潤金額
       })),
       progress: c.progress.map((p) => ({
         id: p.id, stage: p.stage, progressDate: p.progressDate.toISOString(),
@@ -409,6 +410,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   let assigneesChanged = false
   // [2026/08/19] - Lisa - 承辦人修改記錄需顯示變更前後名單（含姓名／角色／比例），不再只顯示「已變更」
   let assigneeLogValues: { oldValue: string; newValue: string } | null = null
+  // [2026/09/18] - Lisa - FR-119：名單異動時依 employeeId 延續既有 fixedAmount（不清空、不重設分配方式）
+  let fixedAmountByEmpId = new Map<number, number | null>()
   if (assignees) {
     const total = assignees.reduce((s, a) => s + (a.contributionRatio ?? 0), 0)
     if (Math.abs(total - 1.0) > 0.01) {
@@ -424,11 +427,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     // [2026/07/08] - Lisa - 與現有承辦人比對（不分順序）：未變更則不刪改、不寫 log，避免每次儲存都產生「承辦人已變更」
     const existingAssign = await prisma.caseAssignment.findMany({
       where: { caseId: id },
-      select: { employeeId: true, role: true, contributionRatio: true },
+      select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true },
     })
     const normAssign = (list: { employeeId: number; role: string; contributionRatio: number }[]) =>
       list.map((a) => `${a.employeeId}|${a.role}|${a.contributionRatio}`).sort().join(';')
     assigneesChanged = normAssign(existingAssign) !== normAssign(assignees)
+    fixedAmountByEmpId = new Map(existingAssign.map((a) => [a.employeeId, a.fixedAmount]))
 
     if (assigneesChanged) {
       const empIds = [...new Set([...existingAssign.map((a) => a.employeeId), ...assignees.map((a) => a.employeeId)])]
@@ -549,6 +553,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       })
     }
     if (assignees && assigneesChanged) {
+      // [2026/09/18] - Lisa - FR-119：承辦人名單異動時保留原有 fixedAmount（依 employeeId 對應舊資料延續），
+      // 不清空、也不重設分配方式——名單異動只覆寫比例/角色，既有金額輸入資訊維持不動
       await tx.caseAssignment.deleteMany({ where: { caseId: id } })
       await tx.caseAssignment.createMany({
         data: assignees.map((a) => ({
@@ -556,6 +562,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
           employeeId: a.employeeId,
           role: a.role,
           contributionRatio: a.contributionRatio,
+          fixedAmount: fixedAmountByEmpId.get(a.employeeId) ?? null,
         })),
       })
       await tx.caseLog.create({

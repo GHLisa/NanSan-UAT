@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, JWTPayload } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { splitFeeByRatio } from '@/lib/feeSplit'
+import { splitFeeByRatio, getFeeSplit } from '@/lib/feeSplit'
 import { getPrepaidTotals, getPrepayEventsInRange } from '@/lib/feeRecognition'
 import ExcelJS from 'exceljs'
 import dayjs from 'dayjs'
@@ -87,7 +87,8 @@ async function calcActuals(empIds: number[], years: number[], quarterEndMonth = 
       id: true,
       closeDate: true,
       actualFee: true,
-      assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
+      feeAllocationMode: true,
+      assignments: { select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true } },
     },
   })
 
@@ -102,7 +103,8 @@ async function calcActuals(empIds: number[], years: number[], quarterEndMonth = 
     if (!yearSet.has(year)) continue
     if (dayjs(c.closeDate).month() + 1 > quarterEndMonth) continue
     const netFee = (c.actualFee ?? 0) - (prepaidTotals.get(c.id) ?? 0)
-    const amts = splitFeeByRatio(netFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
+    // [2026/09/18] - Lisa - FR-119：feeAllocationMode='AMOUNT' 者改直接加總 fixedAmount
+    const amts = getFeeSplit(netFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦', c.feeAllocationMode, a => a.fixedAmount)
     c.assignments.forEach((a, i) => {
       if (!empSet.has(a.employeeId)) return
       const key = `${a.employeeId}-${year}`

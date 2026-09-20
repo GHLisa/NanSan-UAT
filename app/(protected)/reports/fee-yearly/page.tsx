@@ -16,10 +16,25 @@ interface Employee { id: number; name: string }
 interface Department { id: number; name: string }
 
 interface ReportData {
-  rows: Record<string, number | string>[]
+  rows: Record<string, number | string | null>[]
   employees: Employee[]
   departments: Department[]
   deptName: string
+}
+
+// [2026/09/21] - Lisa - 跨部門共辦提示：main 為「案件所屬部門」全額（原欄位，不變），
+// handlerShare 為「本部門承辦人（依主要角色歸戶）」實際份額；僅在兩者不同時多一行紅字數字，
+// 說明文字統一移至表格下方註解（見 <HandlerDeptNote/>），儲存格內僅標示數字本身。
+// 相同（無跨部門共辦影響）或不適用（handler 角色，值為 null）時維持單行原樣。
+function FeeCell({ main, handlerShare }: { main: number; handlerShare: number | string | null | undefined }) {
+  const showNote = typeof handlerShare === 'number' && handlerShare !== main
+  return (
+    <div>
+      <div>{fmt(main)}</div>
+      {/* [2026/09/21] - Lisa - 字級與上方主數字一致，方便直向比對位置差額 */}
+      {showNote && <div style={{ color: '#cf1322' }}>{fmt(handlerShare as number)}</div>}
+    </div>
+  )
 }
 
 export default function FeeYearlyReportPage() {
@@ -70,19 +85,25 @@ export default function FeeYearlyReportPage() {
   // 合計列
   const sumRow = useMemo(() => {
     if (!data) return null
-    const s: Record<string, number> = { total: 0, closedCnt: 0, openCnt: 0, closedFee: 0, openFee: 0 }
+    const s: Record<string, number> = { total: 0, closedCnt: 0, openCnt: 0, closedFee: 0, openFee: 0, closedFeeByHandlerDept: 0, openFeeByHandlerDept: 0 }
     for (const emp of data.employees) s[`e${emp.id}`] = 0
+    // [2026/09/21] - Lisa - 任一年度列的跨部門份額為 null（不適用）時，合計亦視為不適用，不加註
+    let hasHandlerDept = data.rows.length > 0
     for (const r of data.rows) {
       s.total     += (r.total     as number) || 0
       s.closedCnt += (r.closedCnt as number) || 0
       s.openCnt   += (r.openCnt   as number) || 0
       s.closedFee += (r.closedFee as number) || 0
       s.openFee   += (r.openFee   as number) || 0
+      if (typeof r.closedFeeByHandlerDept === 'number') s.closedFeeByHandlerDept += r.closedFeeByHandlerDept
+      else hasHandlerDept = false
+      if (typeof r.openFeeByHandlerDept === 'number') s.openFeeByHandlerDept += r.openFeeByHandlerDept
+      else hasHandlerDept = false
       for (const emp of data.employees) {
         s[`e${emp.id}`] += (r[`e${emp.id}`] as number) || 0
       }
     }
-    return s
+    return { ...s, hasHandlerDept } as Record<string, number> & { hasHandlerDept: boolean }
   }, [data])
 
   const fixedCols = [
@@ -90,9 +111,25 @@ export default function FeeYearlyReportPage() {
     { title: '接案量',   dataIndex: 'total',     key: 'total',     width: 70,  align: 'center' as const, render: (v: number) => fmtN(v) },
     { title: '已決件數', dataIndex: 'closedCnt', key: 'closedCnt', width: 76,  align: 'center' as const, render: (v: number) => fmtN(v) },
     { title: '未決件數', dataIndex: 'openCnt',   key: 'openCnt',   width: 76,  align: 'center' as const, render: (v: number) => fmtN(v) },
-    { title: '已決公證費',          dataIndex: 'closedFee', key: 'closedFee', width: 120, align: 'right' as const, render: (v: number) => fmt(v) },
-    { title: '未決公證費（預估）',  dataIndex: 'openFee',   key: 'openFee',   width: 140, align: 'right' as const, render: (v: number) => fmt(v) },
+    {
+      title: '已決公證費', dataIndex: 'closedFee', key: 'closedFee', width: 120, align: 'right' as const,
+      render: (v: number, record: Record<string, unknown>) => (
+        <FeeCell main={v} handlerShare={record.closedFeeByHandlerDept as number | null} />
+      ),
+    },
+    {
+      title: '未決公證費（預估）', dataIndex: 'openFee', key: 'openFee', width: 140, align: 'right' as const,
+      render: (v: number, record: Record<string, unknown>) => (
+        <FeeCell main={v} handlerShare={record.openFeeByHandlerDept as number | null} />
+      ),
+    },
   ]
+
+  // [2026/09/21] - Lisa - 表格下方紅字註解：只要有任一年度列（或合計）出現跨部門共辦份額，就顯示說明
+  const hasAnyHandlerDeptNote = !!data?.rows.some(r =>
+    (typeof r.closedFeeByHandlerDept === 'number' && r.closedFeeByHandlerDept !== r.closedFee) ||
+    (typeof r.openFeeByHandlerDept === 'number' && r.openFeeByHandlerDept !== r.openFee),
+  )
 
   const empCols = (data?.employees ?? []).map(emp => ({
     title: emp.name,
@@ -171,8 +208,18 @@ export default function FeeYearlyReportPage() {
                     <Table.Summary.Cell index={1} align="center"><Text strong>{fmtN(sumRow.total)}</Text></Table.Summary.Cell>
                     <Table.Summary.Cell index={2} align="center"><Text strong>{fmtN(sumRow.closedCnt)}</Text></Table.Summary.Cell>
                     <Table.Summary.Cell index={3} align="center"><Text strong>{fmtN(sumRow.openCnt)}</Text></Table.Summary.Cell>
-                    <Table.Summary.Cell index={4} align="right"><Text strong>{fmt(sumRow.closedFee)}</Text></Table.Summary.Cell>
-                    <Table.Summary.Cell index={5} align="right"><Text strong>{fmt(sumRow.openFee)}</Text></Table.Summary.Cell>
+                    <Table.Summary.Cell index={4} align="right">
+                      <Text strong>{fmt(sumRow.closedFee)}</Text>
+                      {sumRow.hasHandlerDept && sumRow.closedFeeByHandlerDept !== sumRow.closedFee && (
+                        <div><Text strong style={{ color: '#cf1322' }}>{fmt(sumRow.closedFeeByHandlerDept)}</Text></div>
+                      )}
+                    </Table.Summary.Cell>
+                    <Table.Summary.Cell index={5} align="right">
+                      <Text strong>{fmt(sumRow.openFee)}</Text>
+                      {sumRow.hasHandlerDept && sumRow.openFeeByHandlerDept !== sumRow.openFee && (
+                        <div><Text strong style={{ color: '#cf1322' }}>{fmt(sumRow.openFeeByHandlerDept)}</Text></div>
+                      )}
+                    </Table.Summary.Cell>
                     {role !== 'handler' && (data?.employees ?? []).map((emp, i) => (
                       <Table.Summary.Cell key={emp.id} index={6 + i} align="center">
                         <Text strong>{fmtN(sumRow[`e${emp.id}`])}</Text>
@@ -182,7 +229,13 @@ export default function FeeYearlyReportPage() {
                 </Table.Summary>
               ) : undefined}
             />
-          ) : (
+          ) : null}
+          {hasAnyHandlerDeptNote && (
+            <div style={{ marginTop: 8, fontSize: 12, color: '#cf1322' }}>
+              紅字表示跨部門共辦，{data?.deptName}承辦人份額
+            </div>
+          )}
+          {!(filterDeptId && data && data.rows.length > 0) && (
             <Text type="secondary">
               {filterDeptId ? '該部門尚無案件資料。' : '請先選擇部門以顯示統計資料。'}
             </Text>

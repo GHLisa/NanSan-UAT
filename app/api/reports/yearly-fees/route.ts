@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession, canViewAllDepts } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { caseReportYear } from '@/lib/caseYear'
+// [2026/09/21] - Lisa - 跨部門共辦提示：本表「已決/未決公證費」欄位維持依「案件所屬部門」全額計算不變；
+// 另外加算「本部門承辦人（依主要角色歸戶）」實際份額，僅在兩者不同（有跨部門共辦影響）時於畫面加註
+import { getFeeSplit } from '@/lib/feeSplit'
 
 // [2026/07/02] - Lisa - 開放行政人員查看：各年度已決&未決公證費（全公司範圍）
 const ALLOWED_ROLES = ['team_lead', 'dept_manager', 'vp', 'sysadmin', 'admin_staff']
@@ -22,7 +25,7 @@ export async function GET(req: NextRequest) {
   const [departments, employees, employeeRoles] = await Promise.all([
     prisma.department.findMany({ select: { id: true, name: true }, orderBy: { id: 'asc' } }),
     prisma.employee.findMany({ where: { isActive: true }, select: { id: true, name: true }, orderBy: { id: 'asc' } }),
-    prisma.employeeRole.findMany({ select: { employeeId: true, departmentId: true } }),
+    prisma.employeeRole.findMany({ select: { employeeId: true, departmentId: true, isPrimary: true } }),
   ])
 
   const empMap = new Map(employees.map(e => [e.id, e.name]))
@@ -81,13 +84,51 @@ export async function GET(req: NextRequest) {
   // ── 收集年份（以公證編號年度為準，無法解析時回退委託日期年度）───────────
   const years = Array.from(new Set(cases.map(c => caseReportYear(c.caseNumber, c.commissionDate)))).sort((a, b) => b - a)
 
+  // [2026/09/21] - Lisa - 跨部門共辦份額（比照 case-detail 報表 scopeMode='share' 的認定方式）：
+  // 「本部門承辦人」＝主要角色所屬部門為 deptId 者；案件範圍不限於案件所屬部門，只要本部門人員
+  // 有參與（主辦／協辦）即納入，再用 getFeeSplit 依比例／FR-119固定金額取該人員自己的份額加總。
+  // handler 角色本就只看自己案件，無跨部門加註意義，不計算。
+  const handlerYearFee = new Map<number, { closedFee: number; openFee: number }>()
+  if (role !== 'handler') {
+    const deptPrimaryEmpIds = Array.from(new Set(
+      employeeRoles.filter(r => r.departmentId === deptId && r.isPrimary).map(r => r.employeeId),
+    ))
+    if (deptPrimaryEmpIds.length > 0) {
+      const handlerCases = await prisma.case.findMany({
+        where: { assignments: { some: { employeeId: { in: deptPrimaryEmpIds } } }, status: { in: ['已決', '未決'] } },
+        select: {
+          caseNumber: true, commissionDate: true, status: true,
+          actualFee: true, estimatedFee: true, feeAllocationMode: true,
+          assignments: { select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true } },
+        },
+      })
+      const deptPrimaryEmpIdSet = new Set(deptPrimaryEmpIds)
+      for (const c of handlerCases) {
+        const year = caseReportYear(c.caseNumber, c.commissionDate)
+        const amount = c.status === '已決' ? (c.actualFee ?? 0) : (c.estimatedFee ?? 0)
+        const shares = getFeeSplit(
+          amount, c.assignments,
+          a => a.contributionRatio ?? 0, a => a.role === '主辦',
+          c.feeAllocationMode, a => a.fixedAmount,
+        )
+        let deptShare = 0
+        c.assignments.forEach((a, i) => { if (deptPrimaryEmpIdSet.has(a.employeeId)) deptShare += shares[i] })
+        const entry = handlerYearFee.get(year) ?? { closedFee: 0, openFee: 0 }
+        if (c.status === '已決') entry.closedFee += deptShare
+        else entry.openFee += deptShare
+        handlerYearFee.set(year, entry)
+      }
+    }
+  }
+
   // ── 建立 pivot rows ────────────────────────────────────────────────────
   const rows = years.map(year => {
     const yearCases = cases.filter(c => caseReportYear(c.caseNumber, c.commissionDate) === year)
     const closed = yearCases.filter(c => c.status === '已決')
     const open   = yearCases.filter(c => c.status === '未決')
+    const handlerShare = handlerYearFee.get(year)
 
-    const row: Record<string, number | string> = {
+    const row: Record<string, number | string | null> = {
       year: `${year} 年`,
       _year: year,
       total:     yearCases.length,
@@ -95,6 +136,9 @@ export async function GET(req: NextRequest) {
       openCnt:   open.length,
       closedFee: closed.reduce((s, c) => s + (c.actualFee    ?? 0), 0),
       openFee:   open.reduce  ((s, c) => s + (c.estimatedFee ?? 0), 0),
+      // [2026/09/21] - Lisa - null＝不適用（role==='handler' 或本部門無主要角色人員），前端不加註
+      closedFeeByHandlerDept: handlerShare ? handlerShare.closedFee : (role === 'handler' ? null : 0),
+      openFeeByHandlerDept:   handlerShare ? handlerShare.openFee   : (role === 'handler' ? null : 0),
     }
 
     for (const emp of deptEmployees) {

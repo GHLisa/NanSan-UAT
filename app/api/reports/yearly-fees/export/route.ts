@@ -5,6 +5,10 @@ import { caseReportYear } from '@/lib/caseYear'
 import ExcelJS from 'exceljs'
 // [2026/08/05] - Lisa - 檔名日期取台北時間（伺服器 UTC 於台北 00:00~08:00 會標成前一日）
 import { taipeiNow } from '@/lib/sla'
+// [2026/09/21] - Lisa - 跨部門共辦提示（比照畫面 /api/reports/yearly-fees 的做法）：已決/未決公證費
+// 欄位仍為「案件所屬部門」全額（不變），另計算「本部門承辦人（依主要角色歸戶）」份額，
+// 兩者不同時於儲存格內多一行紅字數字，表格下方加一行紅字說明
+import { getFeeSplit } from '@/lib/feeSplit'
 
 export const runtime = 'nodejs'
 
@@ -34,7 +38,7 @@ export async function GET(req: NextRequest) {
   const [departments, employees, employeeRoles] = await Promise.all([
     prisma.department.findMany({ select: { id: true, name: true }, orderBy: { id: 'asc' } }),
     prisma.employee.findMany({ where: { isActive: true }, select: { id: true, name: true }, orderBy: { id: 'asc' } }),
-    prisma.employeeRole.findMany({ select: { employeeId: true, departmentId: true } }),
+    prisma.employeeRole.findMany({ select: { employeeId: true, departmentId: true, isPrimary: true } }),
   ])
   const empMap = new Map(employees.map(e => [e.id, e.name]))
 
@@ -64,6 +68,40 @@ export async function GET(req: NextRequest) {
   // 年度以公證編號為準（無法解析時回退委託日期年度）
   const years = Array.from(new Set(cases.map(c => caseReportYear(c.caseNumber, c.commissionDate)))).sort((a, b) => b - a)
 
+  // [2026/09/21] - Lisa - 跨部門共辦份額（比照畫面 /api/reports/yearly-fees 的做法）：
+  // 「本部門承辦人」＝主要角色所屬部門為 deptId 者；案件範圍不限於案件所屬部門，只要本部門人員
+  // 有參與（主辦／協辦）即納入，再用 getFeeSplit 依比例／FR-119固定金額取該人員自己的份額加總。
+  const handlerYearFee = new Map<number, { closedFee: number; openFee: number }>()
+  const deptPrimaryEmpIds = Array.from(new Set(
+    employeeRoles.filter(r => r.departmentId === deptId && r.isPrimary).map(r => r.employeeId),
+  ))
+  if (deptPrimaryEmpIds.length > 0) {
+    const handlerCases = await prisma.case.findMany({
+      where: { assignments: { some: { employeeId: { in: deptPrimaryEmpIds } } }, status: { in: ['已決', '未決'] } },
+      select: {
+        caseNumber: true, commissionDate: true, status: true,
+        actualFee: true, estimatedFee: true, feeAllocationMode: true,
+        assignments: { select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true } },
+      },
+    })
+    const deptPrimaryEmpIdSet = new Set(deptPrimaryEmpIds)
+    for (const c of handlerCases) {
+      const year = caseReportYear(c.caseNumber, c.commissionDate)
+      const amount = c.status === '已決' ? (c.actualFee ?? 0) : (c.estimatedFee ?? 0)
+      const shares = getFeeSplit(
+        amount, c.assignments,
+        a => a.contributionRatio ?? 0, a => a.role === '主辦',
+        c.feeAllocationMode, a => a.fixedAmount,
+      )
+      let deptShare = 0
+      c.assignments.forEach((a, i) => { if (deptPrimaryEmpIdSet.has(a.employeeId)) deptShare += shares[i] })
+      const entry = handlerYearFee.get(year) ?? { closedFee: 0, openFee: 0 }
+      if (c.status === '已決') entry.closedFee += deptShare
+      else entry.openFee += deptShare
+      handlerYearFee.set(year, entry)
+    }
+  }
+
   const rows = years.map(year => {
     const yearCases = cases.filter(c => caseReportYear(c.caseNumber, c.commissionDate) === year)
     const closed = yearCases.filter(c => c.status === '已決')
@@ -73,6 +111,7 @@ export async function GET(req: NextRequest) {
       // [2026/07/14] - Lisa - 接案件數只計主辦，協辦不列入計算
       empCounts.set(emp.id, yearCases.filter(c => c.assignments.some(a => a.employeeId === emp.id && a.role === '主辦')).length)
     }
+    const handlerShare = handlerYearFee.get(year)
     return {
       year: `${year} 年`,
       total: yearCases.length,
@@ -80,11 +119,15 @@ export async function GET(req: NextRequest) {
       openCnt: open.length,
       closedFee: closed.reduce((s, c) => s + (c.actualFee ?? 0), 0),
       openFee: open.reduce((s, c) => s + (c.estimatedFee ?? 0), 0),
+      closedFeeByHandlerDept: handlerShare ? handlerShare.closedFee : 0,
+      openFeeByHandlerDept: handlerShare ? handlerShare.openFee : 0,
       empCounts,
     }
   })
 
   const deptName = departments.find(d => d.id === deptId)?.name ?? ''
+  // [2026/09/21] - Lisa - 有本部門主要角色人員時才有比較基準；無人員時份額恆為 0，不應誤判為差異
+  const hasHandlerDeptData = deptPrimaryEmpIds.length > 0
 
   // ── 建立 Excel ─────────────────────────────────────────────────────
   const wb = new ExcelJS.Workbook()
@@ -127,7 +170,33 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // [2026/09/21] - Lisa - 跨部門共辦紅字份額：與案件所屬部門全額不同時，儲存格內用 richText 多一行紅字
+  // 數字（不另加文字說明，說明統一放在表格下方），字級/字重與主數字一致，方便直向比對差額。
+  const RED = 'FFCF1322'
+  let hasAnyHandlerDeptNote = false
+  function setFeeCell(cell: ExcelJS.Cell, row: ExcelJS.Row, main: number, share: number, bold: boolean) {
+    const showNote = hasHandlerDeptData && share !== main
+    if (!showNote) {
+      cell.value = main || null
+      cell.numFmt = '#,##0'
+      cell.alignment = { vertical: 'middle', horizontal: 'right' }
+      return
+    }
+    hasAnyHandlerDeptNote = true
+    cell.value = {
+      richText: [
+        { font: { bold }, text: (main || 0).toLocaleString() },
+        { font: { bold }, text: '\n' },
+        { font: { bold, color: { argb: RED } }, text: (share || 0).toLocaleString() },
+      ],
+    }
+    cell.alignment = { vertical: 'middle', horizontal: 'right', wrapText: true }
+    row.height = Math.max(row.height ?? 15, 30)
+  }
+
   // 資料列（自第 4 列起）
+  // [2026/09/21] - Lisa - 注意順序：row.alignment（列層級）會覆寫該列所有儲存格的 alignment，
+  // 故須先設定列層級對齊，再呼叫 setFeeCell() 針對第 5/6 欄覆寫成靠右／wrapText，順序不可顛倒
   rows.forEach((row, i) => {
     const r = i + 4
     const dr = ws.getRow(r)
@@ -135,18 +204,14 @@ export async function GET(req: NextRequest) {
     dr.getCell(2).value = row.total || null
     dr.getCell(3).value = row.closedCnt || null
     dr.getCell(4).value = row.openCnt || null
-    dr.getCell(5).value = row.closedFee || null
-    dr.getCell(6).value = row.openFee || null
     deptEmployees.forEach((emp, j) => {
       const v = row.empCounts.get(emp.id) ?? 0
       dr.getCell(FIXED + 1 + j).value = v || null
     })
     dr.alignment = { vertical: 'middle', horizontal: 'center' }
     dr.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }
-    for (const col of [5, 6]) {
-      dr.getCell(col).numFmt = '#,##0'
-      dr.getCell(col).alignment = { vertical: 'middle', horizontal: 'right' }
-    }
+    setFeeCell(dr.getCell(5), dr, row.closedFee, row.closedFeeByHandlerDept, false)
+    setFeeCell(dr.getCell(6), dr, row.openFee, row.openFeeByHandlerDept, false)
     for (let col = 1; col <= colCount; col++) dr.getCell(col).border = THIN_BORDER
   })
 
@@ -157,21 +222,38 @@ export async function GET(req: NextRequest) {
   sr.getCell(2).value = rows.reduce((s, r) => s + r.total, 0) || null
   sr.getCell(3).value = rows.reduce((s, r) => s + r.closedCnt, 0) || null
   sr.getCell(4).value = rows.reduce((s, r) => s + r.openCnt, 0) || null
-  sr.getCell(5).value = rows.reduce((s, r) => s + r.closedFee, 0) || null
-  sr.getCell(6).value = rows.reduce((s, r) => s + r.openFee, 0) || null
   deptEmployees.forEach((emp, j) => {
     sr.getCell(FIXED + 1 + j).value = rows.reduce((s, r) => s + (r.empCounts.get(emp.id) ?? 0), 0) || null
   })
   sr.font = { bold: true }
   sr.alignment = { vertical: 'middle', horizontal: 'center' }
   sr.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }
-  for (const col of [5, 6]) {
-    sr.getCell(col).numFmt = '#,##0'
-    sr.getCell(col).alignment = { vertical: 'middle', horizontal: 'right' }
-  }
+  setFeeCell(
+    sr.getCell(5), sr,
+    rows.reduce((s, r) => s + r.closedFee, 0),
+    rows.reduce((s, r) => s + r.closedFeeByHandlerDept, 0),
+    true,
+  )
+  setFeeCell(
+    sr.getCell(6), sr,
+    rows.reduce((s, r) => s + r.openFee, 0),
+    rows.reduce((s, r) => s + r.openFeeByHandlerDept, 0),
+    true,
+  )
   for (let col = 1; col <= colCount; col++) {
     sr.getCell(col).fill = SUM_FILL
     sr.getCell(col).border = THIN_BORDER
+  }
+
+  // [2026/09/21] - Lisa - 表格下方紅字說明列：只要有任一年度列或合計出現跨部門共辦份額差異就顯示
+  if (hasAnyHandlerDeptNote) {
+    const noteR = sumR + 1
+    ws.mergeCells(noteR, 1, noteR, colCount)
+    const noteCell = ws.getCell(noteR, 1)
+    noteCell.value = `紅字表示跨部門共辦，${deptName}承辦人份額`
+    noteCell.font = { color: { argb: RED }, size: 10, italic: true }
+    noteCell.alignment = { vertical: 'middle', horizontal: 'left' }
+    ws.getRow(noteR).height = 18
   }
 
   ws.views = [{ state: 'frozen', xSplit: 1, ySplit: 3 }]

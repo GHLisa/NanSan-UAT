@@ -19,6 +19,10 @@ import { getSlaStatus, taipeiNow, daysSinceCommission } from '@/lib/sla'
 import { getClaimAmount } from '@/lib/approvalFlow'
 // [2026/09/15] - Lisa - 高雄工程部主管另可見台北/台中工程部特殊案件（案件清單/匯出比照文件審核 FR-90 範圍）
 import { getCrossDeptSpecialCaseWhere, addAndCondition } from '@/lib/caseScope'
+// [2026/09/21] - Lisa - 「案件查詢」統計卡新增「本部門承辦人公證費合計」：跨部門共辦案件（案件所屬部門
+// 與承辦人所屬部門不同）時，公證費合計卡片仍以「案件所屬部門」全額計入；此新數字改以「承辦人所屬部門」
+// 依比例/固定金額拆分後歸戶，供選定部門時對照參考（不影響原公證費合計卡片與案件清單範圍）
+import { getFeeSplit } from '@/lib/feeSplit'
 
 // [2026/07/27] - Lisa - 公證編號排序鍵：取「年度(前2碼)＋後三碼」，公證前綴與區域碼不列入排序
 // 例：NFNS-26K-024 → { year: 26, serial: 24 }；無法解析者以 -1 排在最後
@@ -388,6 +392,75 @@ export async function GET(req: NextRequest) {
         })
       : Promise.resolve(null),
   ])
+
+  // [2026/09/21] - Lisa - 「本部門承辦人公證費合計」：僅在明確選擇部門（deptId）時計算，
+  // 全部部門時無比較基準。範圍改為「該部門人員（主要角色）有參與之案件」（不限案件所屬部門，
+  // 比照 case-detail 報表 scopeMode='share' 的認定方式），再用 getFeeSplit 取該部門人員的份額加總——
+  // 案件清單／原「公證費合計」卡片的範圍與計算方式維持不變。
+  let summaryByHandlerDept: number | null = null
+  if (wantSummary && deptId) {
+    const deptEmpIds = [...new Set(
+      (await prisma.employeeRole.findMany({
+        where: { departmentId: parseInt(deptId), isPrimary: true },
+        select: { employeeId: true },
+      })).map((r) => r.employeeId),
+    )]
+    if (deptEmpIds.length > 0) {
+      const handlerWhere: Record<string, unknown> = { ...where }
+      delete handlerWhere.departmentId
+      const assignCond = { some: { employeeId: { in: deptEmpIds } } }
+      if (handlerWhere.assignments) {
+        handlerWhere.AND = [
+          ...(Array.isArray(handlerWhere.AND) ? handlerWhere.AND as unknown[] : handlerWhere.AND ? [handlerWhere.AND] : []),
+          { assignments: handlerWhere.assignments },
+        ]
+      }
+      handlerWhere.assignments = assignCond
+
+      const handlerAllMatched = await prisma.case.findMany({
+        where: handlerWhere,
+        select: { id: true, estimatedAmount: true, deductible: true },
+      })
+      let handlerMatched = handlerAllMatched
+      if (estimatedClaimAmountMin || estimatedClaimAmountMax) {
+        const minV = estimatedClaimAmountMin ? Math.round(parseFloat(estimatedClaimAmountMin) * 10000) : null
+        const maxV = estimatedClaimAmountMax ? Math.round(parseFloat(estimatedClaimAmountMax) * 10000) : null
+        handlerMatched = handlerMatched.filter((c) => {
+          const claim = getClaimAmount(
+            c.estimatedAmount != null ? Number(c.estimatedAmount) : null,
+            c.deductible != null ? Number(c.deductible) : null,
+          )
+          if (minV != null && claim < minV) return false
+          if (maxV != null && claim > maxV) return false
+          return true
+        })
+      }
+
+      const handlerCases = await prisma.case.findMany({
+        where: { id: { in: handlerMatched.map((c) => c.id) } },
+        select: {
+          actualFee: true,
+          feeAllocationMode: true,
+          assignments: { select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true } },
+        },
+      })
+      const deptEmpIdSet = new Set(deptEmpIds)
+      summaryByHandlerDept = handlerCases.reduce((sum, c) => {
+        const shares = getFeeSplit(
+          c.actualFee ?? 0,
+          c.assignments,
+          (a) => a.contributionRatio ?? 0,
+          (a) => a.role === '主辦',
+          c.feeAllocationMode,
+          (a) => a.fixedAmount,
+        )
+        c.assignments.forEach((a, i) => { if (deptEmpIdSet.has(a.employeeId)) sum += shares[i] })
+        return sum
+      }, 0)
+    } else {
+      summaryByHandlerDept = 0
+    }
+  }
   // in 查詢不保證順序，依全域排序結果還原「當頁」順序
   const caseById = new Map(pageCases.map((c) => [c.id, c]))
   const cases = pageIds.map((id) => caseById.get(id)).filter((c): c is typeof pageCases[number] => !!c)
@@ -478,6 +551,8 @@ export async function GET(req: NextRequest) {
         count: total,
         totalFee: summaryAgg._sum.actualFee ?? 0,
         totalTravel: summaryAgg._sum.travelOtherExpense ?? 0,
+        // [2026/09/21] - Lisa - null＝未選部門（無比較基準，前端不顯示此卡）
+        totalFeeByHandlerDept: summaryByHandlerDept,
       }
     : undefined
 

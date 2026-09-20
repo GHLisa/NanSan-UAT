@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { splitFeeByRatio } from '@/lib/feeSplit'
+import { splitFeeByRatio, getFeeSplit } from '@/lib/feeSplit'
 import { getPrepaidTotals, getPrepayEventsInRange } from '@/lib/feeRecognition'
 import { buildCaseScopeWhere, getCaseScopeLabel, getScopeEmployeeIds } from '@/lib/caseScope'
 import { buildReviewWhere, defaultReviewTab } from '@/lib/reviewScope'
@@ -186,13 +186,14 @@ export async function GET() {
           select: { targetAmount: true, targetCaseCount: true },
         })
       : Promise.resolve([] as { targetAmount: number | null; targetCaseCount: number | null }[]),
-    // 年度已決案件（依貢獻比例分攤 actualFee）
+    // 年度已決案件（依貢獻比例分攤 actualFee；FR-119 起，feeAllocationMode='AMOUNT' 者改採 fixedAmount）
     prisma.case.findMany({
       where: { ...caseWhere, status: '已決', closeDate: { gte: yearStart, lt: yearEnd, not: null } },
       select: {
         id: true,
         actualFee: true,
-        assignments: { select: { employeeId: true, role: true, contributionRatio: true } },
+        feeAllocationMode: true,
+        assignments: { select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true } },
       },
     }),
     // 待辦清單
@@ -387,7 +388,8 @@ export async function GET() {
     const netFee = (c.actualFee ?? 0) - (prepaidTotals.get(c.id) ?? 0)
     if (netFee) {
       // 依承辦比例分攤（非主辦捨去、主辦吸收剩餘），僅加總 scope 內承辦人份額
-      const amts = splitFeeByRatio(netFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦')
+      // [2026/09/18] - Lisa - FR-119：feeAllocationMode='AMOUNT' 者改直接加總 fixedAmount
+      const amts = getFeeSplit(netFee, c.assignments, a => a.contributionRatio ?? 1, a => a.role === '主辦', c.feeAllocationMode, a => a.fixedAmount)
       actualFeePure += c.assignments.reduce(
         (s, a, i) => (scopeEmpIdSet.has(a.employeeId) ? s + amts[i] : s),
         0,

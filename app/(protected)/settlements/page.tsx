@@ -88,7 +88,7 @@ export default function CaseQueryPage() {
   const [contactOptions, setContactOptions] = useState<string[]>([])
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
-  const [summary, setSummary] = useState({ count: 0, totalFee: 0, totalTravel: 0 })
+  const [summary, setSummary] = useState<{ count: number; totalFee: number; totalTravel: number; totalFeeByHandlerDept: number | null }>({ count: 0, totalFee: 0, totalTravel: 0, totalFeeByHandlerDept: null })
   const [exporting, setExporting] = useState(false)
   // [2026/09/08] - Lisa - 查詢條件以 sessionStorage 保存，從案件明細返回列表可重現篩選後狀態
   // （比照 /cases 案件管理清單的做法，見該檔 listStateKey 註解）
@@ -203,7 +203,7 @@ export default function CaseQueryPage() {
     if (filterContacts.length) params.set('contacts', filterContacts.join(','))
     const res = await api.get<CaseItem[]>(`/api/cases?${params.toString()}`) as ApiResponse<CaseItem[]> & {
       total?: number
-      summary?: { count: number; totalFee: number; totalTravel: number }
+      summary?: { count: number; totalFee: number; totalTravel: number; totalFeeByHandlerDept: number | null }
     }
     if (res.success && res.data) {
       setCases(res.data)
@@ -494,40 +494,66 @@ export default function CaseQueryPage() {
       </div>
 
       {/* ── 統計卡 ── */}
-      <Row gutter={12} style={{ marginBottom: 12 }}>
-        <Col span={8}>
-          <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
-            <Statistic
-              title="件數"
-              value={summary.count}
-              suffix="件"
-              valueStyle={{ color: '#52c41a', fontSize: 20 }}
-            />
-          </Card>
-        </Col>
-        <Col span={8}>
-          <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
-            <Statistic
-              title="公證費合計"
-              value={summary.totalFee}
-              prefix="$"
-              formatter={v => Number(v).toLocaleString()}
-              valueStyle={{ color: '#1890ff', fontSize: 20 }}
-            />
-          </Card>
-        </Col>
-        <Col span={8}>
-          <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
-            <Statistic
-              title="差旅其他費合計"
-              value={summary.totalTravel}
-              prefix="$"
-              formatter={v => Number(v).toLocaleString()}
-              valueStyle={{ fontSize: 20 }}
-            />
-          </Card>
-        </Col>
-      </Row>
+      {/* [2026/09/21] - Lisa - 有選定部門、且與案件所屬部門全額不同時（即有跨部門共辦案件影響金額），
+          在「公證費合計」下方多一行小字標示「依承辦人所屬部門」的份額合計；金額相同（無跨部門共辦
+          影響）時不特別標示。原「公證費合計」計算方式與案件清單範圍完全不變。 */}
+      {(() => {
+        const handlerDept = summary.totalFeeByHandlerDept
+        const showHandlerDeptNote = !!filterDept && handlerDept != null && handlerDept !== summary.totalFee
+        const deptName = departments.find(d => String(d.id) === filterDept)?.name ?? ''
+        // [2026/09/21] - Lisa - 有跨部門協辦標示時，中間卡片文字較多，加寬中間、兩側縮窄
+        const sideSpan = showHandlerDeptNote ? 6 : 8
+        const midSpan = showHandlerDeptNote ? 12 : 8
+        return (
+          <Row gutter={12} style={{ marginBottom: 12 }}>
+            <Col span={sideSpan}>
+              <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
+                <Statistic
+                  title="件數"
+                  value={summary.count}
+                  suffix="件"
+                  valueStyle={{ color: '#52c41a', fontSize: 20 }}
+                />
+              </Card>
+            </Col>
+            <Col span={midSpan}>
+              <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
+                {showHandlerDeptNote ? (
+                  <>
+                    <div style={{ color: 'rgba(0, 0, 0, 0.45)', fontSize: 14, lineHeight: 1.5 }}>
+                      公證費合計 / 跨部門共辦，{deptName}承辦人份額
+                    </div>
+                    <div style={{ fontSize: 20, lineHeight: 1.5 }}>
+                      <span style={{ color: '#1890ff' }}>${Number(summary.totalFee).toLocaleString()}</span>
+                      {' / '}
+                      <span style={{ color: '#722ed1' }}>${Number(handlerDept).toLocaleString()}</span>
+                    </div>
+                  </>
+                ) : (
+                  <Statistic
+                    title="公證費合計"
+                    value={summary.totalFee}
+                    prefix="$"
+                    formatter={v => Number(v).toLocaleString()}
+                    valueStyle={{ color: '#1890ff', fontSize: 20 }}
+                  />
+                )}
+              </Card>
+            </Col>
+            <Col span={sideSpan}>
+              <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
+                <Statistic
+                  title="差旅其他費合計"
+                  value={summary.totalTravel}
+                  prefix="$"
+                  formatter={v => Number(v).toLocaleString()}
+                  valueStyle={{ fontSize: 20 }}
+                />
+              </Card>
+            </Col>
+          </Row>
+        )
+      })()}
 
       {/* ── 案件清單 ── */}
       <Table

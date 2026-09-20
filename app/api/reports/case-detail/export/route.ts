@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { getSession, canViewAllDepts } from '@/lib/auth'
-import { splitFeeByRatio } from '@/lib/feeSplit'
+import { getFeeSplit } from '@/lib/feeSplit'
 import { getPrepaidTotals, getPrepayEventsInRange, type PrepayEvent } from '@/lib/feeRecognition'
 import { prisma } from '@/lib/prisma'
 import ExcelJS from 'exceljs'
@@ -30,13 +30,16 @@ type CaseRow = {
 // [2026/08/04] - Lisa - FR-109 caseCount＝參與人次（月明細小計用）／primaryCount＝主辦件數（季統計用）
 type EmpGroup = { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; primaryCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
 
-type RowAssignment = { employeeId: number; role: string; contributionRatio: number | null; employee: { name: string } }
+type RowAssignment = { employeeId: number; role: string; contributionRatio: number | null; fixedAmount?: number | null; employee: { name: string } }
 // [2026/08/21] - Lisa - 公證費預付請款依出具日期認列：已決案結案淨額列與預付請款認列列，
 // 統一轉成同一種列形狀後再交給 groupByHandler 分組小計，兩者共用同一套分攤邏輯。
+// [2026/09/18] - Lisa - FR-119：feeAllocationMode 僅已決案結案淨額列會帶入（該案設定值）；
+// 預付請款列不設定，一律沿用比例分攤（分配方式僅在結案時才會決定）。
 type Row = {
   id: number; caseNumber: string; insuredName: string
   date: Date; amount: number; travelFee: number; remarks: string
   assignments: RowAssignment[]
+  feeAllocationMode?: string | null
 }
 
 function buildRemarks(refDeptId: number | null, caseDepartmentId: number, caseDepartmentName: string, assignments: RowAssignment[]) {
@@ -180,7 +183,8 @@ export async function GET(req: NextRequest) {
       // [2026/08/04] - Lisa - FR-107：備註欄標記案件承辦部門（僅非本單位案件）
       departmentId: true,
       department: { select: { name: true } },
-      assignments: { select: { employeeId: true, role: true, contributionRatio: true, employee: { select: { name: true } } } },
+      feeAllocationMode: true,
+      assignments: { select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true, employee: { select: { name: true } } } },
     },
     orderBy: { closeDate: 'asc' },
   })
@@ -196,6 +200,7 @@ export async function GET(req: NextRequest) {
     travelFee: c.travelOtherExpense ?? 0,
     remarks: buildRemarks(refDeptId, c.departmentId, c.department.name, c.assignments),
     assignments: c.assignments,
+    feeAllocationMode: c.feeAllocationMode,
   }))
 
   // [2026/07/14] - Lisa - 純公證費/差旅其他費/小計依承辦比例分配；每位經辦人（主辦＋協辦）各列其份額，同一案分列各人，件數依參與人計
@@ -203,7 +208,8 @@ export async function GET(req: NextRequest) {
     const map = new Map<number, EmpGroup>()
     for (const row of list) {
       // 純公證費依承辦比例分攤（非主辦捨去、主辦吸收剩餘）
-      const feeAmts = splitFeeByRatio(row.amount, row.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
+      // [2026/09/18] - Lisa - FR-119：feeAllocationMode='AMOUNT' 者改直接加總 fixedAmount
+      const feeAmts = getFeeSplit(row.amount, row.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦', row.feeAllocationMode, x => x.fixedAmount)
       row.assignments.forEach((a, ai) => {
         if (visibleEmpIds && !visibleEmpIds.has(a.employeeId)) return // 組長：不列他組承辦人
         const actualFee = feeAmts[ai]
@@ -257,7 +263,8 @@ export async function GET(req: NextRequest) {
         actualFee: true, travelOtherExpense: true,
         departmentId: true, // [2026/08/04] - Lisa - FR-107：與主查詢欄位一致（groupByHandler 共用）
         department: { select: { name: true } },
-        assignments: { select: { employeeId: true, role: true, contributionRatio: true, employee: { select: { name: true } } } },
+        feeAllocationMode: true,
+        assignments: { select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true, employee: { select: { name: true } } } },
       },
     })
     const ytdPrepaidTotals = await getPrepaidTotals(ytdCases.map((c) => c.id))
@@ -270,6 +277,7 @@ export async function GET(req: NextRequest) {
       travelFee: c.travelOtherExpense ?? 0,
       remarks: buildRemarks(refDeptId, c.departmentId, c.department.name, c.assignments),
       assignments: c.assignments,
+      feeAllocationMode: c.feeAllocationMode,
     }))
     const ytdPrepayEvents = await getPrepayEventsInRange(roleScopeWhere as unknown as Prisma.CaseWhereInput, ytdRange)
     const ytdPrepayRows = await toPrepayRows(ytdPrepayEvents, refDeptId)

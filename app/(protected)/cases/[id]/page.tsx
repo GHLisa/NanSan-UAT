@@ -47,6 +47,7 @@ const DATE_FIELDS = new Set(['出險日期', '委託日期', '回傳日期', '�
 interface Assignment {
   id?: number; employeeId: number | null; employeeName?: string
   role: string; contributionRatio: number
+  fixedAmount?: number | null // [2026/09/18] - Lisa - FR-119：feeAllocationMode='AMOUNT' 時的分潤金額
 }
 interface CoInsurer {
   id?: number; _key?: number; companyId: number | null; companyName?: string | null
@@ -82,6 +83,7 @@ interface CaseDetail {
   salvageValue: number | null
   finalAmount: number | null; estimatedFee: number | null; actualFee: number | null
   travelOtherExpense: number | null
+  feeAllocationMode: string // [2026/09/18] - Lisa - FR-119："RATIO" | "AMOUNT"
   assignmentNotes: string | null
   coInsurers: CoInsurer[]
   assignments: Assignment[]
@@ -160,6 +162,9 @@ export default function CaseDetailPage() {
   const [closeModalOpen, setCloseModalOpen] = useState(false)
   const [closeForm] = Form.useForm()
   const [closing, setClosing] = useState(false)
+  // [2026/09/18] - Lisa - FR-119：結案分配方式（案件層級二選一），及金額輸入模式下逐位承辦人的手動金額
+  const [closeFeeMode, setCloseFeeMode] = useState<'RATIO' | 'AMOUNT'>('RATIO')
+  const [manualAmounts, setManualAmounts] = useState<Record<number, number>>({})
 
   // 結案日期溯及修正
   const [fixDateOpen, setFixDateOpen] = useState(false)
@@ -693,6 +698,11 @@ export default function CaseDetailPage() {
       travelExpense: caseData.travelOtherExpense ?? 0,
       remarks: '',
     })
+    // [2026/09/18] - Lisa - FR-119：每次開啟結案 Modal 重設為比例分配，並以比例試算結果預帶金額輸入初始值
+    setCloseFeeMode('RATIO')
+    const baseFee = caseData.actualFee ?? caseData.estimatedFee ?? 0
+    const amts = splitFeeByRatio(baseFee, assignments, a => a.contributionRatio ?? 0, a => a.role === '主辦')
+    setManualAmounts(Object.fromEntries(assignments.map((_, i) => [i, amts[i] ?? 0])))
     setCloseModalOpen(true)
   }
 
@@ -702,8 +712,11 @@ export default function CaseDetailPage() {
     const baseFee = Number(values.baseFee) || 0
     const travelExpense = Number(values.travelExpense) || 0
     const totalFee = baseFee // 實際公證費＝純公證費；差旅其他費另計
-    // 純公證費依承辦比例分攤：非主辦無條件捨去、主辦吸收剩餘，確保加總＝純公證費
-    const feeAmounts = splitFeeByRatio(totalFee, assignments, a => a.contributionRatio ?? 0, a => a.role === '主辦')
+    // [2026/09/18] - Lisa - FR-119：金額輸入模式採手動輸入值（不重算、加總不要求＝純公證費）；
+    // 比例分配模式維持原行為：非主辦無條件捨去、主辦吸收剩餘，確保加總＝純公證費
+    const feeAmounts = closeFeeMode === 'AMOUNT'
+      ? assignments.map((_, i) => manualAmounts[i] ?? 0)
+      : splitFeeByRatio(totalFee, assignments, a => a.contributionRatio ?? 0, a => a.role === '主辦')
     const splits = assignments.map((a, i) => ({
       employeeId: a.employeeId as number,
       assignmentId: a.id ?? null,
@@ -716,6 +729,7 @@ export default function CaseDetailPage() {
       baseFee,
       travelExpense,
       totalFee,
+      feeAllocationMode: closeFeeMode,
       remarks: (values.remarks as string) ?? '',
       splits,
     })
@@ -1504,6 +1518,16 @@ export default function CaseDetailPage() {
                     { title: '承辦人', key: 'name', render: (_, a) => <Text strong>{a.employeeName ?? '—'}</Text> },
                     { title: '角色', key: 'role', width: 65, render: (_, a) => <Tag color={a.role === '主辦' ? '#1B4F8C' : 'default'} style={{ fontSize: 11 }}>{a.role}</Tag> },
                     { title: '承辦比例', key: 'ratio', width: 80, align: 'center' as const, render: (_, a) => `${(a.contributionRatio * 100).toFixed(0)}%` },
+                    // [2026/09/18] - Lisa - FR-119：分潤金額——AMOUNT 模式顯示 fixedAmount；RATIO 模式（含未結案）現算比例份額
+                    {
+                      title: '分潤金額', key: 'fixedAmount', width: 100, align: 'right' as const,
+                      render: (_, a, idx) => {
+                        if (caseData.status !== '已決') return '—'
+                        if (caseData.feeAllocationMode === 'AMOUNT') return `$${(a.fixedAmount ?? 0).toLocaleString()}`
+                        const amts = splitFeeByRatio(caseData.actualFee ?? 0, assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
+                        return `$${(amts[idx] ?? 0).toLocaleString()}`
+                      },
+                    },
                   ]}
                 />
               )}
@@ -1759,11 +1783,27 @@ export default function CaseDetailPage() {
             </Col>
           </Row>
 
-          {/* 承辦分潤（依承辦比例自動計算純公證費） */}
+          {/* 承辦分潤（FR-119：分配方式二選一，同案全員須一致） */}
           <div style={{ marginBottom: 12 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>承辦分潤（依承辦比例分攤純公證費）</Text>
+            <Row justify="space-between" align="middle" style={{ marginBottom: 4 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>承辦分潤</Text>
+              <Radio.Group
+                size="small"
+                value={closeFeeMode}
+                onChange={(e) => {
+                  const mode = e.target.value as 'RATIO' | 'AMOUNT'
+                  setCloseFeeMode(mode)
+                  if (mode === 'AMOUNT') {
+                    // 切換為金額輸入時，以目前比例試算結果作為初始值方便微調
+                    const amts = splitFeeByRatio(Number(closeBaseFee) || 0, assignments, a => a.contributionRatio ?? 0, a => a.role === '主辦')
+                    setManualAmounts(Object.fromEntries(assignments.map((_, i) => [i, amts[i] ?? 0])))
+                  }
+                }}
+                options={[{ label: '比例分配', value: 'RATIO' }, { label: '金額輸入', value: 'AMOUNT' }]}
+              />
+            </Row>
             <div style={{ marginTop: 4 }}>
-              {(() => {
+              {closeFeeMode === 'RATIO' ? (() => {
                 // 與存檔一致：非主辦無條件捨去、主辦吸收剩餘
                 const amts = splitFeeByRatio(Number(closeBaseFee) || 0, assignments, a => a.contributionRatio ?? 0, a => a.role === '主辦')
                 return assignments.map((a, i) => (
@@ -1778,7 +1818,34 @@ export default function CaseDetailPage() {
                     </Col>
                   </Row>
                 ))
-              })()}
+              })() : (
+                <>
+                  {assignments.map((a, i) => (
+                    <Row key={a.id ?? a.employeeId} justify="space-between" align="middle" style={{ padding: '2px 0' }}>
+                      <Col flex="auto">
+                        {a.employeeName ?? '—'}
+                        <Tag style={{ marginLeft: 6, fontSize: 11 }}>{a.role}</Tag>
+                      </Col>
+                      <Col style={{ width: 140 }}>
+                        <InputNumber
+                          size="small" style={{ width: '100%' }} min={0} {...numFmt}
+                          value={manualAmounts[i] ?? 0}
+                          onChange={(v) => setManualAmounts((prev) => ({ ...prev, [i]: Number(v) || 0 }))}
+                        />
+                      </Col>
+                    </Row>
+                  ))}
+                  {(() => {
+                    const sum = assignments.reduce((s, _, i) => s + (manualAmounts[i] ?? 0), 0)
+                    const diff = sum - (Number(closeBaseFee) || 0)
+                    return diff !== 0 ? (
+                      <div style={{ marginTop: 6, fontSize: 12, color: '#fa8c16' }}>
+                        金額加總 ${sum.toLocaleString()}，與純公證費差 {diff > 0 ? '+' : ''}{diff.toLocaleString()}（可能因扣除其他費用所致，不影響送出）
+                      </div>
+                    ) : null
+                  })()}
+                </>
+              )}
             </div>
           </div>
 

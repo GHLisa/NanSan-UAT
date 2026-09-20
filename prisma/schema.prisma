@@ -153,6 +153,8 @@ model Case {
   finalAmount           BigInt?
   estimatedFee          Int?
   actualFee             Int?
+  // [2026/09/18] - Lisa - FR-119：結案分潤方式，案件層級二選一（"RATIO" | "AMOUNT"），不可混用
+  feeAllocationMode     String    @default("RATIO")
   travelOtherExpense    Int?
   preliminaryReportDate DateTime?
   finalReportDate       DateTime?
@@ -212,6 +214,8 @@ model CaseAssignment {
   employeeId         Int
   role               String
   contributionRatio  Float
+  // [2026/09/18] - Lisa - FR-119：feeAllocationMode='AMOUNT' 時的手動輸入分潤金額
+  fixedAmount        Int?
   case               Case     @relation(fields: [caseId], references: [id])
   employee           Employee @relation(fields: [employeeId], references: [id])
 

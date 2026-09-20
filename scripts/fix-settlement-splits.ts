@@ -14,7 +14,7 @@ async function main() {
   const settlements = await prisma.settlement.findMany({
     select: {
       id: true, totalFee: true,
-      case: { select: { caseNumber: true, assignments: { select: { employeeId: true, role: true } } } },
+      case: { select: { caseNumber: true, feeAllocationMode: true, assignments: { select: { employeeId: true, role: true } } } },
       splits: {
         select: {
           id: true, employeeId: true, ratio: true, amount: true,
@@ -29,9 +29,13 @@ async function main() {
   type Upd = { splitId: number; from: number; to: number }
   const plan: { caseNumber: string; total: number; oldSum: number; updates: Upd[]; lines: string[] }[] = []
   let totalUpdates = 0
+  // [2026/09/18] - Lisa - FR-119：AMOUNT 模式案件為使用者手動輸入金額，加總本就不要求＝totalFee，
+  // 此校正腳本（比例分攤規則）不適用，一律跳過，避免覆蓋人工輸入值。
+  let skippedAmountMode = 0
 
   for (const s of settlements) {
     if (s.splits.length === 0) continue
+    if (s.case.feeAllocationMode === 'AMOUNT') { skippedAmountMode++; continue }
     const roleMap = new Map(s.case.assignments.map(a => [a.employeeId, a.role]))
     const roleOf = (sp: (typeof s.splits)[number]) => sp.assignment?.role ?? roleMap.get(sp.employeeId) ?? ''
     const newAmts = splitFeeByRatio(s.totalFee, s.splits, sp => sp.ratio ?? 0, sp => roleOf(sp) === '主辦')
@@ -53,7 +57,7 @@ async function main() {
     }
   }
 
-  console.log(`結算筆數：${settlements.length}｜需校正的案件：${plan.length} 件｜需更新的分潤列：${totalUpdates} 列`)
+  console.log(`結算筆數：${settlements.length}｜需校正的案件：${plan.length} 件｜需更新的分潤列：${totalUpdates} 列｜略過金額輸入模式：${skippedAmountMode} 件`)
   console.log('─'.repeat(70))
   for (const p of plan) {
     console.log(`● ${p.caseNumber}　純公證費 ${p.total.toLocaleString()}（舊加總 ${p.oldSum.toLocaleString()}，差 ${p.oldSum-p.total>0?'+':''}${p.oldSum-p.total}）`)
@@ -73,10 +77,12 @@ async function main() {
   )
   console.log(`✓ 已更新 ${totalUpdates} 列分潤。`)
 
-  // 驗證：所有結算的分潤加總是否 = totalFee
-  const after = await prisma.settlement.findMany({ select: { totalFee: true, splits: { select: { amount: true } } } })
-  const bad = after.filter(s => s.splits.length > 0 && s.splits.reduce((a, x) => a + x.amount, 0) !== s.totalFee)
-  console.log(bad.length === 0 ? '✓ 驗證通過：所有結算分潤加總＝純公證費。' : `✗ 仍有 ${bad.length} 筆不一致，請檢查。`)
+  // 驗證：所有「比例分攤」結算的分潤加總是否 = totalFee（AMOUNT 模式加總本不要求相等，排除檢查）
+  const after = await prisma.settlement.findMany({
+    select: { totalFee: true, case: { select: { feeAllocationMode: true } }, splits: { select: { amount: true } } },
+  })
+  const bad = after.filter(s => s.case.feeAllocationMode !== 'AMOUNT' && s.splits.length > 0 && s.splits.reduce((a, x) => a + x.amount, 0) !== s.totalFee)
+  console.log(bad.length === 0 ? '✓ 驗證通過：所有比例分攤結算分潤加總＝純公證費。' : `✗ 仍有 ${bad.length} 筆不一致，請檢查。`)
 }
 
 main().catch(e => { console.error('✗', e); process.exit(1) }).finally(() => prisma.$disconnect())

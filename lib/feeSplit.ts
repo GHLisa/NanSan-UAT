@@ -22,3 +22,19 @@ export function splitFeeByRatio<T>(
   amounts[absorber] = base - others
   return amounts
 }
+
+// ── FR-119（v3.19）：結案分潤支援「金額輸入」模式 ──────────────────────────
+// 案件層級二選一（Case.feeAllocationMode）：'AMOUNT' 時直接採各承辦人手動輸入的
+// CaseAssignment.fixedAmount（不重算、加總不要求等於 total）；否則（'RATIO'／未設定）
+// 沿用既有 splitFeeByRatio 比例分攤，行為完全不變。
+export function getFeeSplit<T>(
+  total: number,
+  items: T[],
+  ratioOf: (t: T) => number,
+  isPrimaryOf: (t: T) => boolean,
+  mode: string | null | undefined,
+  fixedAmountOf: (t: T) => number | null | undefined,
+): number[] {
+  if (mode === 'AMOUNT') return items.map((it) => fixedAmountOf(it) ?? 0)
+  return splitFeeByRatio(total, items, ratioOf, isPrimaryOf)
+}

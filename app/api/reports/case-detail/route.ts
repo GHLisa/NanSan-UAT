@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { getSession, canViewAllDepts } from '@/lib/auth'
-import { splitFeeByRatio } from '@/lib/feeSplit'
+import { getFeeSplit } from '@/lib/feeSplit'
 import { getPrepaidTotals, getPrepayEventsInRange, type PrepayEvent } from '@/lib/feeRecognition'
 import { prisma } from '@/lib/prisma'
 import dayjs from 'dayjs'
@@ -22,10 +22,12 @@ type CaseRow = {
 // 兩者並存而非改寫 caseCount，避免月統計小計與明細列數不符（明細是逐「人次」列）。
 type EmpGroup = { empId: number; empName: string; cases: CaseRow[]; totals: { caseCount: number; primaryCount: number; actualFee: number; travelFee: number; subtotalFee: number } }
 
-type RowAssignment = { employeeId: number; role: string; contributionRatio: number | null; employee: { name: string } }
+type RowAssignment = { employeeId: number; role: string; contributionRatio: number | null; fixedAmount?: number | null; employee: { name: string } }
 
 // [2026/08/21] - Lisa - 公證費預付請款依出具日期認列：把「已決案結案淨額」與「預付請款認列」
 // 兩種來源的金額，用同一套依承辦比例分攤＋累計小計的邏輯併入同一份 empMap，供月/季/YTD 共用。
+// [2026/09/18] - Lisa - FR-119：feeAllocationMode 僅適用於「已決案結案淨額」（呼叫端傳入該案設定值），
+// 預付請款事件（pushPrepayEvents）不傳此參數、一律沿用比例分攤（分配方式僅在結案時才會決定）。
 function pushCaseRow(
   map: Map<number, EmpGroup>,
   input: {
@@ -35,8 +37,9 @@ function pushCaseRow(
   },
   visibleEmpIds: Set<number> | null,
   withCaseRows = true, // [2026/08/21] - Lisa - YTD 累計表僅需 totals 彙總，不列逐案明細（維持原行為）
+  feeAllocationMode: string | null | undefined = 'RATIO',
 ) {
-  const feeAmts = splitFeeByRatio(input.amount, input.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦')
+  const feeAmts = getFeeSplit(input.amount, input.assignments, x => x.contributionRatio ?? 0, x => x.role === '主辦', feeAllocationMode, x => x.fixedAmount)
   input.assignments.forEach((a, ai) => {
     if (visibleEmpIds && !visibleEmpIds.has(a.employeeId)) return // 組長：不列他組承辦人
     const actualFee = feeAmts[ai]
@@ -234,6 +237,7 @@ export async function GET(req: NextRequest) {
       actualFee: true,
       travelOtherExpense: true,
       notes: true,
+      feeAllocationMode: true,
       // [2026/08/04] - Lisa - FR-107：備註欄標記案件承辦部門（僅非本單位案件）
       departmentId: true,
       department: { select: { name: true } },
@@ -242,6 +246,7 @@ export async function GET(req: NextRequest) {
           employeeId: true,
           role: true,
           contributionRatio: true,
+          fixedAmount: true,
           employee: { select: { name: true } },
         },
       },
@@ -281,6 +286,8 @@ export async function GET(req: NextRequest) {
         assignments: c.assignments,
       },
       visibleEmpIds,
+      true,
+      c.feeAllocationMode,
     )
   }
 
@@ -324,8 +331,9 @@ export async function GET(req: NextRequest) {
         travelOtherExpense: true,
         departmentId: true, // [2026/08/21] - Lisa - 與主查詢欄位一致（remarks 部門標記用）
         department: { select: { name: true } },
+        feeAllocationMode: true,
         assignments: {
-          select: { employeeId: true, role: true, contributionRatio: true, employee: { select: { name: true } } },
+          select: { employeeId: true, role: true, contributionRatio: true, fixedAmount: true, employee: { select: { name: true } } },
         },
       },
     })
@@ -355,6 +363,7 @@ export async function GET(req: NextRequest) {
         },
         visibleEmpIds,
         false, // YTD 累計表僅需彙總，不列逐案明細（維持原行為）
+        c.feeAllocationMode,
       )
     }
 
