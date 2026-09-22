@@ -4,11 +4,12 @@ import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Card, Form, Input, Button, Select, AutoComplete, DatePicker, InputNumber,
-  Checkbox, Alert, Typography, Space, Divider, message, Modal, Row, Col, Table,
+  Checkbox, Alert, Typography, Space, Divider, message, Modal, Row, Col, Table, Tooltip,
 } from 'antd'
-import { PlusOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, ArrowLeftOutlined, ExclamationCircleOutlined } from '@ant-design/icons'
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
+import { getSpecialCaseHintText } from '@/lib/approvalFlow'
 import dayjs from 'dayjs'
 
 const { Title, Text } = Typography
@@ -21,7 +22,7 @@ const PARKING_STATUS = ['申訴中', '訴訟中', '待請求時效']
 interface MetaData {
   insuranceCompanies: { id: number; code: string; name: string }[]
   brokerCompanies: { id: number; name: string }[]
-  departments: { id: number; name: string }[]
+  departments: { id: number; name: string; code: string }[]
   employees: { id: number; name: string }[]
   insuranceTypes: { id: number; name: string }[]
   incidentLocations: { id: number; name: string }[]
@@ -90,6 +91,7 @@ export default function CaseNewPage() {
   ])
   const [coInsurers, setCoInsurers] = useState<CoInsurerRow[]>([])
   const [isSpecialCase, setIsSpecialCase] = useState(false)
+  const [specialCaseReason, setSpecialCaseReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
   // ── 公證費試算 ──
@@ -102,6 +104,8 @@ export default function CaseNewPage() {
   // [2026/08/04] - Lisa - FR-108 取號現況提示：依「表單當前部門」查該部門本年度流水號群組現況
   const [numPreview, setNumPreview] = useState<NumberPreview | null>(null)
   const watchedDeptId = Form.useWatch('departmentId', form) as number | undefined
+  // [2026/09/22] - Lisa - FR-120：特殊案件 hint 依部門動態顯示三關卡／單關卡說明，需知道目前表單部門代碼
+  const currentDeptCode = meta.departments.find(d => d.id === (watchedDeptId ?? session?.departmentId))?.code ?? null
 
   useEffect(() => {
     api.get<MetaData>('/api/meta').then((res) => {
@@ -212,7 +216,6 @@ export default function CaseNewPage() {
       const coSum = coInsurers.reduce((s, c) => s + (c.ratio || 0), 0)
       if (coSum >= 100) { message.error('共保比例合計已達 100%，主保人須保留比例'); return }
     }
-
     const selectedType = meta.insuranceTypes.find((t) => t.id === values.insuranceTypeId)
 
     const body = {
@@ -233,6 +236,7 @@ export default function CaseNewPage() {
       deductible: values.deductible ?? 0,
       estimatedFee: values.estimatedFee ?? undefined,
       isSpecialCase,
+      specialCaseReason: isSpecialCase ? specialCaseReason.trim() : null,
       notes: values.notes,
       insuredSubjectMatter: values.insuredSubjectMatter || null,
       parkingStatus: values.parkingStatus ?? null,
@@ -682,7 +686,7 @@ export default function CaseNewPage() {
               </Form.Item>
             </Col>
             <Col xs={24}>
-              {/* FR-89 特殊案件 */}
+              {/* FR-89 特殊案件；[2026/09/22] - Lisa - FR-120 hint 提示工程台北/台中與高雄火險部兩類三關卡加簽審核 */}
               <Form.Item>
                 <Checkbox checked={isSpecialCase} onChange={(e) => setIsSpecialCase(e.target.checked)}>
                   特殊案件
@@ -690,14 +694,37 @@ export default function CaseNewPage() {
                 <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>
                   （如：關注案件、極大爭議、複雜度較高或金額較高）
                 </Text>
+                <Tooltip
+                  overlayStyle={{ maxWidth: 560 }}
+                  title={(
+                    <>
+                      「工程（台北/台中）部」與「高雄火險部」之特殊案件，送審文件將額外加簽審核（三關卡）：<br />
+                      工程（台北/台中）→ 高雄工程部主管<br />
+                      高雄火險部 → 台北火險部主管<br />
+                      其餘部門之特殊案件仍為部門主管複核後逕送執行副總閱示（單關卡）。
+                    </>
+                  )}
+                >
+                  <ExclamationCircleOutlined style={{ marginLeft: 6, color: '#8c8c8c', fontSize: 12 }} />
+                </Tooltip>
               </Form.Item>
               {isSpecialCase && (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="此案件將標記為特殊案件，送審文件不論金額均須呈送執行副總"
-                  style={{ marginTop: -8, marginBottom: 16 }}
-                />
+                <>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={`此案件將標記為特殊案件，${getSpecialCaseHintText(currentDeptCode)}`}
+                    style={{ marginTop: -8, marginBottom: 12 }}
+                  />
+                  <Form.Item label="特殊案件說明">
+                    <TextArea
+                      rows={2}
+                      placeholder="請說明特殊案件情況，例：巨額"
+                      value={specialCaseReason}
+                      onChange={(e) => setSpecialCaseReason(e.target.value)}
+                    />
+                  </Form.Item>
+                </>
               )}
             </Col>
             <Col xs={24}>

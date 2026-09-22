@@ -45,6 +45,13 @@ const ALERT_OPTIONS = [
 // URL ?alert= 可接受的值（由儀表板卡片帶入）
 const ALERT_VALUES = ALERT_OPTIONS.map(o => o.value).filter(Boolean)
 
+// 特殊案件篩選
+const SPECIAL_CASE_OPTIONS = [
+  { value: '', label: '全部案件' },
+  { value: 'true', label: '特殊案件' },
+  { value: 'false', label: '非特殊案件' },
+]
+
 const SLA_INFO = {
   green:  { emoji: '🟢', text: '正常', color: '#52c41a' },
   yellow: { emoji: '🟡', text: '黃燈預警', color: '#faad14' },
@@ -85,12 +92,16 @@ interface CaseItem {
   hasMergedBilling: boolean // [2026/07/15] - Lisa - 合併送審旗標（結案報告書隨附 DEBIT NOTE）
   prelimNoteStuckAtIntake: boolean // [2026/08/25] - Lisa - 備註提及初步報告但階段仍卡在進件，疑似未落實送審流程
   assignmentNotes: string | null // [2026/08/28] - Lisa - 交辦事項（清單欄位用；無則顯示「—」，有則滑鼠移至顯示全文）
+  isSpecialCase: boolean
+  specialCaseReason: string | null
 }
 
 interface MetaData {
   departments: { id: number; name: string; code: string }[]
   // [2026/08/04] - Lisa - FR-111 roles 供「承辦人」下拉依部門（組長再依組別）限縮
   employees: { id: number; name: string; roles?: { departmentId: number | null; teamGroup: string | null; isPrimary: boolean }[] }[]
+  // [2026/09/23] - Lisa - FR-120 修正：目前登入者是否為高雄火險部特殊案件指定可視人員
+  isKhhFireSpecialCaseViewer?: boolean
 }
 
 function getDefaultFilters(role: string, empId: number, deptId: number | null, departmentName: string | null) {
@@ -140,6 +151,7 @@ export default function CasesPage() {
     incidentDateFrom: '',
     incidentDateTo: '',
     alert: '', // [2026/08/04] - Lisa - 預警篩選：'' | 'sla' | 'statute' | 'returned'
+    specialCase: '', // 特殊案件篩選：'' | 'true' | 'false'
     // [2026/08/26] - Lisa - 預估賠償額區間搜尋（單位:萬元），只填前格 >=、只填後格 <=、兩格皆填 between
     // [2026/08/27] - Lisa - 由「預估金額」改為「預估賠償額」
     estimatedClaimAmountMin: '',
@@ -185,7 +197,7 @@ export default function CasesPage() {
     const alertParam = new URLSearchParams(window.location.search).get('alert')
     if (alertParam && ALERT_VALUES.includes(alertParam)) {
       setFilters(f => ({
-        ...f, alert: alertParam, q: '', stage: '', assigneeId: '',
+        ...f, alert: alertParam, q: '', stage: '', assigneeId: '', specialCase: '',
         incidentDateFrom: '', incidentDateTo: '',
         estimatedClaimAmountMin: '', estimatedClaimAmountMax: '', page: 1,
       }))
@@ -205,6 +217,7 @@ export default function CasesPage() {
           setFilters({
             ...parsed.filters,
             alert: parsed.filters.alert ?? '',
+            specialCase: parsed.filters.specialCase ?? '', // 舊版快取無此欄位，補預設值避免 undefined
             estimatedClaimAmountMin: parsed.filters.estimatedClaimAmountMin ?? legacy.estimatedAmountMin ?? '',
             estimatedClaimAmountMax: parsed.filters.estimatedClaimAmountMax ?? legacy.estimatedAmountMax ?? '',
           })
@@ -228,6 +241,16 @@ export default function CasesPage() {
     sessionStorage.setItem(listStateKey, JSON.stringify(payload))
   }, [filters, dateRange, restored, listStateKey])
 
+  // [2026/09/23] - Lisa - FR-120 修正：isKhhFireSpecialCaseViewer 需查 DB，要等 meta 非同步載入後才知道，
+  // 無法像 FR-90（session.departmentName 同步可知）在 getDefaultFilters 就決定預設值。若部門篩選仍停在
+  // 「尚未被使用者操作或由 sessionStorage 還原覆寫過」的初始預設值，才自動展開為合併視圖，
+  // 避免蓋掉使用者已手動選擇或還原自快取的篩選值
+  useEffect(() => {
+    if (!restored || !meta.isKhhFireSpecialCaseViewer) return
+    setFilters(f => (f.deptId === defaults.deptId ? { ...f, deptId: '', page: 1 } : f))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meta.isKhhFireSpecialCaseViewer, restored])
+
   const loadCases = useCallback(async () => {
     // [2026/08/27] - Lisa - 每次呼叫取一個遞增序號，回應時若已非最新序號即為過時回應，捨棄不套用
     const requestSeq = ++requestSeqRef.current
@@ -242,6 +265,7 @@ export default function CasesPage() {
     if (filters.incidentDateFrom) params.set('incidentDateFrom', filters.incidentDateFrom)
     if (filters.incidentDateTo) params.set('incidentDateTo', filters.incidentDateTo)
     if (filters.alert) params.set('alert', filters.alert) // [2026/08/04] - Lisa - 預警篩選（SLA／兩年時效）
+    if (filters.specialCase) params.set('isSpecialCase', filters.specialCase) // 特殊案件篩選
     // [2026/08/26] - Lisa - 預估賠償額區間搜尋（單位:萬元）
     if (filters.estimatedClaimAmountMin) params.set('estimatedClaimAmountMin', String(filters.estimatedClaimAmountMin))
     if (filters.estimatedClaimAmountMax) params.set('estimatedClaimAmountMax', String(filters.estimatedClaimAmountMax))
@@ -260,8 +284,8 @@ export default function CasesPage() {
 
   function resetFilters() {
     setFilters({
-      q: '', stage: '', deptId: defaults.deptId, assigneeId: defaults.assigneeId,
-      incidentDateFrom: '', incidentDateTo: '', alert: '',
+      q: '', stage: '', deptId: effectiveDefaultDeptId, assigneeId: defaults.assigneeId,
+      incidentDateFrom: '', incidentDateTo: '', alert: '', specialCase: '',
       estimatedClaimAmountMin: '', estimatedClaimAmountMax: '', page: 1, pageSize: 15,
     })
     setDateRange(null)
@@ -292,17 +316,36 @@ export default function CasesPage() {
   const ownDeptId = session?.departmentId != null ? String(session.departmentId) : ''
   const ownDept = meta.departments.find(d => String(d.id) === ownDeptId)
   const isKhhEngManager = session?.role === 'dept_manager' && !!ownDept && KHH_ENG_DEPT_CODES.includes(ownDept.code)
+  // [2026/09/23] - Lisa - FR-120 修正：系統參數設定指定為高雄火險部特殊案件可視人員者（不限角色／部門），
+  // 部門下拉比照高雄工程部主管（FR-90）做法另加「高雄火險部（特殊案件）」選項，否則部門篩選會被鎖死在
+  // 自己部門、即使後端 buildCaseScope 已 OR 進該範圍也查不到（黃鈺銓案例：台北火險部帳號被指定可視
+  // 高雄火險部特殊案件，但清單部門篩選只有「台北火險部」單一選項可選，選不到高雄火險部）
+  const isDesignatedFireViewer = !!meta.isKhhFireSpecialCaseViewer
+  const extraSpecialDeptOptions = [
+    ...(isKhhEngManager
+      ? meta.departments
+          .filter(d => ENG_TAIPEI_DEPT_CODES.includes(d.code))
+          .map(d => ({ value: String(d.id), label: `${d.name}（特殊案件）` }))
+      : []),
+    ...(isDesignatedFireViewer
+      ? meta.departments
+          .filter(d => d.code === 'KF' && String(d.id) !== ownDeptId)
+          .map(d => ({ value: String(d.id), label: `${d.name}（特殊案件）` }))
+      : []),
+  ]
   const deptOptions = isWide
     ? [{ value: '', label: '全部部門' }, ...meta.departments.map(d => ({ value: String(d.id), label: d.name }))]
-    : isKhhEngManager
+    : (isKhhEngManager || isDesignatedFireViewer)
       ? [
           { value: '', label: '全部' },
           ...(ownDept ? [{ value: ownDeptId, label: ownDept.name }] : []),
-          ...meta.departments
-            .filter(d => ENG_TAIPEI_DEPT_CODES.includes(d.code))
-            .map(d => ({ value: String(d.id), label: `${d.name}（特殊案件）` })),
+          ...extraSpecialDeptOptions,
         ]
       : meta.departments.filter(d => String(d.id) === defaults.deptId).map(d => ({ value: String(d.id), label: d.name }))
+  // [2026/09/23] - Lisa - 指定可視人員的「預設」部門篩選值：getDefaultFilters 只吃 session 同步值，
+  // 無法在該處判斷此旗標（需查 DB，仰賴 meta 非同步載入才知道）；改於此處算出「有效預設值」，供
+  // 初次載入自動展開合併視圖（見下方 useEffect）與「重置」按鈕共用
+  const effectiveDefaultDeptId = isDesignatedFireViewer ? '' : defaults.deptId
 
   // 部門篩選被限制在單一部門（僅一個選項）時，清單毋需再顯示部門欄；多選項（如執行副總、高雄工程部主管）才保留
   const showDeptColumn = deptOptions.length > 1 || cases.some(c => c.departmentId !== session?.departmentId)
@@ -381,18 +424,8 @@ export default function CasesPage() {
         ) : '—'
       ),
     },
-    // [2026/09/15] - Lisa - 高雄工程部主管清單併入台北/台中工程部特殊案件後，非本部門案件另加紅色
-    // 「特殊案件」Tag（沿用案件詳情頁 FR-89 同款樣式），與部門名稱一起提醒這不是自己部門的案件
     ...(showDeptColumn ? [{
       title: '部門', dataIndex: 'departmentName', key: 'dept', width: 120, ellipsis: true,
-      render: (v: string, r: CaseItem) => (
-        <Space direction="vertical" size={0}>
-          <span>{v}</span>
-          {r.departmentId !== session?.departmentId && (
-            <Tag color="red" style={{ margin: 0, fontSize: 11, lineHeight: '16px', padding: '0 4px' }}>特殊案件</Tag>
-          )}
-        </Space>
-      ),
     }] : []),
     {
       // [2026/08/29] - Lisa - 欄寬以顯示5個字為準，多位承辦人時交由 ellipsis + 滑鼠移入顯示全文
@@ -439,6 +472,18 @@ export default function CasesPage() {
       // [2026/08/29] - Lisa - 依實際資料常見長度微調欄寬（保代/保經名稱多為4~5字，讓出空間給承辦人欄）
       title: '保代/保經', dataIndex: 'brokerCompanyName', key: 'broker', width: 110, ellipsis: true,
       render: (v: string | null) => v ?? '—',
+    },
+    {
+      // [2026/09/23] - Lisa - 欄寬 64px 太窄，標題「特殊案件」會折成兩行；加寬並強制標題不換行
+      title: <span style={{ whiteSpace: 'nowrap' }}>特殊案件</span>, key: 'isSpecialCase', width: 90, align: 'center' as const,
+      render: (_: unknown, r: CaseItem) => (
+        r.isSpecialCase ? (
+          <Tooltip title={r.specialCaseReason || '尚未填寫特殊案件說明'}>
+            {/* 有填寫說明：紅字；未填寫：橘字提醒補填 */}
+            <span style={{ fontWeight: 600, cursor: 'default', color: r.specialCaseReason ? '#ff4d4f' : '#faad14' }}>是</span>
+          </Tooltip>
+        ) : <span style={{ color: '#999' }}>否</span>
+      ),
     },
     {
       // [2026/08/31] - Lisa - 原「狀態」單欄拆為三欄，避免無停泊狀態/送審標記時欄位大片空白
@@ -559,6 +604,11 @@ export default function CasesPage() {
                 value={filters.alert} onChange={v => setFilters(f => ({ ...f, alert: v, page: 1 }))}
                 options={ALERT_OPTIONS} style={{ width: 165 }} />
             </Col>
+            <Col>
+              <Select
+                value={filters.specialCase} onChange={v => setFilters(f => ({ ...f, specialCase: v, page: 1 }))}
+                options={SPECIAL_CASE_OPTIONS} style={{ width: 130 }} />
+            </Col>
             {/* [2026/08/26] - Lisa - 部門/承辦人併入同一列（原獨立第二列），承辦人角色無此查詢條件僅隱藏這兩欄，不隱藏整列 */}
             {!isHandler && (
               <>
@@ -593,7 +643,7 @@ export default function CasesPage() {
           rowKey="id"
           size="small"
           loading={loading}
-          scroll={{ x: showDeptColumn ? 1860 : 1740 }}
+          scroll={{ x: showDeptColumn ? 1924 : 1804 }}
           sticky={{ offsetHeader }}
           rowClassName={(r: CaseItem) => [
             r.hasRejectedReview ? 'row-rejected' : '',

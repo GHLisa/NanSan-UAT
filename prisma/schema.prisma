@@ -166,6 +166,7 @@ model Case {
   nasFolder             String?
   parkingStatus         String?
   isSpecialCase         Boolean   @default(false)
+  specialCaseReason     String?
   notes                 String?
   // [2026/08/26] - Lisa - 案件明細基本資訊新增欄位：出險保險標的(工程述要)
   insuredSubjectMatter  String?

@@ -18,7 +18,8 @@ import { getSlaStatus, taipeiNow, daysSinceCommission } from '@/lib/sla'
 // [2026/08/27] - Lisa - 案件管理清單欄位／區間搜尋改用「預估賠償額」（＝預估金額－自負額），與副總門檻同一算法
 import { getClaimAmount } from '@/lib/approvalFlow'
 // [2026/09/15] - Lisa - 高雄工程部主管另可見台北/台中工程部特殊案件（案件清單/匯出比照文件審核 FR-90 範圍）
-import { getCrossDeptSpecialCaseWhere, addAndCondition } from '@/lib/caseScope'
+// [2026/09/22] - Lisa - FR-120：系統參數設定指定人員另可見高雄火險部特殊案件
+import { getCrossDeptSpecialCaseWhere, getDesignatedSpecialCaseWhere, addAndCondition } from '@/lib/caseScope'
 // [2026/09/21] - Lisa - 「案件查詢」統計卡新增「本部門承辦人公證費合計」：跨部門共辦案件（案件所屬部門
 // 與承辦人所屬部門不同）時，公證費合計卡片仍以「案件所屬部門」全額計入；此新數字改以「承辦人所屬部門」
 // 依比例/固定金額拆分後歸戶，供選定部門時對照參考（不影響原公證費合計卡片與案件清單範圍）
@@ -39,23 +40,35 @@ async function buildCaseScope(session: Awaited<ReturnType<typeof getSession>>) {
   if (!session) return {}
   if (canViewAllDepts(session.role) || !session.departmentId) return {}
 
+  // [2026/09/22] - Lisa - handler 角色的可視範圍由下方 GET 主流程另行覆寫（不限部門、僅自己被指派
+  // 之案件），此處回傳的 deptScope 會被捨棄；FR-120 指定人員的 OR 條件改在該處疊加，避免這裡先併入
+  // deptScope 的 OR 反而限縮了「不限部門」的既有規則（見 GET 內 role==='handler' 區塊）
+  if (session.role === 'handler') return { departmentId: session.departmentId }
+
   // FR-34/FR-04：組長僅可視「同部門＋同組別承辦人」的案件
   if (session.role === 'team_lead' && session.teamGroup) {
-    const roles = await prisma.employeeRole.findMany({
-      where: { departmentId: session.departmentId, teamGroup: session.teamGroup },
-      select: { employeeId: true },
-    })
-    const employeeIds = Array.from(new Set(roles.map((r) => r.employeeId)))
-    return {
+    const scope = {
       departmentId: session.departmentId,
-      assignments: { some: { employeeId: { in: employeeIds } } },
+      assignments: { some: { employeeId: { in: await teamLeadScopeEmployeeIds(session.departmentId, session.teamGroup) } } },
     }
+    const designatedWhere = await getDesignatedSpecialCaseWhere(session)
+    return designatedWhere ? { OR: [scope, designatedWhere] } : scope
   }
 
   // 組長無組別 / 部門主管 / 行政人員：本部門範圍
   const deptScope = { departmentId: session.departmentId }
-  const crossDeptWhere = await getCrossDeptSpecialCaseWhere(session)
-  return crossDeptWhere ? { OR: [deptScope, crossDeptWhere] } : deptScope
+  const extraWheres = (
+    await Promise.all([getCrossDeptSpecialCaseWhere(session), getDesignatedSpecialCaseWhere(session)])
+  ).filter((w): w is NonNullable<typeof w> => w != null)
+  return extraWheres.length ? { OR: [deptScope, ...extraWheres] } : deptScope
+}
+
+async function teamLeadScopeEmployeeIds(departmentId: number, teamGroup: string): Promise<number[]> {
+  const roles = await prisma.employeeRole.findMany({
+    where: { departmentId, teamGroup },
+    select: { employeeId: true },
+  })
+  return Array.from(new Set(roles.map((r) => r.employeeId)))
 }
 
 export async function GET(req: NextRequest) {
@@ -107,6 +120,8 @@ export async function GET(req: NextRequest) {
   // [2026/08/04] - Lisa - 儀表板「SLA 預警／兩年時效預警／待辦事項 → 查看全部」帶入的預警篩選
   // （sla | statute | returned）；判定規則與 /api/dashboard 相同，確保清單即為該卡片的完整清單
   const alert = searchParams.get('alert')
+  // 特殊案件篩選：'true' | 'false' | 無（不篩選）
+  const isSpecialCaseParam = searchParams.get('isSpecialCase')
 
   const scopeFilter = await buildCaseScope(session)
 
@@ -129,14 +144,21 @@ export async function GET(req: NextRequest) {
     if (list.length) where.insuranceContact = { in: list }
   }
   if (stage) where.currentStage = stage
+  if (isSpecialCaseParam === 'true') where.isSpecialCase = true
+  else if (isSpecialCaseParam === 'false') where.isSpecialCase = false
   if (session.role === 'handler') {
     // 承辦人只能查詢自己為主辦或協辦的案件
-    where.assignments = { some: { employeeId: parseInt(session.sub) } }
     // [2026/06/18] - Lisa - Issue #5 承辦人案件清單一律不限部門，與導覽 badge myCaseCount 一致 - Start
     // 承辦人無部門篩選 UI，且可能於他部門協辦；一律移除 buildCaseScope 與 deptId 參數帶入的部門條件，
     // 避免跨部門協辦案件被濾掉（清單件數應等於 badge）
     delete where.departmentId
     // [2026/06/18] - Lisa - Issue #5 承辦人案件清單一律不限部門 - end
+    // [2026/09/22] - Lisa - FR-120：承辦人若為系統參數設定指定人員，另以 OR 併入高雄火險部特殊案件
+    // （不可直接 AND「assignments 含本人」，否則會把非本人承辦之指定案件濾掉，見 caseScope.ts 說明）
+    const designatedWhere = await getDesignatedSpecialCaseWhere(session)
+    const ownAssignmentCond = { assignments: { some: { employeeId: parseInt(session.sub) } } }
+    if (designatedWhere) addAndCondition(where, { OR: [ownAssignmentCond, designatedWhere] })
+    else where.assignments = ownAssignmentCond.assignments
   } else if (assigneeId) {
     where.assignments = { some: { employeeId: parseInt(assigneeId) } }
   }
@@ -543,6 +565,8 @@ export async function GET(req: NextRequest) {
       hasMergedBilling, // [2026/07/15] - Lisa - 合併送審 (併DN) 標註
       prelimNoteStuckAtIntake, // [2026/08/25] - Lisa - 備註提及初步報告但階段仍卡在進件（疑似未落實送審流程）
       assignmentNotes: c.assignmentNotes, // [2026/08/28] - Lisa - 案件管理/案件查詢清單「交辦事項」欄位
+      isSpecialCase: c.isSpecialCase,
+      specialCaseReason: c.specialCaseReason,
     }
   })
 
@@ -576,6 +600,7 @@ const CaseSchema = z.object({
   coverageLimit: z.number().nullable().optional(),
   deductible: z.number().optional(),
   isSpecialCase: z.boolean().optional(),
+  specialCaseReason: z.string().nullable().optional(),
   notes: z.string().optional(),
   insuredSubjectMatter: z.string().nullable().optional(),
   coInsurers: z.array(z.object({
@@ -801,6 +826,7 @@ export async function POST(req: NextRequest) {
             : null,
           deductible: BigInt(Math.trunc(Number.isFinite(body.deductible) ? (body.deductible as number) : 0)),
           isSpecialCase: body.isSpecialCase ?? false,
+          specialCaseReason: body.isSpecialCase ? (body.specialCaseReason?.trim() || null) : null,
           notes: body.notes,
           insuredSubjectMatter: body.insuredSubjectMatter ?? null,
           contactFormStatus: body.contactFormStatus,

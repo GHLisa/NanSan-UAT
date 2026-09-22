@@ -31,6 +31,12 @@ const STATUS_OPTIONS = [
   { value: '已決', label: '已決' },
   { value: '銷案', label: '銷案' },
 ]
+// [2026/09/23] - Lisa - 案件查詢新增「是否為特殊案件」篩選，選項與案件管理（app/(protected)/cases/page.tsx）一致
+const SPECIAL_CASE_OPTIONS = [
+  { value: '', label: '全部案件' },
+  { value: 'true', label: '特殊案件' },
+  { value: 'false', label: '非特殊案件' },
+]
 
 // [2026/07/31] - Lisa - 銷案案件刪除可用角色（與 API DELETE_CANCELLED_ROLES 一致）：
 // 部門主管／行政人員／系統管理員；不含執行副總。後端另依部門範圍再檢核一次。
@@ -56,6 +62,9 @@ interface CaseItem {
   primaryHandlerName: string
   prelimNoteStuckAtIntake: boolean // [2026/08/25] - Lisa - 備註提及初步報告但階段仍卡在進件，疑似未落實送審流程
   assignmentNotes: string | null // [2026/08/28] - Lisa - 交辦事項（清單欄位用；無則顯示「—」，有則滑鼠移至顯示全文）
+  // [2026/09/23] - Lisa - 案件查詢清單新增「特殊案件」「特殊案件說明」欄位（GET /api/cases 既有回傳）
+  isSpecialCase: boolean
+  specialCaseReason: string | null
 }
 
 export default function CaseQueryPage() {
@@ -76,6 +85,7 @@ export default function CaseQueryPage() {
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [filterStatus, setFilterStatus] = useState<string>('all')
+  const [filterSpecialCase, setFilterSpecialCase] = useState('') // 特殊案件篩選：'' | 'true' | 'false'
   const [filterDept, setFilterDept] = useState('')
   const [filterYear, setFilterYear] = useState(String(CURRENT_YEAR))
   const [filterPeriod, setFilterPeriod] = useState('')
@@ -145,6 +155,7 @@ export default function CaseQueryPage() {
         const parsed = JSON.parse(saved) as {
           search?: string
           filterStatus?: string
+          filterSpecialCase?: string
           filterDept?: string
           filterYear?: string
           filterPeriod?: string
@@ -156,6 +167,7 @@ export default function CaseQueryPage() {
         }
         if (parsed.search !== undefined) { setSearch(parsed.search); setSearchInput(parsed.search) }
         if (parsed.filterStatus !== undefined) setFilterStatus(parsed.filterStatus)
+        if (parsed.filterSpecialCase !== undefined) setFilterSpecialCase(parsed.filterSpecialCase)
         if (parsed.filterDept !== undefined) setFilterDept(parsed.filterDept)
         if (parsed.filterYear !== undefined) setFilterYear(parsed.filterYear)
         if (parsed.filterPeriod !== undefined) setFilterPeriod(parsed.filterPeriod)
@@ -177,11 +189,11 @@ export default function CaseQueryPage() {
   useEffect(() => {
     if (!restored || !listStateKey) return
     const payload = {
-      search, filterStatus, filterDept, filterYear, filterPeriod,
+      search, filterStatus, filterSpecialCase, filterDept, filterYear, filterPeriod,
       incidentDateFrom, incidentDateTo, filterIcId, filterContacts, page,
     }
     sessionStorage.setItem(listStateKey, JSON.stringify(payload))
-  }, [search, filterStatus, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo, filterIcId, filterContacts, page, restored, listStateKey])
+  }, [search, filterStatus, filterSpecialCase, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo, filterIcId, filterContacts, page, restored, listStateKey])
 
   const loadCases = useCallback(async () => {
     setLoading(true)
@@ -194,6 +206,7 @@ export default function CaseQueryPage() {
       withSummary: '1',
     })
     if (search) params.set('q', search)
+    if (filterSpecialCase) params.set('isSpecialCase', filterSpecialCase)
     if (filterDept) params.set('deptId', filterDept)
     if (incidentDateFrom) params.set('incidentDateFrom', incidentDateFrom)
     if (incidentDateTo) params.set('incidentDateTo', incidentDateTo)
@@ -211,7 +224,7 @@ export default function CaseQueryPage() {
       if (res.summary) setSummary(res.summary)
     }
     setLoading(false)
-  }, [search, filterStatus, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo, filterIcId, filterContacts, page])
+  }, [search, filterStatus, filterSpecialCase, filterDept, filterYear, filterPeriod, incidentDateFrom, incidentDateTo, filterIcId, filterContacts, page])
 
   useEffect(() => { if (restored) loadCases() }, [loadCases, restored])
 
@@ -234,6 +247,7 @@ export default function CaseQueryPage() {
     setSearch('')
     setSearchInput('')
     setFilterStatus('all')
+    setFilterSpecialCase('')
     setFilterDept('')
     setFilterYear(String(CURRENT_YEAR))
     setFilterPeriod('')
@@ -253,6 +267,7 @@ export default function CaseQueryPage() {
     try {
       const params = new URLSearchParams({ status: filterStatus })
       if (search) params.set('q', search)
+      if (filterSpecialCase) params.set('isSpecialCase', filterSpecialCase)
       if (filterDept) params.set('deptId', filterDept)
       if (incidentDateFrom) params.set('incidentDateFrom', incidentDateFrom)
       if (incidentDateTo) params.set('incidentDateTo', incidentDateTo)
@@ -342,6 +357,19 @@ export default function CaseQueryPage() {
       title: '最終金額', dataIndex: 'finalAmount', key: 'finalAmount', width: 110, align: 'right' as const,
       render: (v: number | null) => v != null ? `$${v.toLocaleString()}` : '—',
     },
+    // [2026/09/23] - Lisa - 特殊案件／特殊案件說明，插入於「狀態」欄之前
+    {
+      title: '特殊案件', key: 'isSpecialCase', width: 80, align: 'center' as const,
+      render: (_: unknown, r: CaseItem) => (
+        r.isSpecialCase
+          ? <span style={{ fontWeight: 600, color: '#ff4d4f' }}>是</span>
+          : <span style={{ color: '#999' }}>否</span>
+      ),
+    },
+    {
+      title: '特殊案件說明', dataIndex: 'specialCaseReason', key: 'specialCaseReason', width: 160, ellipsis: true,
+      render: (v: string | null) => v || '—',
+    },
     {
       title: '狀態', dataIndex: 'status', key: 'status', width: 70,
       render: (v: string) => (
@@ -412,6 +440,15 @@ export default function CaseQueryPage() {
                 onChange={v => { setFilterStatus(v); setPage(1) }}
                 options={STATUS_OPTIONS}
                 style={{ width: 110 }}
+              />
+            </Col>
+            {/* [2026/09/23] - Lisa - 是否為特殊案件篩選 */}
+            <Col>
+              <Select
+                value={filterSpecialCase}
+                onChange={v => { setFilterSpecialCase(v); setPage(1) }}
+                options={SPECIAL_CASE_OPTIONS}
+                style={{ width: 130 }}
               />
             </Col>
             {isWide && (
@@ -562,7 +599,7 @@ export default function CaseQueryPage() {
         rowKey="id"
         size="small"
         loading={loading}
-        scroll={{ x: 1300 }}
+        scroll={{ x: 1540 }}
         sticky={{ offsetHeader }}
         rowClassName={(r: CaseItem) => r.prelimNoteStuckAtIntake ? 'row-prelim-stuck' : ''}
         pagination={{

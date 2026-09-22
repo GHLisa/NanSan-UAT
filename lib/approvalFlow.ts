@@ -71,6 +71,8 @@ const DEPT_CATEGORY: Record<string, string> = {
 export const ENG_TAIPEI_DEPT_CODES = ['NL', 'CL', 'TPE-ENG', 'TXG-ENG']
 // 高雄工程部（三關卡加簽審核者）DB 代碼，含資料庫舊代碼
 export const KHH_ENG_DEPT_CODES = ['KL', 'KHH-ENG']
+// [2026/09/22] - Lisa - FR-120：台北火險部（高雄火險部特殊案件三關卡加簽審核者）DB 代碼，含資料庫舊代碼
+export const TPE_FIRE_DEPT_CODES = ['NF', 'TPE-FIRE']
 
 // ── 副總審閱規則查表 ─────────────────────────────────────────────────
 // alwaysVP: true  → 不論金額一律呈送副總
@@ -250,10 +252,31 @@ export interface ApprovalFlow {
   amountVP: boolean
   threshold: number
   needsMidApproval: boolean
+  // [2026/09/22] - Lisa - FR-120：needsMidApproval=true 時，加簽審核者所屬部門代碼群組／顯示名稱
+  // （單一事實來源，供 app/api/reviews/route.ts 動態查詢審核人使用，避免與此處判斷邏輯各改各的漂移）
+  midApproverDeptCodes: string[] | null
+  midApproverLabel: string | null
+}
+
+// [2026/09/22] - Lisa - FR-90（工程台北/台中特殊案件）＋ FR-120（高雄火險部特殊案件）：
+// isSpecialCase=true 時觸發三關卡加簽審核的來源分類 → 加簽審核者部門代碼群組＋顯示名稱。
+// 供 getApprovalFlow() 與前端特殊案件欄位 hint（getMidApprovalLabel）共用同一份規則。
+const MID_APPROVAL_RULES: Record<string, { deptCodes: string[]; label: string }> = {
+  工程_台北: { deptCodes: KHH_ENG_DEPT_CODES, label: '高雄工程部主管' },
+  火險_高雄: { deptCodes: TPE_FIRE_DEPT_CODES, label: '台北火險部主管' },
 }
 
 /**
- * 依部門、文件類型、預估賠償額回傳審核流程與注意事項（FR-47 / FR-90）
+ * 依部門代碼回傳「特殊案件」欄位應顯示的加簽審核者說明；非三關卡來源部門回傳 null。
+ * 供前端（案件詳情／新增案件／派案池取件）特殊案件欄位 hint 顯示用。
+ */
+export function getMidApprovalLabel(deptCode: string | null | undefined): string | null {
+  const category = DEPT_CATEGORY[deptCode ?? ''] ?? '工程_台北'
+  return MID_APPROVAL_RULES[category]?.label ?? null
+}
+
+/**
+ * 依部門、文件類型、預估賠償額回傳審核流程與注意事項（FR-47 / FR-90 / FR-120）
  * @param deptCode      部門代碼（NL / CL / KL / NB / CB / KB / NF / KF）
  * @param documentType  文件類型（DOCUMENT_TYPES 之一）
  * @param claimAmount   預估賠償額（＝預估金額 − 自負額，請用 getClaimAmount 計算）
@@ -269,8 +292,10 @@ export function getApprovalFlow(
   const category = DEPT_CATEGORY[deptCode ?? ''] ?? '工程_台北'
   const isLiability = category.startsWith('責任')
 
-  // 工程_台北 + 特殊個案 → 三關卡（主管→高雄工程部主管→執行副總）
-  const needsMidApproval = isSpecialCase && category === '工程_台北'
+  // [2026/09/22] - Lisa - FR-120：三關卡加簽審核不再只有工程_台北，高雄火險部特殊案件
+  // （火險_高雄）比照辦理，改由 MID_APPROVAL_RULES 查表判斷（主管→加簽審核者→執行副總）
+  const midApprovalRule = isSpecialCase ? MID_APPROVAL_RULES[category] : undefined
+  const needsMidApproval = !!midApprovalRule
 
   const rule = VP_RULES[category]?.[documentType] ?? { threshold: DEFAULT_THRESHOLD }
   const baseAlwaysVP = rule.alwaysVP ?? false
@@ -290,7 +315,7 @@ export function getApprovalFlow(
         : alwaysVP || amountVP ? '審核後呈送執行副總' : '批稿決行',
     },
     ...(needsMidApproval
-      ? [{ key: 'mid_vp', title: '加簽審核', desc: '高雄工程部主管代為審核' }]
+      ? [{ key: 'mid_vp', title: '加簽審核', desc: `${midApprovalRule!.label}代為審核` }]
       : []),
     ...(alwaysVP || amountVP
       ? [{
@@ -308,5 +333,20 @@ export function getApprovalFlow(
   const notesFn = NOTES[documentType]
   const notes = notesFn ? notesFn(isLiability, alwaysVP, baseThreshold) : []
 
-  return { steps, notes, alwaysVP, amountVP, threshold: baseThreshold, needsMidApproval }
+  return {
+    steps, notes, alwaysVP, amountVP, threshold: baseThreshold, needsMidApproval,
+    midApproverDeptCodes: midApprovalRule?.deptCodes ?? null,
+    midApproverLabel: midApprovalRule?.label ?? null,
+  }
+}
+
+/**
+ * [2026/09/22] - Lisa - FR-120：供前端「特殊案件」欄位顯示的提示文字（依部門動態呈現三關卡或單關卡說明）。
+ * 與 getApprovalFlow() 共用同一份 MID_APPROVAL_RULES，避免文案與實際審核路由脫節。
+ */
+export function getSpecialCaseHintText(deptCode: string | null | undefined): string {
+  const midLabel = getMidApprovalLabel(deptCode)
+  return midLabel
+    ? `此部門案件送審文件將採三關卡加簽審核：部門主管複核 → ${midLabel}加簽 → 執行副總閱示（不論文件類型與金額）`
+    : '不論文件類型與金額，所有送審文件均需部門主管審核後轉執行副總閱示'
 }

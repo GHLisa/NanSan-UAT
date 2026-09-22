@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { DEFAULT_SETTINGS } from '@/lib/settings'
+import { DEFAULT_SETTINGS, KHH_FIRE_SPECIAL_CASE_VIEWERS_KEY } from '@/lib/settings'
 
 // 系統參數設定 — 僅系統管理員可查詢與維護
 
@@ -42,7 +42,8 @@ export async function PUT(req: NextRequest) {
   const body = await req.json().catch(() => null) as { key?: string; value?: string } | null
   const key = body?.key?.trim()
   const value = body?.value?.trim()
-  if (!key || value == null || value === '') {
+  // FR-120：指定人員清單允許清空（空字串＝未指定任何人），其餘參數維持原本必填規則
+  if (!key || value == null || (value === '' && key !== KHH_FIRE_SPECIAL_CASE_VIEWERS_KEY)) {
     return NextResponse.json({ success: false, error: '參數代碼與參數值必填' }, { status: 400 })
   }
 

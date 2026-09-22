@@ -9,6 +9,7 @@ import { PlusOutlined, MinusCircleOutlined, DeleteOutlined, ExclamationCircleOut
 import { api } from '@/lib/api'
 import { useAuth } from '@/components/layout/AuthProvider'
 import { canDispatch } from '@/lib/permissions'
+import { getSpecialCaseHintText } from '@/lib/approvalFlow'
 import dayjs from 'dayjs'
 
 const { Title, Text } = Typography
@@ -349,6 +350,7 @@ export default function DispatchListPage() {
       coverageLimit: coverageLimit || null,
       deductible: deductible || 0,
       isSpecialCase: values.isSpecialCase as boolean || false,
+      specialCaseReason: values.isSpecialCase ? (String(values.specialCaseReason ?? '').trim() || null) : null,
       notes: values.notes as string || undefined,
       contactFormStatus: values.contactFormStatus as string || undefined,
       contactReturnDate: (values.contactReturnDate as dayjs.Dayjs)?.format('YYYY-MM-DD') || null,
@@ -552,6 +554,8 @@ export default function DispatchListPage() {
 
   // FR-92 承辦部門（唯讀）：派案記錄 assignedDepartmentId 對應名稱，fallback 登入者部門
   const assignedDeptId = activeDispatch?.assignedDepartmentId ?? session?.departmentId ?? null
+  // [2026/09/22] - Lisa - FR-120：特殊案件 hint 依部門動態顯示三關卡／單關卡說明
+  const assignedDeptCode = (meta?.departments ?? []).find(d => d.id === assignedDeptId)?.code ?? null
 
   // [2026/08/04] - Lisa - FR-108 建案 Modal 開啟（或承辦部門變動）時查取號現況
   const pad3 = (n: number) => String(n).padStart(3, '0')
@@ -841,12 +845,35 @@ export default function DispatchListPage() {
                             <Checkbox>
                               <Text strong style={{ fontSize: 13 }}>特殊案件</Text>
                               <Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>（關注案件、存在極大爭議、複雜度或金額較高…）</Text>
+                              {/* [2026/09/22] - Lisa - FR-120：特殊案件欄位 hint，提示工程台北/台中與高雄火險部兩類三關卡加簽審核 */}
+                              <Tooltip
+                                overlayStyle={{ maxWidth: 560 }}
+                                title={(
+                                  <>
+                                    「工程（台北/台中）部」與「高雄火險部」之特殊案件，送審文件將額外加簽審核（三關卡）：<br />
+                                    工程（台北/台中）→ 高雄工程部主管<br />
+                                    高雄火險部 → 台北火險部主管<br />
+                                    其餘部門之特殊案件仍為部門主管複核後逕送執行副總閱示（單關卡）。
+                                  </>
+                                )}
+                              >
+                                <ExclamationCircleOutlined style={{ marginLeft: 6, color: '#8c8c8c', fontSize: 12 }} />
+                              </Tooltip>
                             </Checkbox>
                           </Form.Item>
                           {getFieldValue('isSpecialCase') && (
-                            <div style={{ marginBottom: 8, padding: '4px 10px', background: '#fff7e6', border: '1px solid #ffd591', borderRadius: 4, fontSize: 12, color: '#d46b08' }}>
-                              ⚠️ 已標記為特殊案件，不論文件類型與金額，所有送審文件均需部門主管審核後轉執行副總閱示
-                            </div>
+                            <>
+                              <div style={{ marginBottom: 8, padding: '4px 10px', background: '#fff7e6', border: '1px solid #ffd591', borderRadius: 4, fontSize: 12, color: '#d46b08' }}>
+                                ⚠️ 已標記為特殊案件，{getSpecialCaseHintText(assignedDeptCode)}
+                              </div>
+                              <Form.Item
+                                name="specialCaseReason"
+                                label="特殊案件說明"
+                                style={{ marginBottom: 8 }}
+                              >
+                                <Input.TextArea rows={2} placeholder="請說明特殊案件情況，例：巨額" />
+                              </Form.Item>
+                            </>
                           )}
                         </>
                       )}

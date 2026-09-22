@@ -73,6 +73,7 @@ export interface CaseDetail extends CaseListItem {
   nasFolder: string | null
   parkingStatus: string | null
   isSpecialCase: boolean
+  specialCaseReason: string | null
   notes: string | null
   coInsurers: CoInsurer[]
   assignments: CaseAssignment[]

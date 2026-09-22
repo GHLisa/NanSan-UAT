@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
-import { getApprovalFlow, getClaimAmount, INTERIM_DOC_TYPES, STAGE_DOC_TYPES, laterStage, KHH_ENG_DEPT_CODES } from '@/lib/approvalFlow'
+import { getApprovalFlow, getClaimAmount, INTERIM_DOC_TYPES, STAGE_DOC_TYPES, laterStage } from '@/lib/approvalFlow'
 import { buildReviewWhere, type ReviewTab } from '@/lib/reviewScope'
 import { mailReviewSubmitted } from '@/lib/caseMail'
 import { reviewPendingNotification } from '@/lib/caseNotify'
@@ -256,17 +256,21 @@ export async function POST(req: NextRequest) {
   }
   const reviewerId = deptManager.employeeId
 
-  // needsMidApproval → 動態查高雄工程部 dept_manager 作為加簽審核
+  // [2026/09/22] - Lisa - FR-120：needsMidApproval → 動態查加簽審核者所屬部門 dept_manager
+  // （依 flow.midApproverDeptCodes，工程_台北→高雄工程部主管、火險_高雄→台北火險部主管，見 lib/approvalFlow.ts）
   let midApproverId: number | null = null
   if (requiresMidApproval) {
-    const khhMgr = await prisma.employeeRole.findFirst({
-      where: { department: { code: { in: KHH_ENG_DEPT_CODES } }, role: 'dept_manager' },
+    const midMgr = await prisma.employeeRole.findFirst({
+      where: { department: { code: { in: flow.midApproverDeptCodes ?? [] } }, role: 'dept_manager' },
       select: { employeeId: true },
     })
-    if (!khhMgr) {
-      return NextResponse.json({ success: false, error: '查無高雄工程部主管，無法建立三關卡審核' }, { status: 409 })
+    if (!midMgr) {
+      return NextResponse.json(
+        { success: false, error: `查無${flow.midApproverLabel ?? '加簽審核部門主管'}，無法建立三關卡審核` },
+        { status: 409 }
+      )
     }
-    midApproverId = khhMgr.employeeId
+    midApproverId = midMgr.employeeId
   }
 
   // ── (d) FR-85/86 中間報告 ───────────────────────────────────────────

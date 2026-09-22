@@ -9,6 +9,10 @@ import { useAuth } from '@/components/layout/AuthProvider'
 
 const { Title, Text } = Typography
 
+// [2026/09/22] - Lisa - FR-120：此參數為「指定可視人員」清單（員工 id 逗號分隔），設定值欄需改用
+// 員工多選下拉，與其餘參數的 Y/N Select、純文字 Input 三選一渲染
+const KHH_FIRE_SPECIAL_CASE_VIEWERS_KEY = 'khh_fire_special_case_viewer_ids'
+
 interface SettingItem {
   key: string
   value: string
@@ -17,12 +21,15 @@ interface SettingItem {
   updatedAt: string
 }
 
+interface EmployeeOption { id: number; name: string; isActive: boolean }
+
 export default function SystemSettingsPage() {
   const { session } = useAuth()
   const [rows, setRows] = useState<SettingItem[]>([])
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(false)
   const [savingKey, setSavingKey] = useState<string | null>(null)
+  const [employees, setEmployees] = useState<EmployeeOption[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -35,6 +42,17 @@ export default function SystemSettingsPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    api.get<EmployeeOption[]>('/api/admin/users').then(res => {
+      if (res.success && res.data) setEmployees(res.data)
+    })
+  }, [])
+
+  const employeeName = useCallback(
+    (id: number) => employees.find(e => e.id === id)?.name ?? `#${id}`,
+    [employees],
+  )
 
   const save = async (key: string) => {
     setSavingKey(key)
@@ -71,9 +89,26 @@ export default function SystemSettingsPage() {
       render: (v: string | null) => v || '—',
     },
     {
-      title: '設定值', width: 210,
+      title: '設定值', width: 260,
       render: (_: unknown, r: SettingItem) => {
         const cur = draft[r.key] ?? r.value
+        if (r.key === KHH_FIRE_SPECIAL_CASE_VIEWERS_KEY) {
+          const selected = cur.split(',').map(s => parseInt(s.trim())).filter(n => !Number.isNaN(n))
+          return (
+            <Select
+              mode="multiple"
+              allowClear
+              value={selected}
+              style={{ width: 260 }}
+              placeholder="未指定任何人員"
+              optionFilterProp="label"
+              onChange={vals => setDraft(d => ({ ...d, [r.key]: (vals as number[]).join(',') }))}
+              options={employees
+                .filter(e => e.isActive)
+                .map(e => ({ value: e.id, label: e.name }))}
+            />
+          )
+        }
         return isYN(r.value) ? (
           <Select
             value={cur}
@@ -91,11 +126,18 @@ export default function SystemSettingsPage() {
       },
     },
     {
-      title: '目前狀態', width: 100, align: 'center' as const,
-      render: (_: unknown, r: SettingItem) =>
-        isYN(r.value)
+      title: '目前狀態', width: 160, align: 'center' as const,
+      render: (_: unknown, r: SettingItem) => {
+        if (r.key === KHH_FIRE_SPECIAL_CASE_VIEWERS_KEY) {
+          const ids = r.value.split(',').map(s => parseInt(s.trim())).filter(n => !Number.isNaN(n))
+          return ids.length
+            ? <>{ids.map(id => <Tag key={id}>{employeeName(id)}</Tag>)}</>
+            : <Text type="secondary">未指定</Text>
+        }
+        return isYN(r.value)
           ? <Tag color={r.value === 'Y' ? 'green' : 'red'}>{r.value === 'Y' ? '啟用中' : '已停用'}</Tag>
-          : '—',
+          : '—'
+      },
     },
     {
       title: '更新時間', dataIndex: 'updatedAt', width: 150,

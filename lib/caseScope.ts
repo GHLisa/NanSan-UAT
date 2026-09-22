@@ -2,6 +2,10 @@ import { prisma } from '@/lib/prisma'
 import type { JWTPayload } from '@/lib/auth'
 import type { Prisma } from '@prisma/client'
 import { ENG_TAIPEI_DEPT_CODES, KHH_ENG_DEPT_CODES } from '@/lib/approvalFlow'
+import { getKhhFireSpecialCaseViewerIds } from '@/lib/settings'
+
+// 高雄火險部部門代碼（見 prisma/seed.ts：高雄火險部 code='KF'）
+const KHH_FIRE_DEPT_CODE = 'KF'
 
 /**
  * 依登入者角色建立案件可視範圍的 Prisma where 條件（FR-19 v2.1/v2.3）。
@@ -81,6 +85,30 @@ export async function getCrossDeptSpecialCaseWhere(
   })
   if (!dept || !KHH_ENG_DEPT_CODES.includes(dept.code)) return null
   return { department: { code: { in: ENG_TAIPEI_DEPT_CODES } }, isSpecialCase: true }
+}
+
+/**
+ * [2026/09/22] - Lisa - FR-120：高雄火險部特殊案件指定可視人員（系統參數設定維護）。
+ *
+ * 與上方 getCrossDeptSpecialCaseWhere()（FR-90，限 dept_manager 角色）不同，本設定指定的是
+ * 「特定員工」而非角色，且不限該員工的角色／所屬部門——只要登入者 id 在系統參數設定的
+ * 名單內，即可在「案件管理清單」（及其 Excel 匯出）額外看到高雄火險部之特殊案件。
+ *
+ * 同樣刻意不併入 buildCaseScopeWhere()（避免污染儀表板 KPI／通知未讀數等統計範圍），且僅放寬
+ * 「查得到」，編輯/刪除/送審等操作仍由各自 API 既有的權限判斷把關（唯讀擴大可視範圍）。
+ *
+ * 呼叫端須注意：handler 角色的案件清單另有「僅列自己被指派案件」的專屬覆寫邏輯，套用本函式時
+ * 需以 OR 併入該條件而非直接以 AND 疊加，否則會反而限縮（見 app/api/cases/route.ts 的用法）。
+ */
+export async function getDesignatedSpecialCaseWhere(
+  session: { sub: string } | null,
+): Promise<Prisma.CaseWhereInput | null> {
+  if (!session) return null
+  const empId = parseInt(session.sub)
+  if (Number.isNaN(empId)) return null
+  const viewerIds = await getKhhFireSpecialCaseViewerIds()
+  if (!viewerIds.includes(empId)) return null
+  return { department: { code: KHH_FIRE_DEPT_CODE }, isSpecialCase: true }
 }
 
 /**

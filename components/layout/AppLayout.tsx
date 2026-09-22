@@ -308,6 +308,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 {process.env.NEXT_PUBLIC_APP_ENV} v.{process.env.NEXT_PUBLIC_DEPLOY_DATE}
               </Tag>
             )}
+            {/* [2026/09/23] - Lisa - 暫時性上線公告：今日 17:00 上線作業，UAT 停機切換；作業完成後請記得移除 */}
+            {!isMobile && process.env.NEXT_PUBLIC_APP_ENV === 'UAT' && (
+              <Text strong style={{ fontSize: 12, color: '#ff4d4f' }}>
+                ⚠️ 系統將於 今日 (9/23) 17:00 進行上線作業，屆時 UAT 環境將暫停服務。
+              </Text>
+            )}
           </Space>
           <Space size={12}>
             <Badge count={unreadCount} size="small">

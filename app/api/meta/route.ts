@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+// [2026/09/23] - Lisa - FR-120 修正：案件管理部門篩選下拉需要知道「目前登入者是否為高雄火險部
+// 特殊案件指定可視人員」才能展開合併視圖選項；此旗標只能查 DB（系統參數設定），session/JWT 內沒有，
+// 故加在 /api/meta（前端已有的通用資料端點）一併回傳，避免另開一支 API
+import { getKhhFireSpecialCaseViewerIds } from '@/lib/settings'
 
 export async function GET() {
   const session = await getSession()
@@ -51,6 +55,10 @@ export async function GET() {
   closeYearSet.add(currentYear)
   const closeYears = [...closeYearSet].sort((a, b) => b - a)
 
+  // [2026/09/23] - Lisa - FR-120 修正：目前登入者是否為高雄火險部特殊案件指定可視人員
+  const khhFireViewerIds = await getKhhFireSpecialCaseViewerIds()
+  const isKhhFireSpecialCaseViewer = khhFireViewerIds.includes(parseInt(session.sub))
+
   return NextResponse.json({
     success: true,
     data: {
@@ -64,6 +72,7 @@ export async function GET() {
       employees,
       caseYears,
       closeYears,
+      isKhhFireSpecialCaseViewer,
     },
   })
 }

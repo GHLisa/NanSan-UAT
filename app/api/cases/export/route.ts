@@ -10,7 +10,8 @@ import { taipeiNow, taipeiDay } from '@/lib/sla'
 // [2026/08/27] - Lisa - 匯出的「預估賠償額」區間搜尋改用與 GET /api/cases 相同算法
 import { getClaimAmount } from '@/lib/approvalFlow'
 // [2026/09/15] - Lisa - 高雄工程部主管另可見台北/台中工程部特殊案件，與 GET /api/cases 範圍一致
-import { getCrossDeptSpecialCaseWhere, addAndCondition } from '@/lib/caseScope'
+// [2026/09/22] - Lisa - FR-120：系統參數設定指定人員另可見高雄火險部特殊案件
+import { getCrossDeptSpecialCaseWhere, getDesignatedSpecialCaseWhere, addAndCondition } from '@/lib/caseScope'
 
 export const runtime = 'nodejs'
 
@@ -19,21 +20,29 @@ async function buildCaseScope(session: Awaited<ReturnType<typeof getSession>>) {
   if (!session) return {}
   if (canViewAllDepts(session.role) || !session.departmentId) return {}
 
+  // [2026/09/22] - Lisa - handler 角色由下方 GET 主流程覆寫，此處回傳值會被捨棄；FR-120 指定人員的
+  // OR 條件改在該處疊加（理由同 app/api/cases/route.ts buildCaseScope 的註解）
+  if (session.role === 'handler') return { departmentId: session.departmentId }
+
   if (session.role === 'team_lead' && session.teamGroup) {
     const roles = await prisma.employeeRole.findMany({
       where: { departmentId: session.departmentId, teamGroup: session.teamGroup },
       select: { employeeId: true },
     })
     const employeeIds = Array.from(new Set(roles.map((r) => r.employeeId)))
-    return {
+    const scope = {
       departmentId: session.departmentId,
       assignments: { some: { employeeId: { in: employeeIds } } },
     }
+    const designatedWhere = await getDesignatedSpecialCaseWhere(session)
+    return designatedWhere ? { OR: [scope, designatedWhere] } : scope
   }
 
   const deptScope = { departmentId: session.departmentId }
-  const crossDeptWhere = await getCrossDeptSpecialCaseWhere(session)
-  return crossDeptWhere ? { OR: [deptScope, crossDeptWhere] } : deptScope
+  const extraWheres = (
+    await Promise.all([getCrossDeptSpecialCaseWhere(session), getDesignatedSpecialCaseWhere(session)])
+  ).filter((w): w is NonNullable<typeof w> => w != null)
+  return extraWheres.length ? { OR: [deptScope, ...extraWheres] } : deptScope
 }
 
 // 西元日期 → 民國日期字串（例：112.08.29.）
@@ -104,8 +113,12 @@ export async function GET(req: NextRequest) {
   }
   if (stage) where.currentStage = stage
   if (session.role === 'handler') {
-    where.assignments = { some: { employeeId: parseInt(session.sub) } }
     delete where.departmentId
+    // [2026/09/22] - Lisa - FR-120：與 GET /api/cases 相同，指定人員以 OR 併入而非 AND（見該檔註解）
+    const designatedWhere = await getDesignatedSpecialCaseWhere(session)
+    const ownAssignmentCond = { assignments: { some: { employeeId: parseInt(session.sub) } } }
+    if (designatedWhere) addAndCondition(where, { OR: [ownAssignmentCond, designatedWhere] })
+    else where.assignments = ownAssignmentCond.assignments
   } else if (assigneeId) {
     where.assignments = { some: { employeeId: parseInt(assigneeId) } }
   }
@@ -184,10 +197,12 @@ export async function GET(req: NextRequest) {
   const wb = new ExcelJS.Workbook()
   const ws = wb.addWorksheet('案件查詢')
 
-  // 欄寬設定（A~X）
+  // 欄寬設定（A~X 比照客戶既有紙本「工程113(24K)」表格排列，不可插入異動；
+  // [2026/09/23] - Lisa - 新增「特殊案件」「特殊案件說明」欄，刻意加在最後（Y、Z），不插入 A~X 之間，
+  // 避免既有欄位字母位置（供對照紙本表格）位移）
   // [2026/08/19] - Lisa - O 欄後插入「已決賠償額(已扣自負額)」欄（新 P 欄），原 P~V 欄依序後移一欄
   // [2026/08/27] - Lisa - Q 欄後插入「案件流程進度」欄（新 R 欄），原 R~W 欄依序後移一欄
-  const widths = [6, 16, 14, 14, 22, 22, 14, 12, 18, 22, 12, 24, 16, 12, 16, 16, 40, 18, 12, 10, 8, 8, 14, 10]
+  const widths = [6, 16, 14, 14, 22, 22, 14, 12, 18, 22, 12, 24, 16, 12, 16, 16, 40, 18, 12, 10, 8, 8, 14, 10, 10, 30]
   widths.forEach((w, i) => { ws.getColumn(i + 1).width = w })
 
   // 表頭（合併儲存格：G:H 公證編號、U:V 已決/未決、W:X 公證費）
@@ -202,6 +217,7 @@ export async function GET(req: NextRequest) {
     P: '已決賠償額\n(已扣自負額)',
     Q: '目前工作處理進度', R: '案件流程進度', S: '委託日期', T: '承辦人', U: '已決/未決',
     W: '公證費(已決/預估)',
+    Y: '特殊案件', Z: '特殊案件說明', // [2026/09/23] - Lisa - 新增兩欄，加在 A~X 之後不插入既有欄位
   }
   for (const [col, text] of Object.entries(headers)) {
     ws.getCell(`${col}1`).value = text
@@ -210,8 +226,8 @@ export async function GET(req: NextRequest) {
   headerRow.height = 32
   headerRow.font = { bold: true, size: 11 }
   headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
-  // 明確畫滿 A~X（24 欄）：合併表頭中留白的 H/V/X 欄也要上底色與框線
-  for (let col = 1; col <= 24; col++) {
+  // 明確畫滿 A~Z（26 欄）：合併表頭中留白的 H/V/X 欄也要上底色與框線
+  for (let col = 1; col <= 26; col++) {
     const cell = headerRow.getCell(col)
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }
     cell.border = {
@@ -274,11 +290,14 @@ export async function GET(req: NextRequest) {
     } else {
       ws.getCell(`X${r}`).value = c.estimatedFee ?? null
     }
+    // [2026/09/23] - Lisa - 特殊案件／特殊案件說明，加在最後（Y、Z），不插入既有 A~X 欄位之間
+    ws.getCell(`Y${r}`).value = c.isSpecialCase ? '是' : '否'
+    ws.getCell(`Z${r}`).value = c.specialCaseReason ?? ''
 
     const row = ws.getRow(r)
     row.alignment = { vertical: 'top', wrapText: true }
-    // 明確畫滿 A~X（24 欄）框線：已決案件資料落在 U/W，若用 eachCell 會漏掉留白的 V/X 欄
-    for (let col = 1; col <= 24; col++) {
+    // 明確畫滿 A~Z（26 欄）框線：已決案件資料落在 U/W，若用 eachCell 會漏掉留白的 V/X 欄
+    for (let col = 1; col <= 26; col++) {
       row.getCell(col).border = {
         top: { style: 'thin' }, left: { style: 'thin' },
         bottom: { style: 'thin' }, right: { style: 'thin' },

@@ -17,6 +17,7 @@ import { splitFeeByRatio } from '@/lib/feeSplit'
 import { useAuth } from '@/components/layout/AuthProvider'
 import {
   CASE_STAGES, DOCUMENT_TYPES, STAGE_DOC_TYPES, INTERIM_DOC_TYPES, getApprovalFlow, getClaimAmount,
+  getSpecialCaseHintText,
 } from '@/lib/approvalFlow'
 import dayjs from 'dayjs'
 
@@ -77,7 +78,7 @@ interface CaseDetail {
   contactFormStatus: string | null; contactReturnDate: string | null
   preliminaryReportDate: string | null; finalReportDate: string | null; closeDate: string | null
   prelimDone: boolean // [2026/08/05] - Lisa - 初報完成（日期／初報文件終審核准／階段已越過）
-  nasFolder: string | null; isSpecialCase: boolean; notes: string | null
+  nasFolder: string | null; isSpecialCase: boolean; specialCaseReason: string | null; notes: string | null
   insuredSubjectMatter: string | null
   estimatedAmount: number | null; coverageLimit: number | null; deductible: number | null; adjustmentAmount: number | null
   salvageValue: number | null
@@ -391,6 +392,7 @@ export default function CaseDetailPage() {
       actualFee: caseData.actualFee,
       travelOtherExpense: caseData.travelOtherExpense,
       isSpecialCase: caseData.isSpecialCase ?? false,
+      specialCaseReason: caseData.specialCaseReason ?? '',
       notes: caseData.notes ?? '',
       insuredSubjectMatter: caseData.insuredSubjectMatter ?? '',
       assignmentNotes: caseData.assignmentNotes ?? '',
@@ -461,6 +463,7 @@ export default function CaseDetailPage() {
       actualFee: values.actualFee ?? null,
       travelOtherExpense: values.travelOtherExpense ?? null,
       isSpecialCase: values.isSpecialCase ?? false,
+      specialCaseReason: values.isSpecialCase ? (String(values.specialCaseReason ?? '').trim() || null) : null,
       notes: values.notes || null,
       insuredSubjectMatter: values.insuredSubjectMatter || null,
       // [2026/07/28] - Lisa - 交辦事項僅特定角色可改；無權者不送出此欄位，避免 API 403
@@ -1185,12 +1188,35 @@ export default function CaseDetailPage() {
                             <Checkbox>
                               <Text strong style={{ fontSize: 13 }}>特殊案件</Text>
                               <Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>（如：關注案件、存在極大爭議、複雜度較高或金額較高…）</Text>
+                              {/* [2026/09/22] - Lisa - FR-120：特殊案件欄位 hint，提示工程台北/台中與高雄火險部兩類三關卡加簽審核 */}
+                              <Tooltip
+                                overlayStyle={{ maxWidth: 560 }}
+                                title={(
+                                  <>
+                                    「工程（台北/台中）部」與「高雄火險部」之特殊案件，送審文件將額外加簽審核（三關卡）：<br />
+                                    工程（台北/台中）→ 高雄工程部主管<br />
+                                    高雄火險部 → 台北火險部主管<br />
+                                    其餘部門之特殊案件仍為部門主管複核後逕送執行副總閱示（單關卡）。
+                                  </>
+                                )}
+                              >
+                                <ExclamationCircleOutlined style={{ marginLeft: 6, color: '#8c8c8c', fontSize: 12 }} />
+                              </Tooltip>
                             </Checkbox>
                           </Form.Item>
                           {getFieldValue('isSpecialCase') && (
-                            <div style={{ marginBottom: 8, padding: '4px 10px', background: '#fff7e6', border: '1px solid #ffd591', borderRadius: 4, fontSize: 12, color: '#d46b08' }}>
-                              ⚠️ 已標記為特殊案件，不論文件類型與金額，所有送審文件均需部門主管審核後轉執行副總閱示
-                            </div>
+                            <>
+                              <div style={{ marginBottom: 8, padding: '4px 10px', background: '#fff7e6', border: '1px solid #ffd591', borderRadius: 4, fontSize: 12, color: '#d46b08' }}>
+                                ⚠️ 已標記為特殊案件，{getSpecialCaseHintText(deptCode)}
+                              </div>
+                              <Form.Item
+                                name="specialCaseReason"
+                                label="特殊案件說明"
+                                style={{ marginBottom: 8 }}
+                              >
+                                <Input.TextArea rows={2} placeholder="請說明特殊案件情況，例：巨額" />
+                              </Form.Item>
+                            </>
                           )}
                         </>
                       )}
@@ -1287,7 +1313,12 @@ export default function CaseDetailPage() {
                   </Descriptions.Item>
                   <Descriptions.Item label="特殊案件" span={2}>
                     {caseData.isSpecialCase
-                      ? <Space size={8}><Tag color="red" style={{ fontWeight: 600 }}>特殊案件</Tag><Text type="secondary" style={{ fontSize: 12 }}>不論文件類型與金額，所有送審文件均需部門主管審核後轉執行副總閱示</Text></Space>
+                      ? (
+                        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                          <Space size={8}><Tag color="red" style={{ fontWeight: 600 }}>特殊案件</Tag><Text type="secondary" style={{ fontSize: 12 }}>{getSpecialCaseHintText(deptCode)}</Text></Space>
+                          <Text>{caseData.specialCaseReason || '—'}</Text>
+                        </Space>
+                      )
                       : <Text type="secondary">否</Text>}
                   </Descriptions.Item>
                   <Descriptions.Item label="備註" span={2}>{caseData.notes ? <Text type="warning">{caseData.notes}</Text> : '—'}</Descriptions.Item>
@@ -1922,7 +1953,7 @@ export default function CaseDetailPage() {
             <Card size="small" style={{ background: '#fff7e6', border: '1px solid #ffd591', marginBottom: 12 }}>
               <Space size={6}>
                 <Tag color="red" style={{ fontWeight: 600, margin: 0 }}>特殊案件</Tag>
-                <Text style={{ color: '#d46b08', fontSize: 13 }}>不論文件類型與金額，所有送審文件均需部門主管審核後轉執行副總閱示</Text>
+                <Text style={{ color: '#d46b08', fontSize: 13 }}>{getSpecialCaseHintText(deptCode)}</Text>
               </Space>
             </Card>
           )}
